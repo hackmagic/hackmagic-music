@@ -1,0 +1,104 @@
+[package]
+name = "hm"
+version = "1.0.0"
+edition = "2021"
+description = "HackMagic Music Player - Cross-platform music player with Electron GUI"
+
+[[bin]]
+name = "hm"
+path = "src/main.rs"
+
+[dependencies]
+# CLI argument parsing
+clap = { version = "4", features = ["derive"] }
+clap_complete = "4"
+
+# Async runtime (for daemon mode, HTTP in future)
+tokio = { version = "1", features = ["full"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Config
+toml = "0.8"
+
+# Audio metadata (replaces TagLib)
+lofty = "0.22"
+
+# Image handling (for album art)
+image = "0.25"
+
+# HTTP client (for lyrics download / Last.fm)
+reqwest = { version = "0.12", features = ["json"] }
+
+# HTTP server (for daemon IPC) + WebSocket + static files
+axum = { version = "0.8", features = ["ws"] }
+tower-http = { version = "0.6", features = ["fs", "cors"] }
+futures-util = "0.3"
+
+# Dynamic library loading (for BASS)
+libloading = "0.8"
+
+# Cross-platform audio output (for FFmpeg engine)
+cpal = "0.15"
+
+# FFmpeg subprocess decoding
+# playa-ffmpeg = { version = "8", features = ["build", "static"] }
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Error handling
+thiserror = "2"
+anyhow = "1"
+
+# Time
+chrono = "0.4"
+
+# Random
+rand = "0.8"
+
+# File watching
+notify = "7"
+
+# Regex for filename parsing
+regex = "1"
+
+# Ctrl+C signal handling
+ctrlc = "3"
+
+# Character encoding detection (GBK/Shift-JIS for LRC/tags)
+encoding_rs = "0.8"
+
+# MD5 hashing (for Last.fm API signing)
+md-5 = "0.10"
+
+# Base64 decoding (for QQ Music lyrics)
+base64 = "0.22"
+
+# Windows SMTC integration
+[target.'cfg(windows)'.dependencies]
+windows = { version = ">=0.54.0", features = [
+    "Media",
+    "Foundation",
+    "Storage_Streams",
+    "Win32_Foundation",
+    "Win32_System_Com",
+    "Win32_System_LibraryLoader",
+    "Win32_System_WinRT",
+
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Shell",
+    "Win32_Graphics_Gdi",
+] }
+
+[build-dependencies]
+embed-resource = "3"
+
+[profile.release]
+opt-level = 2
+lto = true
+codegen-units = 1
+strip = true

@@ -1,0 +1,9 @@
+{
+  "identifier": "default",
+  "description": "Default capabilities for HackMagic Music Player",
+  "windows": ["main", "overlay"],
+  "permissions": [
+    "core:default",
+    "shell:allow-open"
+  ]
+}
