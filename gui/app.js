@@ -1,4 +1,4 @@
-// 1028 Music Player - Web Frontend
+// HackMagic Music Player - Web Frontend
 const OHOS = typeof ohosBridge !== 'undefined';
 const ELECTRON = typeof electronAPI !== 'undefined';
 
@@ -316,7 +316,7 @@ function updateTrackInfo(track) {
   document.getElementById('track-title').textContent = track.title || track.file.split(/[/\\]/).pop();
   document.getElementById('track-artist').textContent = track.artist || 'Unknown Artist';
   document.getElementById('track-album').textContent = track.album ? `Album: ${track.album}` : '';
-  document.title = `${track.title || track.file.split(/[/\\]/).pop()} - ${track.artist || 'Unknown Artist'} - 1028 Music Player`;
+  document.title = `${track.title || track.file.split(/[/\\]/).pop()} - ${track.artist || 'Unknown Artist'} - HackMagic Music Player`;
   updateMediaSession(track);
   // Show notification for new track
   if (track.title && track.file_path !== gLastNotifiedPath) {
