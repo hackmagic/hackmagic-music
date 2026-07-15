@@ -917,7 +917,7 @@ async fn tag_read_handler(Json(payload): Json<TagReadRequest>) -> Json<Option<Ta
 struct BrowseRequest { path: String }
 
 #[derive(Serialize, Debug, PartialEq)]
-pub(crate) struct BrowseEntry {
+pub struct BrowseEntry {
     name: String,
     path: String,
     is_dir: bool,

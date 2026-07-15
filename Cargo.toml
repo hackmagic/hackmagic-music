@@ -85,12 +85,17 @@ base64 = "0.22"
 # Native GUI
 bevy = { version = "0.18", default-features = false, features = [
     "bevy_ui",
+    "bevy_ui_render",
     "bevy_winit",
     "bevy_sprite",
+    "bevy_sprite_render",
     "bevy_text",
     "bevy_render",
     "bevy_core_pipeline",
     "bevy_asset",
+    "bevy_log",
+    "bevy_state",
+    "default_font",
     "x11",
 ] }
 # Pin gpu-allocator to a version compatible with windows 0.58

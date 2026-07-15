@@ -162,7 +162,7 @@ impl TrayManager {
         unsafe {
             let mut msg = MSG::default();
             while PeekMessageW(&raw mut msg, None, 0, 0, PM_REMOVE).as_bool() {
-                TranslateMessage(&raw const msg);
+                let _ = TranslateMessage(&raw const msg);
                 DispatchMessageW(&raw const msg);
             }
         }
@@ -247,7 +247,7 @@ impl TrayManager {
             ..Default::default()
         };
         if GetCursorInfo(&raw mut cursor).is_ok() {
-            SetForegroundWindow(hwnd);
+            let _ = SetForegroundWindow(hwnd);
             let flags = TPM_RIGHTBUTTON | TPM_LEFTALIGN | TPM_BOTTOMALIGN;
             let _ = TrackPopupMenu(hmenu, flags, cursor.ptScreenPos.x, cursor.ptScreenPos.y, 0, hwnd, None);
             // Force taskbar to re-evaluate foreground window
@@ -270,7 +270,7 @@ impl Drop for TrayManager {
                 uID: 1,
                 ..Default::default()
             };
-            Shell_NotifyIconW(NIM_DELETE, &raw const nid);
+            let _ = Shell_NotifyIconW(NIM_DELETE, &raw const nid);
             let _ = DestroyWindow(self.hwnd);
         }
     }
