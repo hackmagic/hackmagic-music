@@ -1,35 +1,7 @@
-#![allow(dead_code)]
-mod audio_common;
-mod bass;
-mod charset;
-mod cli;
-mod color;
-mod commands;
-mod config;
-mod core;
-mod error;
-mod ffmpeg_engine;
-mod lyric;
-mod lastfm;
-mod media;
-mod online;
-mod playlist_format;
-mod cuesheet;
-mod multi_version;
-mod osu;
-mod hotkey;
-mod rpc;
-mod util;
-mod tag;
-mod play_stats;
-mod smtc;
-#[cfg(target_os = "windows")]
-pub mod tray;
-
-use crate::cli::{Cli, Commands, DaemonArgs, DaemonAction, InfoArgs, InfoAction};
-use crate::config::Config;
-use crate::core::engine_trait::EngineType;
-use crate::core::player::Player;
+use hm::cli::{Cli, Commands, DaemonArgs, DaemonAction, InfoArgs, InfoAction};
+use hm::config::Config;
+use hm::core::engine_trait::EngineType;
+use hm::core::player::Player;
 use clap::Parser;
 use std::sync::Arc;
 use tracing_subscriber::EnvFilter;
@@ -237,7 +209,7 @@ fn main() {
     // Auto-check for updates (non-blocking, in background thread)
     if cfg.general.check_update_when_start {
         std::thread::spawn(|| {
-            use crate::commands::system::check_update_background;
+            use hm::commands::system::check_update_background;
             check_update_background();
         });
     }
@@ -277,18 +249,44 @@ fn main() {
 
     commands::init_player(player.clone());
 
-    // Initialize engine
+    // Initialize engine — fallback to FFmpeg if BASS fails
     if let Err(e) = player.init() {
-        eprintln!("Error: Failed to initialize player: {e}");
-        std::process::exit(1);
+        if cfg.play.engine == "bass" {
+            tracing::warn!("BASS init failed ({}), trying FFmpeg engine", e);
+            let engine_type = EngineType::Ffmpeg;
+            let fallback_player = Arc::new(Player::new(engine_type));
+            fallback_player.set_volume(cfg.play.default_volume).ok();
+            fallback_player.set_volume_map(cfg.play.volume_map);
+            fallback_player.set_spectrum_config(cfg.appearance.spectrum_columns as usize, cfg.appearance.fft_size as usize);
+            commands::init_player(fallback_player.clone());
+            match fallback_player.init() {
+                Ok(()) => {
+                    tracing::info!("Fell back to FFmpeg engine successfully");
+                    // Update config so subsequent runs try FFmpeg first
+                    let mut new_cfg = cfg.clone();
+                    new_cfg.play.engine = "ffmpeg".to_string();
+                    if let Err(e) = new_cfg.save() {
+                        tracing::warn!("Failed to save engine fallback config: {e}");
+                    }
+                    let _ = fallback_player;
+                }
+                Err(e2) => {
+                    eprintln!("Error: Failed to initialize player: {e2}");
+                    std::process::exit(1);
+                }
+            }
+        } else {
+            eprintln!("Error: Failed to initialize player: {e}");
+            std::process::exit(1);
+        }
     }
 
     // Restore last playlist (tracks) without starting playback
     let is_daemon = matches!(command, Commands::Daemon(_));
     if is_daemon {
-        use crate::config::PlaybackState;
+        use hm::config::PlaybackState;
         let state = PlaybackState::load();
-        let pl_dir = crate::config::get_config_dir().join("playlists");
+        let pl_dir = hm::config::get_config_dir().join("playlists");
         let pl_path = pl_dir.join(format!("{}.playlist", state.last_playlist));
         if pl_path.exists() {
             if let Err(e) = player.switch_playlist(&state.last_playlist) {

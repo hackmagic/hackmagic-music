@@ -29,6 +29,9 @@ gui/dist
 # Tauri generated schemas (can be regenerated)
 gui/src-tauri/gen
 
+# AtomCode local config (not uploaded to git)
+.atomcode/
+
 # OS files
 .DS_Store
 Thumbs.db

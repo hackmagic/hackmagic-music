@@ -66,12 +66,13 @@ async fn cmd_handler(
     Json(payload): Json<CommandRequest>,
 ) -> Json<CommandResponse> {
     let result = (|| -> crate::error::Result<()> {
-        let args: Vec<&str> = payload.command.split_whitespace().collect();
+        // Split command string respecting quoted arguments
+        let args = split_quoted(&payload.command);
         if args.is_empty() {
             return Err(crate::error::PlayerError::Other("Empty command".into()));
         }
         let cli: crate::cli::Cli = clap::Parser::try_parse_from(
-            std::iter::once("hm").chain(args.iter().copied()),
+            std::iter::once("hm").chain(args.iter().map(|s| s.as_str())),
         )
         .map_err(|e| crate::error::PlayerError::Other(e.to_string()))?;
         match &cli.command {
@@ -90,6 +91,36 @@ async fn cmd_handler(
             error: Some(e.to_string()),
         }),
     }
+}
+
+/// Split a command string by whitespace, respecting double-quoted substrings.
+/// e.g. `play "C:\path\with spaces\file.mp3" --add`
+///   → ["play", "C:\path\with spaces\file.mp3", "--add"]
+fn split_quoted(input: &str) -> Vec<String> {
+    let mut args = Vec::new();
+    let mut current = String::new();
+    let mut in_quote = false;
+    let mut chars = input.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        match ch {
+            '"' => {
+                in_quote = !in_quote;
+            }
+            ' ' | '\t' if !in_quote => {
+                if !current.is_empty() {
+                    args.push(std::mem::take(&mut current));
+                }
+            }
+            _ => {
+                current.push(ch);
+            }
+        }
+    }
+    if !current.is_empty() {
+        args.push(current);
+    }
+    args
 }
 
 async fn status_handler(State(state): State<AppState>) -> Json<StatusResponse> {

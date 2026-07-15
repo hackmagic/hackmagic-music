@@ -138,10 +138,17 @@ impl Player {
 
     /// Open and play a file
     pub fn play_file(&self, path: &str) -> Result<()> {
-        self.engine.open(path)?;
-        self.engine.play()?;
-        *self.cue_end_pos.lock().unwrap() = None;
-        Ok(())
+        // Add to playlist so frontend status/playlist API can see it
+        {
+            let mut pl = self.playlist.lock().unwrap();
+            pl.add_track(Track::new(path));
+        }
+        let idx = {
+            let pl = self.playlist.lock().unwrap();
+            pl.len() - 1
+        };
+        // play_at_index opens the engine and plays
+        self.play_at_index(idx)
     }
 
     /// Toggle pause

@@ -1,4 +1,5 @@
 @echo off
+chcp 65001 >nul
 echo ========================================
 echo HackMagic Music Player - Startup Script
 echo ========================================
@@ -6,14 +7,16 @@ echo.
 
 REM Check if Rust backend is built
 if not exist "target\release\hm.exe" (
-    echo Building Rust backend...
-    cargo build --release
-    if errorlevel 1 (
-        echo Failed to build Rust backend!
-        pause
-        exit /b 1
+    if not exist "target\debug\hm.exe" (
+        echo Building Rust backend...
+        cargo build --release
+        if errorlevel 1 (
+            echo Failed to build Rust backend!
+            pause
+            exit /b 1
+        )
+        echo.
     )
-    echo.
 )
 
 REM Check if Electron dependencies are installed
@@ -32,14 +35,12 @@ if not exist "gui\node_modules" (
 
 echo Starting Music Player...
 echo.
+echo   Backend will be auto-started by Electron on port 10280.
+echo.
 
-REM Start backend
-start "Music Player Backend" /MIN target\release\hm.exe daemon
-
-REM Wait a moment for backend to start
-timeout /t 2 /nobreak >nul
-
-REM Start Electron GUI
+REM Start Electron GUI (it will auto-start the backend daemon)
 cd gui
 npm start
 cd ..
+
+pause
