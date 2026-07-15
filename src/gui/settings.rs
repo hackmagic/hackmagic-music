@@ -226,27 +226,23 @@ pub fn settings_dialog_system(
 /// Handle tab switching and close button.
 pub fn handle_settings_interaction(
     mut settings_state: ResMut<SettingsState>,
-    mut interaction_q: Query<
-        (&Interaction, &mut BackgroundColor, Entity),
-        (Changed<Interaction>, With<Button>),
-    >,
-    tab_q: Query<&SettingsTabBtn>,
-    close_q: Query<(), With<SettingsCloseBtn>>,
     colors: Res<UiColors>,
+    mut interaction_q: Query<(
+        &Interaction,
+        &mut BackgroundColor,
+        Entity,
+        Option<&SettingsCloseBtn>,
+        Option<&SettingsTabBtn>,
+    ), (Changed<Interaction>, With<Button>)>,
 ) {
-    for (interaction, mut bg, entity) in interaction_q.iter_mut() {
+    for (interaction, mut bg, entity, close, tab) in interaction_q.iter_mut() {
         if *interaction != Interaction::Pressed { continue; }
         bg.0 = colors.button_press;
 
-        // Check close button
-        if close_q.contains(entity) {
+        if close.is_some() {
             settings_state.visible = false;
-            continue;
-        }
-
-        // Check tab buttons
-        if let Ok(tab) = tab_q.get(entity) {
-            settings_state.active_tab = tab.0;
+        } else if let Some(t) = tab {
+            settings_state.active_tab = t.0;
         }
     }
 }

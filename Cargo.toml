@@ -97,6 +97,7 @@ bevy = { version = "0.18", default-features = false, features = [
     "bevy_state",
     "default_font",
     "x11",
+    "detailed_trace",
 ] }
 # Pin gpu-allocator to a version compatible with windows 0.58
 gpu-allocator = "0.28"

@@ -29,9 +29,9 @@ impl Default for LayoutMode {
 pub fn update_layout_mode(
     mut layout_mode: ResMut<LayoutMode>,
     window_q: Query<&Window, With<bevy::window::PrimaryWindow>>,
-    mut main_content_q: Query<&mut Node, With<MainContent>>,
-    mut info_q: Query<&mut Node, (With<InfoPanel>, Without<PlaylistPanel>)>,
-    mut playlist_q: Query<&mut Node, (With<PlaylistPanel>, Without<InfoPanel>)>,
+    mut main_content_q: Query<&mut Node, (With<MainContent>, Without<InfoPanel>, Without<PlaylistPanel>)>,
+    mut info_q: Query<&mut Node, (With<InfoPanel>, Without<PlaylistPanel>, Without<MainContent>)>,
+    mut playlist_q: Query<&mut Node, (With<PlaylistPanel>, Without<InfoPanel>, Without<MainContent>)>,
 ) {
     let Ok(window) = window_q.single() else { return };
 

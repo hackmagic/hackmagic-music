@@ -217,22 +217,22 @@ pub fn media_lib_system(
 /// Handle close button.
 pub fn handle_media_lib_interaction(
     mut state: ResMut<MediaLibState>,
-    mut interaction_q: Query<
-        (&Interaction, &mut BackgroundColor, Entity),
-        (Changed<Interaction>, With<Button>),
-    >,
-    close_q: Query<(), With<MediaLibCloseBtn>>,
-    scan_q: Query<(), With<MediaLibScanBtn>>,
     colors: Res<UiColors>,
+    mut interaction_q: Query<(
+        &Interaction,
+        &mut BackgroundColor,
+        Entity,
+        Option<&MediaLibCloseBtn>,
+        Option<&MediaLibScanBtn>,
+    ), (Changed<Interaction>, With<Button>)>,
 ) {
-    for (interaction, mut bg, entity) in interaction_q.iter_mut() {
+    for (interaction, mut bg, _entity, close, scan) in interaction_q.iter_mut() {
         if *interaction != Interaction::Pressed { continue; }
         bg.0 = colors.button_press;
 
-        if close_q.contains(entity) {
+        if close.is_some() {
             state.visible = false;
-        } else if scan_q.contains(entity) {
-            // Trigger media library scan
+        } else if scan.is_some() {
             std::thread::spawn(|| {
                 tracing::info!("[MediaLib] Manual scan triggered");
                 let cfg = crate::config::Config::load();

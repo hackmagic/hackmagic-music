@@ -43,16 +43,14 @@ pub struct StatusRepeatMode;
 // ---------------------------------------------------------------------------
 
 /// Handle playback control button clicks.
+/// Uses a SINGLE combined query with Option markers to avoid B0001 conflicts.
 pub fn handle_controls(
     player: Res<PlayerResource>,
-    mut interaction_q: Query<
-        (&Interaction, &mut BackgroundColor, Entity),
-        (Changed<Interaction>, With<Button>),
-    >,
     colors: Res<UiColors>,
     mut state: ResMut<PlayerState>,
-    // Use a single marker query to avoid conflicts
-    marker_q: Query<(
+    mut interaction_q: Query<(
+        &Interaction,
+        &mut BackgroundColor,
         Entity,
         Option<&BtnPrev>,
         Option<&BtnPlayPause>,
@@ -61,24 +59,9 @@ pub fn handle_controls(
         Option<&BtnVolDown>,
         Option<&BtnVolUp>,
         Option<&BtnRepeatMode>,
-    )>,
+    ), (Changed<Interaction>, With<Button>)>,
 ) {
-    // Build a quick lookup: entity -> button type
-    use std::collections::HashMap;
-    #[derive(Clone, Copy, PartialEq, Eq)]
-    enum BtnType { Prev, PlayPause, Stop, Next, VolDown, VolUp, Repeat }
-    let mut btn_map: HashMap<Entity, BtnType> = HashMap::new();
-    for (entity, prev, play, stop, next, vd, vu, rep) in marker_q.iter() {
-        if prev.is_some() { btn_map.insert(entity, BtnType::Prev); }
-        else if play.is_some() { btn_map.insert(entity, BtnType::PlayPause); }
-        else if stop.is_some() { btn_map.insert(entity, BtnType::Stop); }
-        else if next.is_some() { btn_map.insert(entity, BtnType::Next); }
-        else if vd.is_some() { btn_map.insert(entity, BtnType::VolDown); }
-        else if vu.is_some() { btn_map.insert(entity, BtnType::VolUp); }
-        else if rep.is_some() { btn_map.insert(entity, BtnType::Repeat); }
-    }
-
-    for (interaction, mut bg, entity) in interaction_q.iter_mut() {
+    for (interaction, mut bg, _entity, prev, play, stop, next, vd, vu, rep) in interaction_q.iter_mut() {
         let pressed = match *interaction {
             Interaction::Pressed => true,
             Interaction::Hovered => { bg.0 = colors.button_hover; false }
@@ -88,16 +71,13 @@ pub fn handle_controls(
 
         bg.0 = colors.button_press;
 
-        match btn_map.get(&entity) {
-            Some(BtnType::Prev) => { let _ = player.0.prev(); }
-            Some(BtnType::PlayPause) => { let _ = player.0.toggle_pause(); }
-            Some(BtnType::Stop) => { let _ = player.0.stop(); }
-            Some(BtnType::Next) => { let _ = player.0.next(); }
-            Some(BtnType::VolDown) => { let _ = player.0.volume_down(5); }
-            Some(BtnType::VolUp) => { let _ = player.0.volume_up(5); }
-            Some(BtnType::Repeat) => { cycle_repeat_mode(&player, &mut state); }
-            None => {}
-        }
+        if prev.is_some() { let _ = player.0.prev(); }
+        else if play.is_some() { let _ = player.0.toggle_pause(); }
+        else if stop.is_some() { let _ = player.0.stop(); }
+        else if next.is_some() { let _ = player.0.next(); }
+        else if vd.is_some() { let _ = player.0.volume_down(5); }
+        else if vu.is_some() { let _ = player.0.volume_up(5); }
+        else if rep.is_some() { cycle_repeat_mode(&player, &mut state); }
     }
 }
 
@@ -125,12 +105,12 @@ pub fn update_play_button(
 
 /// Update status bar: FPS, next track, repeat mode.
 pub fn update_status_bar(
+    _state: Res<PlayerState>,
+    player: Res<PlayerResource>,
+    time: Res<Time>,
     mut fps_q: Query<&mut Text, (With<StatusFps>, Without<StatusNextTrack>, Without<StatusRepeatMode>)>,
     mut next_q: Query<&mut Text, (With<StatusNextTrack>, Without<StatusFps>, Without<StatusRepeatMode>)>,
     mut repeat_q: Query<&mut Text, (With<StatusRepeatMode>, Without<StatusFps>, Without<StatusNextTrack>)>,
-    state: Res<PlayerState>,
-    player: Res<PlayerResource>,
-    time: Res<Time>,
 ) {
     // FPS
     if let Ok(mut text) = fps_q.single_mut() {

@@ -136,18 +136,15 @@ pub fn desktop_lyrics_system(
 pub fn update_lyrics(
     player: Res<crate::gui::PlayerResource>,
     state: Res<DesktopLyricsState>,
-    mut text_q: Query<&mut Text, With<DesktopLyricsText>>,
-    mut trans_q: Query<&mut Text, With<DesktopLyricsTranslation>>,
+    mut text_q: Query<&mut Text, (With<DesktopLyricsText>, Without<DesktopLyricsTranslation>)>,
+    mut trans_q: Query<&mut Text, (With<DesktopLyricsTranslation>, Without<DesktopLyricsText>)>,
     mut prog_q: Query<&mut Node, With<DesktopLyricsProgress>>,
 ) {
     if !state.visible { return; }
 
-    // Get current lyric line from player
     let pos = player.0.position();
     let pos_secs = pos.as_secs_f64();
 
-    // In a full implementation, this would read from the lyric engine.
-    // For now, show a placeholder.
     if let Ok(mut text) = text_q.single_mut() {
         let dur = player.0.duration();
         let total = dur.as_secs_f64();
