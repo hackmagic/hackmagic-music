@@ -98,8 +98,8 @@ pub fn spawn_media_lib(commands: &mut Commands, colors: &UiColors) {
                         ))
                         .with_children(|title| {
                             title.spawn((
-                                Text::new("\u{5A92}\u{4F53}\u{5E93}"), // 媒体库
-                                TextFont { font_size: 14.0, ..default() },
+                                Text::new("Media Library"), // 媒体库
+                                TextFont { font: crate::gui::ui_font(), font_size: 14.0, ..default() },
                                 TextColor(colors.text_title),
                                 Node { flex_grow: 1.0, ..default() },
                             ));
@@ -118,8 +118,8 @@ pub fn spawn_media_lib(commands: &mut Commands, colors: &UiColors) {
                                 MediaLibScanBtn,
                             )).with_children(|btn| {
                                 btn.spawn((
-                                    Text::new("\u{626B}\u{63CF}"), // 扫描
-                                    TextFont { font_size: 12.0, ..default() },
+                                    Text::new("Scan"), // 扫描
+                                    TextFont { font: crate::gui::ui_font(), font_size: 12.0, ..default() },
                                     TextColor(Color::WHITE),
                                 ));
                             });
@@ -138,7 +138,7 @@ pub fn spawn_media_lib(commands: &mut Commands, colors: &UiColors) {
                             )).with_children(|btn| {
                                 btn.spawn((
                                     Text::new("\u{00D7}"),
-                                    TextFont { font_size: 16.0, ..default() },
+                                    TextFont { font: crate::gui::ui_font(), font_size: 16.0, ..default() },
                                     TextColor(colors.text),
                                 ));
                             });
@@ -159,8 +159,8 @@ pub fn spawn_media_lib(commands: &mut Commands, colors: &UiColors) {
                         ))
                         .with_children(|search| {
                             search.spawn((
-                                Text::new("\u{1F50D} \u{641C}\u{7D22}\u{5A92}\u{4F53}\u{5E93}..."), // 🔍 搜索媒体库...
-                                TextFont { font_size: 12.0, ..default() },
+                                Text::new("\u{1F50D} Search media library..."), // 🔍 搜索媒体库...
+                                TextFont { font: crate::gui::ui_font(), font_size: 12.0, ..default() },
                                 TextColor(colors.text_dim),
                                 MediaLibSearchInput,
                             ));

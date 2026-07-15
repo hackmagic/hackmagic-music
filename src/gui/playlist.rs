@@ -68,8 +68,8 @@ fn spawn_toolbar(parent: &mut ChildSpawnerCommands, colors: &UiColors) {
         .with_children(|bar| {
             // Search input placeholder
             bar.spawn((
-                Text::new("\u{1F50D} \u{641C}\u{7D22}\u{6B4C}\u{66F2}..."), // 🔍 搜索歌曲...
-                TextFont { font_size: 12.0, ..default() },
+                Text::new("\u{1F50D} Search songs..."),
+                TextFont { font: crate::gui::ui_font(), font_size: 12.0, ..default() },
                 TextColor(colors.text_dim),
                 Node {
                     flex_grow: 1.0,
@@ -124,7 +124,7 @@ fn spawn_list(parent: &mut ChildSpawnerCommands, colors: &UiColors) {
         .with_children(|list| {
             // Placeholder text when playlist is empty
             list.spawn((
-                Text::new("\u{6CA1}\u{6709}\u{6B4C}\u{66F2}\u{FF0C}\u{62D6}\u{62FD}\u{6587}\u{4EF6}\u{5230}\u{6B64}\u{5904}"), // 没有歌曲，拖拽文件到此处
+                Text::new("No songs, drag files here"), // 没有歌曲，拖拽文件到此处
                 TextFont { font_size: 13.0, ..default() },
                 TextColor(colors.text_dim),
                 Node {
@@ -156,7 +156,7 @@ fn spawn_count_bar(parent: &mut ChildSpawnerCommands, colors: &UiColors) {
     ))
     .with_children(|bar| {
         bar.spawn((
-            Text::new("\u{5171} 0 \u{9996}"), // 共 0 首
+            Text::new("0 songs"), // 共 0 首
             TextFont { font_size: 11.0, ..default() },
             TextColor(colors.text_dim),
             PlaylistCount,
@@ -201,7 +201,7 @@ pub fn update_playlist(
             if track_count == 0 {
                 commands.entity(list_entity).with_children(|list| {
                     list.spawn((
-                        Text::new("\u{6CA1}\u{6709}\u{6B4C}\u{66F2}\u{FF0C}\u{62D6}\u{62FD}\u{6587}\u{4EF6}\u{5230}\u{6B64}\u{5904}"),
+                        Text::new("No songs, drag files here"),
                         TextFont { font_size: 13.0, ..default() },
                         TextColor(colors.text_dim),
                         Node {
@@ -257,6 +257,6 @@ pub fn update_playlist_count(
     state: Res<PlayerState>,
 ) {
     if let Ok(mut text) = count_q.single_mut() {
-        text.0 = format!("\u{5171} {} \u{9996}", state.playlist_tracks.len());
+        text.0 = format!("{} songs", state.playlist_tracks.len());
     }
 }

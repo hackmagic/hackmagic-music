@@ -126,9 +126,9 @@ pub fn update_status_bar(
         });
         text.0 = if let Some(t) = next {
             let title = if t.title.is_empty() { "Unknown" } else { &t.title };
-            format!("\u{4E0B}\u{4E00}\u{9996}: {}", title)
+            format!("Next: {}", title)
         } else {
-            "\u{4E0B}\u{4E00}\u{9996}: --".to_string()
+            "Next: --".to_string()
         };
     }
 
@@ -137,12 +137,12 @@ pub fn update_status_bar(
         use crate::core::playlist::RepeatMode;
         let mode = player.0.repeat_mode();
         let (icon, label) = match mode {
-            RepeatMode::LoopPlaylist => ("\u{1F503}", "\u{5FAA}\u{73AF}"),
-            RepeatMode::LoopTrack => ("\u{1F501}", "\u{5355}\u{66F2}"),
-            RepeatMode::PlayRandom => ("\u{1F500}", "\u{968F}\u{673A}"),
-            RepeatMode::PlayShuffle => ("\u{1F500}", "\u{968F}\u{673A}"),
-            RepeatMode::PlayOrder => ("\u{1F503}", "\u{987A}\u{5E8F}"),
-            RepeatMode::PlayTrack => ("\u{1F501}", "\u{5355}\u{66F2}"),
+            RepeatMode::LoopPlaylist => ("\u{1F503}", "Loop"),
+            RepeatMode::LoopTrack => ("\u{1F501}", "Single"),
+            RepeatMode::PlayRandom => ("\u{1F500}", "Random"),
+            RepeatMode::PlayShuffle => ("\u{1F500}", "Shuffle"),
+            RepeatMode::PlayOrder => ("\u{1F503}", "Order"),
+            RepeatMode::PlayTrack => ("\u{1F501}", "Single"),
         };
         text.0 = format!("{icon} {label}");
     }

@@ -18,6 +18,15 @@ use crate::config::Config;
 use crate::core::engine_trait::EngineType;
 use crate::core::player::Player;
 use std::sync::Arc;
+use std::sync::OnceLock;
+
+/// Global UI font handle, loaded once at startup.
+static UI_FONT: OnceLock<Handle<Font>> = OnceLock::new();
+
+/// Get the global UI font handle (Segoe UI or fallback default).
+pub(crate) fn ui_font() -> Handle<Font> {
+    UI_FONT.get().cloned().unwrap_or_default()
+}
 
 // ---------------------------------------------------------------------------
 // Plugin
@@ -125,6 +134,7 @@ impl Plugin for GuiPlugin {
         app.add_systems(Update, (
             update_titlebar_buttons,
             update_menu_hover,
+            handle_menu_clicks,
             handle_keyboard,
         ));
         tracing::info!("[GUI] Systems registered, build complete");
@@ -161,12 +171,16 @@ pub struct PlayerState {
 // UI Setup
 // ---------------------------------------------------------------------------
 
-fn setup_ui(mut commands: Commands, colors: Res<styles::UiColors>) {
+fn setup_ui(mut commands: Commands, colors: Res<styles::UiColors>, asset_server: Res<AssetServer>) {
     tracing::info!("[GUI] setup_ui called");
+
+    // Load a proper UI font (Segoe UI on Windows)
+    let font: Handle<Font> = asset_server.load("fonts/segoeui.ttf");
+    UI_FONT.set(font).ok();
+    tracing::info!("[GUI] Font loaded");
 
     // Ensure a 2D camera exists for UI rendering
     commands.spawn(Camera2d);
-    tracing::info!("[GUI] Camera2d spawned");
 
     // Build the entire layout
     layout::spawn_layout(&mut commands, &colors);
@@ -182,8 +196,8 @@ fn update_titlebar_buttons(
     mut interaction_q: Query<
         (&Interaction, &mut BackgroundColor),
         (
-            With<layout::TitleBtnMinimize>,
             Or<(
+                With<layout::TitleBtnMinimize>,
                 With<layout::TitleBtnMaximize>,
                 With<layout::TitleBtnClose>,
             )>,
@@ -208,7 +222,7 @@ fn update_titlebar_buttons(
 
 /// Update menu-item hover state.
 fn update_menu_hover(
-    mut interaction_q: Query<(&Interaction, &mut BackgroundColor), With<layout::MenuBar>>,
+    mut interaction_q: Query<(&Interaction, &mut BackgroundColor), With<layout::MenuBtn>>,
     colors: Res<styles::UiColors>,
 ) {
     for (interaction, mut bg) in interaction_q.iter_mut() {
@@ -222,6 +236,24 @@ fn update_menu_hover(
             Interaction::None => {
                 bg.0 = Color::NONE;
             }
+        }
+    }
+}
+
+/// Handle menu item clicks.
+fn handle_menu_clicks(
+    mut interaction_q: Query<(&Interaction, Entity), (Changed<Interaction>, With<layout::MenuBtn>)>,
+    options_q: Query<(), With<layout::MenuLabelOption>>,
+    tools_q: Query<(), With<layout::MenuLabelTool>>,
+    mut settings_state: ResMut<settings::SettingsState>,
+    mut media_lib_state: ResMut<media_lib::MediaLibState>,
+) {
+    for (interaction, entity) in interaction_q.iter_mut() {
+        if *interaction != Interaction::Pressed { continue; }
+        if options_q.contains(entity) {
+            settings_state.visible = true;
+        } else if tools_q.contains(entity) {
+            media_lib_state.visible = true;
         }
     }
 }

@@ -109,8 +109,8 @@ pub fn spawn_settings_dialog(commands: &mut Commands, colors: &UiColors) {
                         ))
                         .with_children(|title| {
                             title.spawn((
-                                Text::new("\u{8BBE}\u{7F6E}"), // 设置
-                                TextFont { font_size: 14.0, ..default() },
+                                Text::new("Settings"), // 设置
+                                TextFont { font: crate::gui::ui_font(), font_size: 14.0, ..default() },
                                 TextColor(colors.text_title),
                                 Node { flex_grow: 1.0, ..default() },
                             ));
@@ -129,7 +129,7 @@ pub fn spawn_settings_dialog(commands: &mut Commands, colors: &UiColors) {
                             )).with_children(|btn| {
                                 btn.spawn((
                                     Text::new("\u{00D7}"),
-                                    TextFont { font_size: 16.0, ..default() },
+                                    TextFont { font: crate::gui::ui_font(), font_size: 16.0, ..default() },
                                     TextColor(colors.text),
                                 ));
                             });
@@ -149,10 +149,10 @@ pub fn spawn_settings_dialog(commands: &mut Commands, colors: &UiColors) {
                             BackgroundColor(colors.menubar_bg),
                         ))
                         .with_children(|tabs| {
-                            settings_tab(tabs, "\u{5916}\u{89C2}", SettingsTab::Appearance, colors); // 外观
-                            settings_tab(tabs, "\u{64AD}\u{653E}", SettingsTab::Playback, colors);   // 播放
-                            settings_tab(tabs, "\u{6B4C}\u{8BCD}", SettingsTab::Lyrics, colors);     // 歌词
-                            settings_tab(tabs, "\u{5747}\u{8861}\u{5668}", SettingsTab::Equalizer, colors); // 均衡器
+                            settings_tab(tabs, "Appearance", SettingsTab::Appearance, colors); // 外观
+                            settings_tab(tabs, "Playback", SettingsTab::Playback, colors);   // 播放
+                            settings_tab(tabs, "Lyrics", SettingsTab::Lyrics, colors);     // 歌词
+                            settings_tab(tabs, "Equalizer", SettingsTab::Equalizer, colors); // 均衡器
                         });
 
                     // ── Content area ──
@@ -185,7 +185,7 @@ fn settings_tab(parent: &mut ChildSpawnerCommands, label: &str, tab: SettingsTab
     )).with_children(|btn| {
         btn.spawn((
             Text::new(label),
-            TextFont { font_size: 12.0, ..default() },
+            TextFont { font: crate::gui::ui_font(), font_size: 12.0, ..default() },
             TextColor(colors.text),
         ));
     });
@@ -235,7 +235,7 @@ pub fn handle_settings_interaction(
         Option<&SettingsTabBtn>,
     ), (Changed<Interaction>, With<Button>)>,
 ) {
-    for (interaction, mut bg, entity, close, tab) in interaction_q.iter_mut() {
+    for (interaction, mut bg, _entity, close, tab) in interaction_q.iter_mut() {
         if *interaction != Interaction::Pressed { continue; }
         bg.0 = colors.button_press;
 

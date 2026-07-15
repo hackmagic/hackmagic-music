@@ -62,7 +62,7 @@ pub fn spawn_info_panel(parent: &mut ChildSpawnerCommands, colors: &UiColors) {
     // Track title
     parent.spawn((
         Text::new("No track playing"),
-        TextFont { font_size: 18.0, ..default() },
+        TextFont { font: crate::gui::ui_font(), font_size: 18.0, ..default() },
         TextColor(colors.text_title),
         Node { margin: UiRect::bottom(Val::Px(2.0)), ..default() },
         TrackTitle,
@@ -71,7 +71,7 @@ pub fn spawn_info_panel(parent: &mut ChildSpawnerCommands, colors: &UiColors) {
     // Artist
     parent.spawn((
         Text::new(""),
-        TextFont { font_size: 13.0, ..default() },
+        TextFont { font: crate::gui::ui_font(), font_size: 13.0, ..default() },
         TextColor(colors.text_dim),
         TrackArtist,
     ));
@@ -79,7 +79,7 @@ pub fn spawn_info_panel(parent: &mut ChildSpawnerCommands, colors: &UiColors) {
     // Album
     parent.spawn((
         Text::new(""),
-        TextFont { font_size: 12.0, ..default() },
+        TextFont { font: crate::gui::ui_font(), font_size: 12.0, ..default() },
         TextColor(colors.text_dim),
         Node { margin: UiRect::bottom(Val::Px(8.0)), ..default() },
         TrackAlbum,
@@ -91,7 +91,7 @@ pub fn spawn_info_panel(parent: &mut ChildSpawnerCommands, colors: &UiColors) {
     // Time display
     parent.spawn((
         Text::new("00:00 / 00:00"),
-        TextFont { font_size: 11.0, ..default() },
+        TextFont { font: crate::gui::ui_font(), font_size: 11.0, ..default() },
         TextColor(colors.text_dim),
         Node { margin: UiRect::vertical(Val::Px(4.0)), ..default() },
         TimeDisplay,

@@ -49,7 +49,7 @@ impl Default for DesktopLyricsState {
 // Spawn
 // ---------------------------------------------------------------------------
 
-pub fn spawn_desktop_lyrics(commands: &mut Commands, colors: &UiColors) {
+pub fn spawn_desktop_lyrics(commands: &mut Commands, _colors: &UiColors) {
     commands
         .spawn((
             Node {
@@ -69,20 +69,14 @@ pub fn spawn_desktop_lyrics(commands: &mut Commands, colors: &UiColors) {
             // Lyric text
             parent.spawn((
                 Text::new(""),
-                TextFont {
-                    font_size: 24.0,
-                    ..default()
-                },
+                TextFont { font: crate::gui::ui_font(), font_size: 24.0, ..default() },
                 TextColor(Color::srgba(0.9, 0.9, 0.95, 0.9)),
                 DesktopLyricsText,
             ));
             // Translation text
             parent.spawn((
                 Text::new(""),
-                TextFont {
-                    font_size: 16.0,
-                    ..default()
-                },
+                TextFont { font: crate::gui::ui_font(), font_size: 16.0, ..default() },
                 TextColor(Color::srgba(0.65, 0.65, 0.70, 0.7)),
                 DesktopLyricsTranslation,
             ));
@@ -145,7 +139,7 @@ pub fn update_lyrics(
     let pos = player.0.position();
     let pos_secs = pos.as_secs_f64();
 
-    if let Ok(mut text) = text_q.single_mut() {
+    if let Ok(_text) = text_q.single_mut() {
         let dur = player.0.duration();
         let total = dur.as_secs_f64();
         if total > 0.0 {

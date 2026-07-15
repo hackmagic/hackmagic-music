@@ -35,6 +35,22 @@ pub struct TitleBtnMaximize;
 #[derive(Component)]
 pub struct TitleBtnClose;
 
+// Menu item marker
+#[derive(Component)]
+pub struct MenuBtn;
+
+// Menu item labels
+#[derive(Component)]
+pub struct MenuLabelPlay;
+#[derive(Component)]
+pub struct MenuLabelList;
+#[derive(Component)]
+pub struct MenuLabelTool;
+#[derive(Component)]
+pub struct MenuLabelOption;
+#[derive(Component)]
+pub struct MenuLabelHelp;
+
 // ---------------------------------------------------------------------------
 // Layout builder - entry point
 // ---------------------------------------------------------------------------
@@ -81,13 +97,13 @@ fn spawn_titlebar(parent: &mut ChildSpawnerCommands, colors: &UiColors) {
         .with_children(|bar| {
             bar.spawn((
                 Text::new("\u{266B}"),
-                TextFont { font_size: 16.0, ..default() },
+                TextFont { font: crate::gui::ui_font(), font_size: 16.0, ..default() },
                 TextColor(colors.text_dim),
                 Node { width: Val::Px(24.0), ..default() },
             ));
             bar.spawn((
                 Text::new("HackMagic Music Player"),
-                TextFont { font_size: 12.0, ..default() },
+                TextFont { font: crate::gui::ui_font(), font_size: 12.0, ..default() },
                 TextColor(colors.text_dim),
                 Node { flex_grow: 1.0, ..default() },
             ));
@@ -111,7 +127,7 @@ fn title_btn(parent: &mut ChildSpawnerCommands, label: &str, _marker: impl Compo
     )).with_children(|btn| {
         btn.spawn((
             Text::new(label),
-            TextFont { font_size: 14.0, ..default() },
+            TextFont { font: crate::gui::ui_font(), font_size: 14.0, ..default() },
             TextColor(Color::srgb(0.85, 0.85, 0.88)),
         ));
     });
@@ -137,17 +153,19 @@ fn spawn_menubar(parent: &mut ChildSpawnerCommands, colors: &UiColors) {
             MenuBar,
         ))
         .with_children(|menu| {
-            menu_item(menu, "播放", colors);
-            menu_item(menu, "列表", colors);
-            menu_item(menu, "工具", colors);
-            menu_item(menu, "选项", colors);
-            menu_item(menu, "帮助", colors);
+            menu_item(menu, "Play", MenuLabelPlay, colors);
+            menu_item(menu, "List", MenuLabelList, colors);
+            menu_item(menu, "Tools", MenuLabelTool, colors);
+            menu_item(menu, "Options", MenuLabelOption, colors);
+            menu_item(menu, "Help", MenuLabelHelp, colors);
         });
 }
 
-fn menu_item(parent: &mut ChildSpawnerCommands, label: &str, colors: &UiColors) {
+fn menu_item(parent: &mut ChildSpawnerCommands, label: &str, _marker: impl Component, colors: &UiColors) {
     parent.spawn((
         Button,
+        MenuBtn,
+        _marker,
         Node {
             padding: UiRect::horizontal(Val::Px(10.0)),
             height: Val::Px(20.0),
@@ -159,7 +177,7 @@ fn menu_item(parent: &mut ChildSpawnerCommands, label: &str, colors: &UiColors) 
     )).with_children(|btn| {
         btn.spawn((
             Text::new(label),
-            TextFont { font_size: 12.0, ..default() },
+            TextFont { font: crate::gui::ui_font(), font_size: 12.0, ..default() },
             TextColor(colors.text),
         ));
     });
@@ -181,7 +199,7 @@ fn spawn_main_content(parent: &mut ChildSpawnerCommands, colors: &UiColors) {
             MainContent,
         ))
         .with_children(|content| {
-            // Left: info panel (album art, track info, progress, spectrum)
+            // Left: info panel
             content
                 .spawn((
                     Node {
@@ -236,16 +254,12 @@ fn spawn_controlbar(parent: &mut ChildSpawnerCommands, colors: &UiColors) {
             ControlBar,
         ))
         .with_children(|bar| {
-            // Playback controls
-            ctrl_btn(bar, "\u{23EE}", colors.button, colors, controls::BtnPrev);       // ⏮
-            ctrl_btn(bar, "\u{25B6}", colors.button_accent, colors, controls::BtnPlayPause); // ▶
-            ctrl_btn(bar, "\u{23F9}", colors.button, colors, controls::BtnStop);       // ⏹
-            ctrl_btn(bar, "\u{23ED}", colors.button, colors, controls::BtnNext);       // ⏭
-
+            ctrl_btn(bar, "\u{23EE}", colors.button, colors, controls::BtnPrev);
+            ctrl_btn(bar, "\u{25B6}", colors.button_accent, colors, controls::BtnPlayPause);
+            ctrl_btn(bar, "\u{23F9}", colors.button, colors, controls::BtnStop);
+            ctrl_btn(bar, "\u{23ED}", colors.button, colors, controls::BtnNext);
             bar.spawn(Node { flex_grow: 1.0, ..default() });
-
-            // Volume
-            ctrl_btn(bar, "\u{2212}", colors.button, colors, controls::BtnVolDown);       // −
+            ctrl_btn(bar, "\u{2212}", colors.button, colors, controls::BtnVolDown);
             bar.spawn((
                 Node { width: Val::Px(80.0), height: Val::Px(6.0), ..default() },
                 BackgroundColor(colors.progress_track),
@@ -270,7 +284,7 @@ fn ctrl_btn(parent: &mut ChildSpawnerCommands, label: &str, bg: Color, colors: &
     )).with_children(|btn| {
         btn.spawn((
             Text::new(label),
-            TextFont { font_size: BUTTON_ICON_SIZE, ..default() },
+            TextFont { font: crate::gui::ui_font(), font_size: BUTTON_ICON_SIZE, ..default() },
             TextColor(colors.text),
         ));
     });
@@ -298,25 +312,25 @@ fn spawn_statusbar(parent: &mut ChildSpawnerCommands, colors: &UiColors) {
         .with_children(|bar| {
             bar.spawn((
                 Text::new("FPS: --"),
-                TextFont { font_size: 11.0, ..default() },
+                TextFont { font: crate::gui::ui_font(), font_size: 11.0, ..default() },
                 TextColor(colors.text_dim),
                 controls::StatusFps,
             ));
             bar.spawn((
                 Text::new("|"),
-                TextFont { font_size: 11.0, ..default() },
+                TextFont { font: crate::gui::ui_font(), font_size: 11.0, ..default() },
                 TextColor(colors.divider),
             ));
             bar.spawn((
-                Text::new("\u{4E0B}\u{4E00}\u{9996}: --"), // 下一首: --
-                TextFont { font_size: 11.0, ..default() },
+                Text::new("Next: --"),
+                TextFont { font: crate::gui::ui_font(), font_size: 11.0, ..default() },
                 TextColor(colors.text_dim),
                 Node { flex_grow: 1.0, ..default() },
                 controls::StatusNextTrack,
             ));
             bar.spawn((
-                Text::new("\u{1F503} \u{5FAA}\u{73AF}"), // 🔃 循环
-                TextFont { font_size: 11.0, ..default() },
+                Text::new("\u{1F503} Loop"),
+                TextFont { font: crate::gui::ui_font(), font_size: 11.0, ..default() },
                 TextColor(colors.text_dim),
                 controls::StatusRepeatMode,
             ));
