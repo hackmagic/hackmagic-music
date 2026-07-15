@@ -48,7 +48,7 @@ impl InstanceLock {
             fn GetLastError() -> u32;
         }
         const ERROR_ALREADY_EXISTS: u32 = 183;
-        let name: Vec<u16> = "MusicPlayer2_hm\0".encode_utf16().collect();
+        let name: Vec<u16> = "HackMagicMusic\0".encode_utf16().collect();
         unsafe {
             let mutex = CreateMutexW(std::ptr::null(), 1, name.as_ptr());
             if mutex == 0 || GetLastError() == ERROR_ALREADY_EXISTS {
@@ -152,7 +152,7 @@ fn check_single_instance() -> bool {
 #[allow(clippy::too_many_lines)]
 fn main() {
     // Enable ANSI colour support early (Windows needs VT processing)
-    color::enable_ansi_support();
+    hm::color::enable_ansi_support();
 
     // Log panic to file for diagnosis
     let panic_log = std::env::temp_dir().join("hm_panic.log");
@@ -176,14 +176,14 @@ fn main() {
 
     // Early commands that don't need BASS initialization
     if matches!(command, Commands::Info(InfoArgs { action: InfoAction::Version })) {
-        println!("1028 Music Player v{}", env!("CARGO_PKG_VERSION"));
+        println!("HackMagic Music Player v{}", env!("CARGO_PKG_VERSION"));
         if let Ok(exe) = std::env::current_exe() {
             println!("Executable: {}", exe.display());
         }
         return;
     }
     if let Commands::Cue(ref args) = command {
-        if let Err(e) = commands::system::cmd_cue(args) {
+        if let Err(e) = hm::commands::system::cmd_cue(args) {
             eprintln!("Error: {e}");
             std::process::exit(1);
         }
@@ -196,7 +196,7 @@ fn main() {
         || matches!(command, Commands::Daemon(_));
     if !skip_single && !check_single_instance() {
         let args: Vec<String> = std::env::args().skip(1).collect();
-        if hotkey::try_forward_command(&args) {
+        if hm::hotkey::try_forward_command(&args) {
             std::process::exit(0);
         }
         eprintln!("Error: Another instance is already running (command forwarding failed)");
@@ -220,9 +220,9 @@ fn main() {
         std::thread::spawn(move || {
             for dir in &dirs {
                 tracing::info!("Auto-scanning media directory: {}", dir);
-                match crate::media::scan_directory(dir, true, None) {
+                match hm::media::scan_directory(dir, true, None) {
                     Ok(entries) => {
-                        let mut lib = crate::media::MediaLib::load();
+                        let mut lib = hm::media::MediaLib::load();
                         let before = lib.entries.len();
                         for e in entries {
                             lib.upsert(e);
@@ -247,7 +247,7 @@ fn main() {
     player.set_volume_map(cfg.play.volume_map);
     player.set_spectrum_config(cfg.appearance.spectrum_columns as usize, cfg.appearance.fft_size as usize);
 
-    commands::init_player(player.clone());
+    hm::commands::init_player(player.clone());
 
     // Initialize engine — fallback to FFmpeg if BASS fails
     if let Err(e) = player.init() {
@@ -258,7 +258,7 @@ fn main() {
             fallback_player.set_volume(cfg.play.default_volume).ok();
             fallback_player.set_volume_map(cfg.play.volume_map);
             fallback_player.set_spectrum_config(cfg.appearance.spectrum_columns as usize, cfg.appearance.fft_size as usize);
-            commands::init_player(fallback_player.clone());
+            hm::commands::init_player(fallback_player.clone());
             match fallback_player.init() {
                 Ok(()) => {
                     tracing::info!("Fell back to FFmpeg engine successfully");
@@ -295,13 +295,13 @@ fn main() {
                 tracing::info!("Restored playlist '{}'", state.last_playlist);
             }
             player.set_volume(state.volume).ok();
-            let mode = crate::core::playlist::RepeatMode::from_str(&state.repeat_mode);
+            let mode = hm::core::playlist::RepeatMode::from_str(&state.repeat_mode);
             player.set_repeat_mode(mode);
         }
     }
 
     // Execute command via dispatcher
-    if let Err(e) = commands::dispatch(&command) {
+    if let Err(e) = hm::commands::dispatch(&command) {
         eprintln!("Error: {e}");
         std::process::exit(1);
     }

@@ -272,7 +272,7 @@ pub fn cmd_status() -> Result<()> {
     let pitch = player.pitch();
 
     println!("\u{250c}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}");
-    println!("\u{2502} 1028 Music Player v{}              \u{2502}", env!("CARGO_PKG_VERSION"));
+    println!("\u{2502} HackMagic Music Player v{}              \u{2502}", env!("CARGO_PKG_VERSION"));
     println!("\u{251c}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}");
     println!("\u{2502} Engine: {}                         \u{2502}", player.engine_name());
     println!("\u{2502} State:  {state_str}                         \u{2502}");
@@ -427,7 +427,7 @@ pub fn cmd_nowplaying(args: &NowplayingArgs) -> Result<()> {
 pub fn cmd_info(args: &InfoArgs) -> Result<()> {
     match &args.action {
         InfoAction::Version => {
-            println!("1028 Music Player v{}", env!("CARGO_PKG_VERSION"));
+            println!("HackMagic Music Player v{}", env!("CARGO_PKG_VERSION"));
             if let Ok(exe) = std::env::current_exe() {
                 println!("Executable: {}", exe.display());
             }
@@ -813,11 +813,11 @@ pub fn check_update_background() {
     };
     let info = rt.block_on(async {
         let client = reqwest::Client::builder()
-            .user_agent("1028mp")
+            .user_agent("hm")
             .timeout(std::time::Duration::from_secs(10))
             .build().ok()?;
         let resp = client
-            .get("https://api.github.com/repos/anomalyco/MusicPlayer2/releases/latest")
+            .get("https://api.github.com/repos/anomalyco/hm/releases/latest")
             .send().await.ok()?;
         let json: serde_json::Value = resp.json().await.ok()?;
         Some(json)
@@ -844,11 +844,11 @@ fn check_for_update(download: bool) -> Result<()> {
         .map_err(|e| PlayerError::Other(format!("Cannot create runtime: {e}")))?;
     let info = rt.block_on(async {
         let client = reqwest::Client::builder()
-            .user_agent("1028mp")
+            .user_agent("hm")
             .timeout(std::time::Duration::from_secs(10))
             .build().ok()?;
         let resp = client
-            .get("https://api.github.com/repos/anomalyco/MusicPlayer2/releases/latest")
+            .get("https://api.github.com/repos/anomalyco/hm/releases/latest")
             .send().await.ok()?;
         let json: serde_json::Value = resp.json().await.ok()?;
         Some(json)
@@ -918,7 +918,7 @@ fn find_asset_url(json: &serde_json::Value) -> Option<(String, String)> {
 
 /// Download the release zip from a URL and extract the executable
 fn download_release_zip(rt: &tokio::runtime::Runtime, url: &str, asset_name: &str) -> Result<std::path::PathBuf> {
-    let temp_dir = std::env::temp_dir().join("1028mp_update");
+    let temp_dir = std::env::temp_dir().join("hm_update");
     let _ = std::fs::create_dir_all(&temp_dir);
     let zip_path = temp_dir.join(asset_name);
 
@@ -926,7 +926,7 @@ fn download_release_zip(rt: &tokio::runtime::Runtime, url: &str, asset_name: &st
 
     let result = rt.block_on(async {
         let client = reqwest::Client::builder()
-            .user_agent("1028mp")
+            .user_agent("hm")
             .timeout(std::time::Duration::from_secs(120))
             .build().map_err(|e| PlayerError::Other(format!("Cannot build client: {e}")))?;
 
@@ -980,7 +980,7 @@ fn replace_exe_windows(zip_path: &std::path::Path, _asset_name: &str) -> Result<
         .ok_or_else(|| PlayerError::Other("Cannot determine executable directory".to_string()))?;
 
     // Extract the zip to a temp directory
-    let extract_dir = std::env::temp_dir().join("1028mp_update_extracted");
+    let extract_dir = std::env::temp_dir().join("hm_update_extracted");
     let _ = std::fs::create_dir_all(&extract_dir);
 
     // Use PowerShell to extract the zip (available on all modern Windows)
@@ -999,8 +999,8 @@ fn replace_exe_windows(zip_path: &std::path::Path, _asset_name: &str) -> Result<
         return Err(PlayerError::Other(format!("Zip extraction failed: {stderr}")));
     }
 
-    // The zip contains: 1028mp.exe + bass.dll + bass_fx.dll + gui/
-    let new_exe = extract_dir.join("1028mp.exe");
+    // The zip contains: hm.exe + bass.dll + bass_fx.dll + gui/
+    let new_exe = extract_dir.join("hm.exe");
     if !new_exe.exists() {
         return Err(PlayerError::Other(format!(
             "Extracted exe not found at: {}",
@@ -1015,14 +1015,14 @@ fn replace_exe_windows(zip_path: &std::path::Path, _asset_name: &str) -> Result<
     // 1. Waits for current process to exit
     // 2. Copies the new exe and DLLs to the install directory
     // 3. Relaunches the new exe
-    let bat_path = std::env::temp_dir().join("1028mp_update.bat");
+    let bat_path = std::env::temp_dir().join("hm_update.bat");
     let bat_content = format!(
         r#"@echo off
-title 1028mp Updater
-echo Waiting for 1028mp to exit...
+title hm Updater
+echo Waiting for hm to exit...
 :wait
 ping -n 2 127.0.0.1 > nul
-tasklist /FI "IMAGENAME eq 1028mp.exe" 2>nul | find /I "1028mp.exe" >nul
+tasklist /FI "IMAGENAME eq hm.exe" 2>nul | find /I "hm.exe" >nul
 if not errorlevel 1 goto wait
 
 echo Installing update...
@@ -1035,12 +1035,12 @@ if exist "{}" (
     xcopy /E /Y "{}" "{}"
 )
 
-echo Starting 1028mp...
+echo Starting hm...
 start "" "{}"
 del "%~f0"
 "#,
         new_exe.display(),
-        install_dir.join("1028mp.exe").display(),
+        install_dir.join("hm.exe").display(),
         extract_dir.join("bass.dll").display(),
         install_dir.join("bass.dll").display(),
         extract_dir.join("bass_fx.dll").display(),
@@ -1049,7 +1049,7 @@ del "%~f0"
         install_dir.join("gui").display(),
         extract_dir.join("gui").display(),
         install_dir.join("gui").display(),
-        install_dir.join("1028mp.exe").display(),
+        install_dir.join("hm.exe").display(),
     );
 
     std::fs::write(&bat_path, bat_content)
@@ -1062,7 +1062,7 @@ del "%~f0"
     println!("  ║  The update script will:              ║");
     println!("  ║  1. Wait for this process to exit     ║");
     println!("  ║  2. Copy new executable + DLLs        ║");
-    println!("  ║  3. Restart 1028mp                    ║");
+    println!("  ║  3. Restart hm                    ║");
     println!("  ╚══════════════════════════════════════╝");
     println!();
     println!("  Launching updater...");
@@ -1406,12 +1406,12 @@ fn register_file_assoc() -> Result<()> {
         "ape", "dsf", "dff", "mpc", "tta", "wv", "spx", "aiff", "aif",
     ];
 
-    let key_path = "Software\\Classes\\MusicPlayer2.Audio\\shell\\open\\command";
+    let key_path = "Software\\Classes\\hm.Audio\\shell\\open\\command";
     set_registry(key_path, &cmd)?;
 
     for ext in &extensions {
         let sub_key = format!("Software\\Classes\\.{ext}");
-        set_registry(&sub_key, "MusicPlayer2.Audio")?;
+        set_registry(&sub_key, "hm.Audio")?;
     }
 
     Ok(())
@@ -1428,7 +1428,7 @@ fn unregister_file_assoc() -> Result<()> {
         let sub_key = format!("Software\\Classes\\.{ext}");
         delete_registry(&sub_key)?;
     }
-    delete_registry("Software\\Classes\\MusicPlayer2.Audio")?;
+    delete_registry("Software\\Classes\\hm.Audio")?;
     Ok(())
 }
 

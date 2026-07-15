@@ -50,7 +50,7 @@ impl TrayManager {
             TRAY_TX = Some(tx);
 
             let instance = GetModuleHandleA(None)?;
-            let class_name: Vec<u16> = "MusicPlayer2_TrayHidden\0".encode_utf16().collect();
+            let class_name: Vec<u16> = "HackMagicMusic_TrayHidden\0".encode_utf16().collect();
             let class_name_pcwstr = PCWSTR::from_raw(class_name.as_ptr());
 
             // Register window class if not already done
@@ -61,9 +61,9 @@ impl TrayManager {
                     cbClsExtra: 0,
                     cbWndExtra: 0,
                     hInstance: HINSTANCE(instance.0),
-                    hIcon: HICON(0),
-                    hCursor: HCURSOR(0),
-                    hbrBackground: HBRUSH(0),
+                    hIcon: HICON(std::ptr::null_mut()),
+                    hCursor: HCURSOR(std::ptr::null_mut()),
+                    hbrBackground: HBRUSH(std::ptr::null_mut()),
                     lpszMenuName: PCWSTR::null(),
                     lpszClassName: class_name_pcwstr,
                 };
@@ -85,10 +85,7 @@ impl TrayManager {
                 None,
                 HINSTANCE(instance.0),
                 None,
-            );
-            if hwnd.0 == 0 {
-                return Err("Failed to create tray hidden window".into());
-            }
+            )?;
 
             // Load standard application icon
             let hicon = LoadIconW(None, IDI_APPLICATION)?;

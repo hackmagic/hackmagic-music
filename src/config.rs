@@ -334,9 +334,9 @@ impl Config {
 
 /// Get the platform-appropriate config directory (parent of config.toml).
 ///
-/// - **Windows**: `%APPDATA%\1028mp`
-/// - **macOS**: `~/Library/Application Support/musicplayer2`
-/// - **Linux/other**: `$XDG_CONFIG_HOME/musicplayer2` or `~/.config/musicplayer2`
+/// - **Windows**: `%APPDATA%\hm`
+/// - **macOS**: `~/Library/Application Support/hm`
+/// - **Linux/other**: `$XDG_CONFIG_HOME/hm` or `~/.config/hm`
 ///
 /// If `config.toml` already exists next to the executable, portable mode
 /// is assumed and the executable directory is returned instead.
@@ -353,13 +353,13 @@ pub fn get_config_dir() -> PathBuf {
     // Default: platform-appropriate config directory
     if cfg!(target_os = "windows") {
         let appdata = std::env::var("APPDATA").map_or_else(|_| PathBuf::from("."), PathBuf::from);
-        appdata.join("1028mp")
+        appdata.join("hm")
     } else if cfg!(target_os = "macos") {
         // macOS convention: ~/Library/Application Support/AppName
         let home = std::env::var("HOME").map_or_else(|_| PathBuf::from("."), PathBuf::from);
         home.join("Library")
             .join("Application Support")
-            .join("musicplayer2")
+            .join("hm")
     } else {
         // Linux / other Unix: XDG_CONFIG_HOME or ~/.config
         let xdg = std::env::var("XDG_CONFIG_HOME")
@@ -370,7 +370,7 @@ pub fn get_config_dir() -> PathBuf {
             let home = std::env::var("HOME").map_or_else(|_| PathBuf::from("."), PathBuf::from);
             home.join(".config")
         });
-        base.join("musicplayer2")
+        base.join("hm")
     }
 }
 

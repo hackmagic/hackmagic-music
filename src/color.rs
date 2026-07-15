@@ -1,4 +1,4 @@
-//! ANSI terminal color support for `MusicPlayer2`.
+//! ANSI terminal color support for `hm`.
 //!
 //! Works on Windows Terminal, modern Windows 10+ console (build 10586+),
 //! and all Unix terminals. The `enable_ansi_support()` function must be

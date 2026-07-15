@@ -186,7 +186,7 @@ pub async fn musicbrainz_search(title: &str, artist: &str) -> Result<Vec<MbRecor
         urlencoding(&query)
     );
     let client = reqwest::Client::builder()
-        .user_agent("1028MusicPlayer/1.0")
+        .user_agent("hm/1.0")
         .build()
         .map_err(|e| PlayerError::Other(e.to_string()))?;
     let resp: serde_json::Value = client.get(&url).send().await?.json().await?;

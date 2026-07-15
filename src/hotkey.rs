@@ -110,7 +110,7 @@ fn forward_via_wm_copydata(args: &[String]) -> bool {
         lp_data: *const c_void,
     }
 
-    let class_name: Vec<u16> = "MusicPlayer2_hm\0".encode_utf16().collect();
+    let class_name: Vec<u16> = "HackMagicMusic\0".encode_utf16().collect();
 
     unsafe {
         let hwnd = FindWindowW(class_name.as_ptr(), std::ptr::null());
@@ -315,7 +315,7 @@ fn start_message_thread() {
         }
 
         unsafe {
-            let class_name: Vec<u16> = "MusicPlayer2_hm\0".encode_utf16().collect();
+            let class_name: Vec<u16> = "HackMagicMusic\0".encode_utf16().collect();
 
             #[repr(C)]
             struct WNDCLASSW {

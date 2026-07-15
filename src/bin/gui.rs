@@ -13,7 +13,7 @@ fn main() {
                 .set(WindowPlugin {
                     primary_window: Some(Window {
                         title: "HackMagic Music Player".into(),
-                        resolution: (1200.0, 800.0).into(),
+                        resolution: (1200u32, 800u32).into(),
                         ..default()
                     }),
                     ..default()

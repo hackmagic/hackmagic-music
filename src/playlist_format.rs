@@ -1,5 +1,5 @@
 //! Playlist file format reader/writer.
-//! Supports: .playlist (1028 Music Player native), .m3u, .m3u8
+//! Supports: .playlist (HackMagic Music Player native), .m3u, .m3u8
 
 use crate::core::playlist::Track;
 use crate::error::Result;
@@ -13,7 +13,7 @@ pub enum PlaylistFormat {
     M3u8,
     Wpl,
     Ttpl,
-    Native, // .playlist (1028 Music Player native format)
+    Native, // .playlist (HackMagic Music Player native format)
 }
 
 impl PlaylistFormat {
@@ -103,7 +103,7 @@ fn write_m3u(path: &str, tracks: &[Track]) -> Result<()> {
     Ok(())
 }
 
-// === Native .playlist format (1028 Music Player) ===
+// === Native .playlist format (HackMagic Music Player) ===
 
 fn read_native(path: &str) -> Result<Vec<String>> {
     let content = fs::read_to_string(path)?;
@@ -132,7 +132,7 @@ fn read_native(path: &str) -> Result<Vec<String>> {
 }
 
 fn write_native(path: &str, tracks: &[Track]) -> Result<()> {
-    let mut content = String::from("# 1028 Music Player Playlist\n");
+    let mut content = String::from("# HackMagic Music Player Playlist\n");
     for track in tracks {
         content.push_str(&track.file_path);
         content.push('\n');
@@ -222,7 +222,7 @@ fn read_wpl(path: &str) -> Result<Vec<String>> {
 // Artist=Artist Name
 
 fn write_wpl(path: &str, tracks: &[Track]) -> Result<()> {
-    let mut content = String::from("<?wpl version=\"1.0\"?>\n<smil>\n  <head>\n    <title>1028 Music Player</title>\n  </head>\n  <body>\n    <seq>\n");
+    let mut content = String::from("<?wpl version=\"1.0\"?>\n<smil>\n  <head>\n    <title>HackMagic Music Player</title>\n  </head>\n  <body>\n    <seq>\n");
     for track in tracks {
         let escaped = track.file_path.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;");
         content.push_str(&format!("      <media src=\"{escaped}\"/>\n"));

@@ -241,7 +241,7 @@ mod tests {
 
     #[test]
     fn test_read_tags_with_wav_file() {
-        let dir = std::env::temp_dir().join("mp1028_test_tag_reader");
+        let dir = std::env::temp_dir().join("hm_test_tag_reader");
         let _ = std::fs::create_dir_all(&dir);
         let wav_path = create_minimal_wav(&dir, "test_silence.wav");
         let wav_str = wav_path.to_string_lossy().to_string();
@@ -282,7 +282,7 @@ mod tests {
 
     #[test]
     fn test_read_tags_batch_partial_valid() {
-        let dir = std::env::temp_dir().join("mp1028_test_tag_batch");
+        let dir = std::env::temp_dir().join("hm_test_tag_batch");
         let _ = std::fs::create_dir_all(&dir);
         let wav_path = create_minimal_wav(&dir, "batch_test.wav");
         let wav_str = wav_path.to_string_lossy().to_string();
@@ -308,7 +308,7 @@ mod tests {
     #[test]
     fn test_read_embedded_lyrics_no_lyrics_wav() {
         // A WAV without lyrics should fail gracefully
-        let dir = std::env::temp_dir().join("mp1028_test_lyrics");
+        let dir = std::env::temp_dir().join("hm_test_lyrics");
         let _ = std::fs::create_dir_all(&dir);
         let wav_path = create_minimal_wav(&dir, "no_lyrics.wav");
         let wav_str = wav_path.to_string_lossy().to_string();
@@ -358,7 +358,7 @@ mod tests {
     #[test]
     fn test_read_tags_non_audio_file() {
         // A non-audio file should still return a Track (graceful degradation)
-        let dir = std::env::temp_dir().join("mp1028_test_non_audio");
+        let dir = std::env::temp_dir().join("hm_test_non_audio");
         let _ = std::fs::create_dir_all(&dir);
         let txt_path = dir.join("not_audio.txt");
         std::fs::write(&txt_path, b"This is not an audio file").unwrap();

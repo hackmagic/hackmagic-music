@@ -34,7 +34,7 @@ pub fn cmd_play(args: &PlayArgs) -> Result<()> {
             println!("▶ Resumed from saved position");
             crate::play_stats::track_started(player.playlist_mut().current_track().map(|t| &*t.file_path));
         } else {
-            eprintln!("No files specified. Use: 1028mp play <file> [files...]");
+            eprintln!("No files specified. Use: hm play <file> [files...]");
         }
         return Ok(());
     }

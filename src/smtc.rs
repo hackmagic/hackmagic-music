@@ -415,7 +415,7 @@ mod tests {
 fn create_hidden_window() -> Result<HWND> {
     unsafe {
         let instance = GetModuleHandleA(None)?;
-        let class_name: Vec<u16> = "MusicPlayer2_SmtcHidden\0".encode_utf16().collect();
+        let class_name: Vec<u16> = "HackMagicMusic_SmtcHidden\0".encode_utf16().collect();
         let class_name_pcwstr = PCWSTR::from_raw(class_name.as_ptr());
 
         let wc = WNDCLASSW {
@@ -424,9 +424,9 @@ fn create_hidden_window() -> Result<HWND> {
             cbClsExtra: 0,
             cbWndExtra: 0,
             hInstance: HINSTANCE(instance.0),
-            hIcon: HICON(0),
-            hCursor: HCURSOR(0),
-            hbrBackground: HBRUSH(0),
+            hIcon: HICON(std::ptr::null_mut()),
+            hCursor: HCURSOR(std::ptr::null_mut()),
+            hbrBackground: HBRUSH(std::ptr::null_mut()),
             lpszMenuName: PCWSTR::null(),
             lpszClassName: class_name_pcwstr,
         };
@@ -442,10 +442,7 @@ fn create_hidden_window() -> Result<HWND> {
             None,
             HINSTANCE(instance.0),
             None,
-        );
-        if hwnd.0 == 0 {
-            return Err(Error::from_win32());
-        }
+        )?;
         Ok(hwnd)
     }
 }
