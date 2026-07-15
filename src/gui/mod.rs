@@ -242,18 +242,25 @@ fn update_menu_hover(
 
 /// Handle menu item clicks.
 fn handle_menu_clicks(
-    mut interaction_q: Query<(&Interaction, Entity), (Changed<Interaction>, With<layout::MenuBtn>)>,
-    options_q: Query<(), With<layout::MenuLabelOption>>,
-    tools_q: Query<(), With<layout::MenuLabelTool>>,
+    mut interaction_q: Query<(
+        &Interaction,
+        Entity,
+        Option<&layout::MenuLabelOption>,
+        Option<&layout::MenuLabelTool>,
+    ), (Changed<Interaction>, With<layout::MenuBtn>)>,
     mut settings_state: ResMut<settings::SettingsState>,
     mut media_lib_state: ResMut<media_lib::MediaLibState>,
 ) {
-    for (interaction, entity) in interaction_q.iter_mut() {
+    for (interaction, entity, option, tool) in interaction_q.iter_mut() {
         if *interaction != Interaction::Pressed { continue; }
-        if options_q.contains(entity) {
+        if option.is_some() {
+            tracing::info!("[GUI] Menu: Options clicked");
             settings_state.visible = true;
-        } else if tools_q.contains(entity) {
+        } else if tool.is_some() {
+            tracing::info!("[GUI] Menu: Tools clicked");
             media_lib_state.visible = true;
+        } else {
+            tracing::info!("[GUI] Menu item clicked: entity={:?}", entity);
         }
     }
 }
