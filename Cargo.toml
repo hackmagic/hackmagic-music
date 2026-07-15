@@ -83,6 +83,7 @@ md-5 = "0.10"
 base64 = "0.22"
 
 # Native GUI
+rfd = "0.15"
 bevy = { version = "0.18", default-features = false, features = [
     "bevy_ui",
     "bevy_ui_render",

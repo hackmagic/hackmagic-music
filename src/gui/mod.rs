@@ -194,7 +194,7 @@ fn setup_ui(mut commands: Commands, colors: Res<styles::UiColors>, asset_server:
 /// Update title-bar button hover/press states.
 fn update_titlebar_buttons(
     mut interaction_q: Query<
-        (&Interaction, &mut BackgroundColor),
+        (&Interaction, &mut BackgroundColor, Entity),
         (
             Or<(
                 With<layout::TitleBtnMinimize>,
@@ -203,12 +203,16 @@ fn update_titlebar_buttons(
             )>,
         ),
     >,
+    close_q: Query<(), With<layout::TitleBtnClose>>,
     colors: Res<styles::UiColors>,
 ) {
-    for (interaction, mut bg) in interaction_q.iter_mut() {
+    for (interaction, mut bg, entity) in interaction_q.iter_mut() {
         match *interaction {
             Interaction::Pressed => {
                 bg.0 = colors.button_press;
+                if close_q.contains(entity) {
+                    std::process::exit(0);
+                }
             }
             Interaction::Hovered => {
                 bg.0 = colors.button_hover;
@@ -245,22 +249,29 @@ fn handle_menu_clicks(
     mut interaction_q: Query<(
         &Interaction,
         Entity,
-        Option<&layout::MenuLabelOption>,
+        Option<&layout::MenuLabelPlay>,
+        Option<&layout::MenuLabelList>,
         Option<&layout::MenuLabelTool>,
+        Option<&layout::MenuLabelOption>,
+        Option<&layout::MenuLabelHelp>,
     ), (Changed<Interaction>, With<layout::MenuBtn>)>,
     mut settings_state: ResMut<settings::SettingsState>,
     mut media_lib_state: ResMut<media_lib::MediaLibState>,
+    player: Res<PlayerResource>,
 ) {
-    for (interaction, entity, option, tool) in interaction_q.iter_mut() {
+    for (interaction, _entity, play, _list, tool, option, _help) in interaction_q.iter_mut() {
         if *interaction != Interaction::Pressed { continue; }
-        if option.is_some() {
-            tracing::info!("[GUI] Menu: Options clicked");
-            settings_state.visible = true;
+        if play.is_some() {
+            tracing::info!("[GUI] Menu: Play clicked");
+            open_file_dialog(&player);
         } else if tool.is_some() {
             tracing::info!("[GUI] Menu: Tools clicked");
             media_lib_state.visible = true;
+        } else if option.is_some() {
+            tracing::info!("[GUI] Menu: Options clicked");
+            settings_state.visible = true;
         } else {
-            tracing::info!("[GUI] Menu item clicked: entity={:?}", entity);
+            tracing::info!("[GUI] Menu item clicked");
         }
     }
 }
@@ -291,8 +302,16 @@ fn handle_keyboard(
     if keys.just_pressed(KeyCode::KeyS) {
         player.0.stop().ok();
     }
-    // Ctrl+O: Settings
+    // Ctrl+O: Open file(s)
     if keys.just_pressed(KeyCode::KeyO) && keys.pressed(KeyCode::ControlLeft) {
+        open_file_dialog(&player);
+    }
+    // Ctrl+F: Open folder
+    if keys.just_pressed(KeyCode::KeyF) && keys.pressed(KeyCode::ControlLeft) {
+        open_folder_dialog(&player);
+    }
+    // Ctrl+O: Settings (Shift+O to avoid conflict with Open File)
+    if keys.just_pressed(KeyCode::KeyO) && keys.pressed(KeyCode::ShiftLeft) {
         settings_state.visible = !settings_state.visible;
     }
     // Ctrl+L: Desktop lyrics
@@ -322,5 +341,43 @@ fn handle_keyboard(
             RepeatMode::PlayRandom | RepeatMode::PlayShuffle => RepeatMode::LoopPlaylist,
         };
         player.0.set_repeat_mode(next);
+    }
+}
+
+/// Open a file dialog to select audio files.
+fn open_file_dialog(player: &PlayerResource) {
+    tracing::info!("[GUI] Opening file dialog...");
+    let path = rfd::FileDialog::new()
+        .add_filter("Audio", &["mp3", "flac", "wav", "ogg", "m4a", "wma", "ape", "aac"])
+        .set_title("Select Audio File")
+        .pick_file();
+    if let Some(path) = path {
+        let path_str = path.to_string_lossy().to_string();
+        tracing::info!("[GUI] Playing file: {}", path_str);
+        player.0.play_file(&path_str).ok();
+    }
+}
+
+/// Open a folder dialog to select a music folder.
+fn open_folder_dialog(player: &PlayerResource) {
+    tracing::info!("[GUI] Opening folder dialog...");
+    let path = rfd::FileDialog::new()
+        .set_title("Select Music Folder")
+        .pick_folder();
+    if let Some(path) = path {
+        let path_str = path.to_string_lossy().to_string();
+        tracing::info!("[GUI] Scanning folder: {}", path_str);
+        // Scan the directory and add to playlist
+        let dir = path_str.clone();
+        let player_clone = player.0.clone();
+        std::thread::spawn(move || {
+            if let Ok(entries) = crate::media::scan_directory(&dir, true, None) {
+                let count = entries.len();
+                for entry in &entries {
+                    player_clone.play_file(&entry.file_path).ok();
+                }
+                tracing::info!("[GUI] Added {} files from folder", count);
+            }
+        });
     }
 }
