@@ -1,8 +1,9 @@
-//! LRC/KSC lyrics parser.
+//! LRC/KSC/WebVTT lyrics parser with encoding auto-detection.
 //! Translated from the original `CLyrics` C++ implementation.
 
 #![allow(dead_code)]
 
+use crate::charset::decode_to_string;
 use crate::error::Result;
 use regex::Regex;
 use std::collections::HashMap;
@@ -25,6 +26,17 @@ pub struct KscWord {
     pub text: String,
 }
 
+/// Translation display mode
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TranslateMode {
+    /// Show translation on a separate line below original
+    Separate,
+    /// Show translation inline after original (e.g., "Hello / 你好")
+    Inline,
+    /// Hide translation
+    Hidden,
+}
+
 /// Parsed lyrics container
 #[derive(Debug, Clone)]
 pub struct Lyrics {
@@ -33,6 +45,7 @@ pub struct Lyrics {
     pub artist: String,
     pub album: String,
     pub offset_ms: i64,   // Global offset
+    pub translate_mode: TranslateMode,
 }
 
 impl Lyrics {
@@ -43,6 +56,29 @@ impl Lyrics {
             artist: String::new(),
             album: String::new(),
             offset_ms: 0,
+            translate_mode: TranslateMode::Separate,
+        }
+    }
+
+    /// Apply offset to all line times.
+    pub fn apply_offset(&mut self) {
+        if self.offset_ms == 0 {
+            return;
+        }
+        let offset = self.offset_ms;
+        for line in &mut self.lines {
+            line.time_ms = if offset >= 0 {
+                line.time_ms.saturating_add(offset as u64)
+            } else {
+                line.time_ms.saturating_sub((-offset) as u64)
+            };
+            for word in &mut line.ksc_words {
+                word.start_ms = if offset >= 0 {
+                    word.start_ms.saturating_add(offset as u64)
+                } else {
+                    word.start_ms.saturating_sub((-offset) as u64)
+                };
+            }
         }
     }
 
@@ -75,6 +111,21 @@ impl Lyrics {
 
     pub fn len(&self) -> usize {
         self.lines.len()
+    }
+
+    /// Get the effective text for display (text + optional inline translation).
+    pub fn display_text(&self, line: &LyricLine) -> String {
+        match self.translate_mode {
+            TranslateMode::Separate => line.text.clone(),
+            TranslateMode::Hidden => line.text.clone(),
+            TranslateMode::Inline => {
+                if line.translate.is_empty() {
+                    line.text.clone()
+                } else {
+                    format!("{} / {}", line.text, line.translate)
+                }
+            }
+        }
     }
 
     /// Calculate karaoke progress (0-1000) for a given time position.
@@ -124,12 +175,81 @@ impl Lyrics {
         let progress = elapsed * 1000 / line_duration;
         progress.min(1000) as u32
     }
+
+    /// Merge lines that have the same timestamp into a single entry.
+    /// When two or more consecutive lines share the same time_ms,
+    /// their texts are joined with newline characters.
+    pub fn merge_same_timestamp(&mut self) {
+        if self.lines.len() < 2 {
+            return;
+        }
+
+        let mut merged: Vec<LyricLine> = Vec::new();
+        let mut iter = self.lines.iter().cloned();
+
+        if let Some(mut current) = iter.next() {
+            for next in iter {
+                if next.time_ms == current.time_ms {
+                    // Merge: append next's text as continuation
+                    if !current.translate.is_empty() || !next.translate.is_empty() {
+                        // Merge translations too
+                        if current.translate.is_empty() {
+                            current.translate = next.translate;
+                        } else if !next.translate.is_empty() {
+                            current.translate.push('\n');
+                            current.translate.push_str(&next.translate);
+                        }
+                    }
+                    // Append text
+                    current.text.push('\n');
+                    current.text.push_str(&next.text);
+                } else {
+                    merged.push(current);
+                    current = next;
+                }
+            }
+            merged.push(current);
+            self.lines = merged;
+        }
+    }
+
+    /// Sort lines by time (ascending).
+    pub fn sort_by_time(&mut self) {
+        self.lines.sort_by(|a, b| a.time_ms.cmp(&b.time_ms));
+    }
+
+    /// Extract existing translation from brackets in lyric text.
+    /// Example: "Hello(你好)" → text: "Hello", translate: "你好"
+    pub fn extract_bracket_translations(&mut self) {
+        let bracket_re = Regex::new(r"^(.+?)\s*[（(](.+?)[）)]\s*$").unwrap();
+        for line in &mut self.lines {
+            if line.translate.is_empty() {
+                if let Some(caps) = bracket_re.captures(&line.text) {
+                    let main_text = caps.get(1).unwrap().as_str().trim().to_string();
+                    let trans_text = caps.get(2).unwrap().as_str().trim().to_string();
+                    if !main_text.is_empty() && !trans_text.is_empty() {
+                        line.text = main_text;
+                        line.translate = trans_text;
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// Parse an LRC file content
+#[inline]
 pub fn parse_lrc(content: &str) -> Lyrics {
-    let mut lyrics = Lyrics::new();
-    let tag_re = Regex::new(r"^\[([a-z]+):(.+)\]$").unwrap();
+    parse_lrc_with_mode(content, TranslateMode::Separate)
+}
+
+/// Parse LRC content with a specified translation display mode.
+pub fn parse_lrc_with_mode(content: &str, translate_mode: TranslateMode) -> Lyrics {
+    let mut lyrics = Lyrics {
+        translate_mode,
+        ..Lyrics::new()
+    };
+    let tag_re = Regex::new(r"^\[([a-zA-Z]+):(.+)\]$").unwrap();
     let time_re = Regex::new(r"\[(\d{2}):(\d{2})\.(\d{2,3})\]").unwrap();
     let multi_time_re = Regex::new(r"(\[\d{2}:\d{2}\.\d{2,3}\])").unwrap();
     let trans_re = Regex::new(r"^\[t:(\d{2}):(\d{2})\.(\d{2,3})\](.*)$").unwrap();
@@ -217,7 +337,7 @@ pub fn parse_lrc(content: &str) -> Lyrics {
     }
 
     // Sort by time
-    lyrics.lines.sort_by(|a, b| a.time_ms.cmp(&b.time_ms));
+    lyrics.sort_by_time();
 
     // Merge translations into corresponding lines
     for line in &mut lyrics.lines {
@@ -226,13 +346,16 @@ pub fn parse_lrc(content: &str) -> Lyrics {
         }
     }
 
+    // Apply offset
+    lyrics.apply_offset();
+
     lyrics
 }
 
 /// Parse a KSC (karaoke) lyric file
+#[inline]
 pub fn parse_ksc(content: &str) -> Lyrics {
     let mut lyrics = Lyrics::new();
-    let _time_word_re = Regex::new(r"\[(\d+),(\d+)\]").unwrap();
     let line_re = Regex::new(r"^\[(\d+),(\d+)\]").unwrap();
     let tag_re = Regex::new(r"^#?(\w+):(.+)$").unwrap();
     let word_re = Regex::new(r"([^\(]+)\((\d+),(\d+)\)").unwrap();
@@ -296,7 +419,8 @@ pub fn parse_ksc(content: &str) -> Lyrics {
         }
     }
 
-    lyrics.lines.sort_by(|a, b| a.time_ms.cmp(&b.time_ms));
+    lyrics.sort_by_time();
+    lyrics.apply_offset();
     lyrics
 }
 
@@ -306,7 +430,9 @@ pub fn parse_lrc_str(content: &str) -> Result<Lyrics> {
 }
 
 /// Parse a `WebVTT` (.vtt) subtitle file for lyrics
-/// Format: 
+///
+/// Format:
+/// ```text
 /// WEBVTT
 ///
 /// 00:01.500 --> 00:04.000
@@ -314,6 +440,7 @@ pub fn parse_lrc_str(content: &str) -> Result<Lyrics> {
 ///
 /// 00:05.000 --> 00:09.500
 /// Second lyric line
+/// ```
 pub fn parse_vtt(content: &str) -> Lyrics {
     let mut lyrics = Lyrics::new();
     let cue_re = Regex::new(
@@ -392,7 +519,8 @@ pub fn parse_vtt(content: &str) -> Lyrics {
         }
     }
 
-    lyrics.lines.sort_by(|a, b| a.time_ms.cmp(&b.time_ms));
+    lyrics.sort_by_time();
+    lyrics.apply_offset();
     lyrics
 }
 
@@ -459,16 +587,28 @@ fn urlencoding_or_raw(input: &str) -> std::result::Result<Vec<u8>, ()> {
     Ok(bytes)
 }
 
-/// Load and parse a lyric file (auto-detect format by extension)
+/// Detect Netease encrypted LRC by looking for `[id:` prefix and absence of `[ti:`.
+fn is_netease_encrypted(content: &[u8]) -> bool {
+    // Check for [id: in first 32 bytes
+    let header = String::from_utf8_lossy(&content[..content.len().min(32)]);
+    header.contains("[id:") && !header.contains("[ti:") && !header.contains("[00:")
+}
+
+/// Load and parse a lyric file (auto-detect format and encoding).
+///
+/// Supports UTF-8, UTF-8-BOM, UTF-16LE, UTF-16BE, GBK, Shift-JIS encodings.
 pub fn load_lyric_file(file_path: &str) -> Result<Lyrics> {
-    let content = fs::read_to_string(file_path)?;
+    let raw_bytes = fs::read(file_path)?;
+
+    // Decode with encoding auto-detection
+    let content = decode_to_string(&raw_bytes);
 
     let lower = file_path.to_lowercase();
     if lower.ends_with(".ksc") || lower.ends_with(".kscproj") {
         Ok(parse_ksc(&content))
     } else if lower.ends_with(".vtt") {
         Ok(parse_vtt(&content))
-    } else if lower.ends_with(".lrc") && content.contains("[id:") && !content.contains("[ti:") {
+    } else if lower.ends_with(".lrc") && is_netease_encrypted(&raw_bytes) {
         // Try decrypting as Netease encrypted LRC
         match netease_decrypt(&content) {
             Ok(decrypted) => Ok(parse_lrc(&decrypted)),
@@ -477,6 +617,40 @@ pub fn load_lyric_file(file_path: &str) -> Result<Lyrics> {
     } else {
         Ok(parse_lrc(&content))
     }
+}
+
+/// Convert lyrics to Traditional Chinese.
+pub fn lyrics_to_traditional(lyrics: &Lyrics) -> Lyrics {
+    use crate::charset::to_traditional_chinese;
+    let mut result = lyrics.clone();
+    result.title = to_traditional_chinese(&result.title);
+    result.artist = to_traditional_chinese(&result.artist);
+    result.album = to_traditional_chinese(&result.album);
+    for line in &mut result.lines {
+        line.text = to_traditional_chinese(&line.text);
+        line.translate = to_traditional_chinese(&line.translate);
+        for word in &mut line.ksc_words {
+            word.text = to_traditional_chinese(&word.text);
+        }
+    }
+    result
+}
+
+/// Convert lyrics to Simplified Chinese.
+pub fn lyrics_to_simplified(lyrics: &Lyrics) -> Lyrics {
+    use crate::charset::to_simplified_chinese;
+    let mut result = lyrics.clone();
+    result.title = to_simplified_chinese(&result.title);
+    result.artist = to_simplified_chinese(&result.artist);
+    result.album = to_simplified_chinese(&result.album);
+    for line in &mut result.lines {
+        line.text = to_simplified_chinese(&line.text);
+        line.translate = to_simplified_chinese(&line.translate);
+        for word in &mut line.ksc_words {
+            word.text = to_simplified_chinese(&word.text);
+        }
+    }
+    result
 }
 
 #[cfg(test)]
@@ -503,9 +677,10 @@ mod tests {
         assert_eq!(result.title, "Test Song");
         assert_eq!(result.artist, "Test Artist");
         assert_eq!(result.album, "Test Album");
-        assert_eq!(result.offset_ms, -500);
+        // offset -500 applied: 1000 - 500 = 500
         assert_eq!(result.lines.len(), 1);
         assert_eq!(result.lines[0].text, "Hello");
+        assert_eq!(result.lines[0].time_ms, 500);
     }
 
     #[test]
@@ -523,7 +698,6 @@ mod tests {
 
     #[test]
     fn test_parse_lrc_two_digit_ms() {
-        // 2-digit ms means centiseconds (*10 = milliseconds)
         let content = "[00:01.50]Two digit ms\n[00:02.99]Ninety nine";
         let result = parse_lrc(content);
         assert_eq!(result.lines[0].time_ms, 1500);
@@ -532,7 +706,6 @@ mod tests {
 
     #[test]
     fn test_parse_lrc_three_digit_ms() {
-        // 3-digit ms means milliseconds directly
         let content = "[00:01.500]Three digit ms\n[00:02.999]Nine nine nine";
         let result = parse_lrc(content);
         assert_eq!(result.lines[0].time_ms, 1500);
@@ -569,7 +742,6 @@ mod tests {
 
     #[test]
     fn test_parse_lrc_sort_by_time() {
-        // Input out of order — result should be sorted
         let content = "[00:03.00]Third\n[00:01.00]First\n[00:02.00]Second";
         let result = parse_lrc(content);
         assert_eq!(result.lines.len(), 3);
@@ -585,15 +757,10 @@ mod tests {
     fn test_parse_lrc_line_at() {
         let content = "[00:01.00]First\n[00:05.00]Second\n[00:10.00]Third";
         let result = parse_lrc(content);
-        // Before first line
         assert_eq!(result.line_at(0).map(|l| l.text.as_str()), None);
-        // At first line
         assert_eq!(result.line_at(1000).map(|l| l.text.as_str()), Some("First"));
-        // Between first and second
         assert_eq!(result.line_at(3000).map(|l| l.text.as_str()), Some("First"));
-        // At second line
         assert_eq!(result.line_at(5000).map(|l| l.text.as_str()), Some("Second"));
-        // After last
         assert_eq!(result.line_at(20000).map(|l| l.text.as_str()), Some("Third"));
     }
 
@@ -612,15 +779,10 @@ mod tests {
     fn test_parse_lrc_current_line_index() {
         let content = "[00:01.00]First\n[00:05.00]Second\n[00:10.00]Third";
         let result = parse_lrc(content);
-        // Before first line: next_line_index returns Some(0), so current = Some(0)
         assert_eq!(result.current_line_index(0), Some(0));
-        // At first line: next_line_index returns Some(1), so current = Some(0)
         assert_eq!(result.current_line_index(1000), Some(0));
-        // Between first and second
         assert_eq!(result.current_line_index(3000), Some(0));
-        // At second line
         assert_eq!(result.current_line_index(5000), Some(1));
-        // After last line: next_line_index returns None, so current = last line index
         assert_eq!(result.current_line_index(20000), Some(2));
     }
 
@@ -647,7 +809,7 @@ mod tests {
         assert_eq!(result.title, "Hello KSC");
         assert_eq!(result.artist, "Test Artist");
         assert_eq!(result.album, "Karaoke Album");
-        assert_eq!(result.offset_ms, -300);
+        // offset applied: 0 - 300 saturating = 0
         assert_eq!(result.lines.len(), 1);
     }
 
@@ -671,7 +833,6 @@ mod tests {
 
     #[test]
     fn test_parse_ksc_sort_by_time() {
-        // Input out of order — result should be sorted
         let content = "[3000,2000]Third line\n[1000,2000]First line\n[2000,2000]Second line";
         let result = parse_ksc(content);
         assert_eq!(result.lines.len(), 3);
@@ -685,7 +846,6 @@ mod tests {
 
     #[test]
     fn test_parse_ksc_text_without_words() {
-        // Line with timing but no word-level breakdown
         let content = "[500,3000]Plain text line without word timing";
         let result = parse_ksc(content);
         assert_eq!(result.lines.len(), 1);
@@ -747,51 +907,34 @@ mod tests {
 
     #[test]
     fn test_karaoke_progress_line_level() {
-        // Two lines: line0 at 0ms, line1 at 5000ms
         let content = "[00:00.00]First line\n[00:05.00]Second line";
         let lyrics = parse_lrc(content);
-
-        // At start of first line
         assert_eq!(lyrics.karaoke_progress(0), 0);
-        // Halfway through first line (2500ms into a 5000ms span)
         assert_eq!(lyrics.karaoke_progress(2500), 500);
-        // At start of second line
         assert_eq!(lyrics.karaoke_progress(5000), 0);
-        // Past last line — should be 1000 (end state)
         assert_eq!(lyrics.karaoke_progress(20000), 1000);
     }
 
     #[test]
     fn test_karaoke_progress_word_level() {
-        // KSC with two words: 音(500,0)楽(500,500)
-        // Line starts at 0, duration 1000ms
         let content = "[0,1000]音(500,0)楽(500,500)";
         let lyrics = parse_ksc(content);
-
-        // Before any word
         assert_eq!(lyrics.karaoke_progress(0), 0);
-        // Middle of first word (250ms into 500ms word)
         assert_eq!(lyrics.karaoke_progress(250), 500);
-        // End of first word
         assert_eq!(lyrics.karaoke_progress(499), 998);
-        // Start of second word
         assert_eq!(lyrics.karaoke_progress(500), 0);
-        // Middle of second word
         assert_eq!(lyrics.karaoke_progress(750), 500);
-        // After all words
         assert_eq!(lyrics.karaoke_progress(1200), 1000);
     }
 
     #[test]
     fn test_netease_decrypt_simple() {
-        // Encrypt a known LRC with XOR key "neteasecloudmusic"
         let plaintext = "[00:01.00]Hello";
         let key = b"neteasecloudmusic";
         let encrypted: Vec<u8> = plaintext.bytes()
             .enumerate()
             .map(|(i, b)| b ^ key[i % key.len()])
             .collect();
-        // Format as [id:0] followed by raw bytes (not URL-encoded)
         let content = format!("[id:0]{}", String::from_utf8_lossy(&encrypted));
         let result = netease_decrypt(&content).unwrap();
         assert!(result.contains("Hello") || result.contains("[00:"));
@@ -799,11 +942,8 @@ mod tests {
 
     #[test]
     fn test_netease_decrypt_bad_format() {
-        // Non-encrypted content should pass through as-is
         let content = "[ti:Normal]\n[00:01.00]Normal LRC";
         let result = netease_decrypt(content).unwrap();
-        // Without [id:] prefix, it writes raw bytes, so the LRC won't look right,
-        // but it should not panic
         assert!(!result.is_empty());
     }
 
@@ -856,7 +996,6 @@ mod tests {
                 text: "Test".to_string(),
             }],
         });
-        // Duration 0 should return 1000
         assert_eq!(lyrics.karaoke_progress(0), 1000);
     }
 
@@ -864,12 +1003,61 @@ mod tests {
     fn test_karaoke_progress_between_words() {
         let content = "[0,2000]A(500,0)B(500,1000)";
         let lyrics = parse_ksc(content);
-        // After first word (at relative 600ms), before second word (starts at 1000ms)
-        // relative=600, 500 <= 600 < 1000? No, 600 < 500? No. 
-        // Past all words since 600 > 500 (word end = 0+500)
-        // Actually: word1 start=0, end=500. word2 start=1000, end=1500.
-        // relative=600: 600 >= 0 && 600 < 500? No (600 >= 500). 
-        // 600 < 1000 (word2.start_ms)? Yes! So return 0 (before word2 starts)
         assert_eq!(lyrics.karaoke_progress(600), 0);
+    }
+
+    #[test]
+    fn test_parse_lrc_with_offset_positive() {
+        let content = "[offset:1000]\n[00:01.00]Hello";
+        let result = parse_lrc(content);
+        // offset 1000ms applied: 1000 + 1000 = 2000
+        assert_eq!(result.lines[0].time_ms, 2000);
+    }
+
+    #[test]
+    fn test_merge_same_timestamp() {
+        let content = "[00:01.00]Line A1\n[00:01.00]Line A2\n[00:02.00]Line B\n[00:02.00]Line B2\n[00:03.00]Line C";
+        let mut lyrics = parse_lrc(content);
+        lyrics.merge_same_timestamp();
+        assert_eq!(lyrics.lines.len(), 3);
+        assert_eq!(lyrics.lines[0].text, "Line A1\nLine A2");
+        assert_eq!(lyrics.lines[1].text, "Line B\nLine B2");
+        assert_eq!(lyrics.lines[2].text, "Line C");
+    }
+
+    #[test]
+    fn test_display_text_separate_mode() {
+        let content = "[00:01.00]Hello\n[t:00:01.00]你好";
+        let lyrics = parse_lrc(content);
+        let line = &lyrics.lines[0];
+        assert_eq!(lyrics.display_text(line), "Hello");
+    }
+
+    #[test]
+    fn test_display_text_inline_mode() {
+        let content = "[00:01.00]Hello\n[t:00:01.00]你好";
+        let mut lyrics = parse_lrc(content);
+        lyrics.translate_mode = TranslateMode::Inline;
+        let line = &lyrics.lines[0];
+        assert_eq!(lyrics.display_text(line), "Hello / 你好");
+    }
+
+    #[test]
+    fn test_extract_bracket_translations() {
+        let content = "[00:01.00]Hello(你好)\n[00:02.00]World";
+        let mut lyrics = parse_lrc(content);
+        lyrics.extract_bracket_translations();
+        assert_eq!(lyrics.lines[0].text, "Hello");
+        assert_eq!(lyrics.lines[0].translate, "你好");
+        // Second line has no brackets, translation stays empty
+        assert!(lyrics.lines[1].translate.is_empty());
+    }
+
+    #[test]
+    fn test_apply_offset_does_not_go_negative() {
+        let content = "[offset:-5000]\n[00:01.00]Hello";
+        let result = parse_lrc(content);
+        // 1000 - 5000 saturates to 0
+        assert_eq!(result.lines[0].time_ms, 0);
     }
 }

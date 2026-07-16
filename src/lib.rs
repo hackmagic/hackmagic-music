@@ -2,6 +2,7 @@
 //! Shared between CLI (`hm`) and GUI (`hm-gui`) binaries.
 
 #![allow(dead_code)]
+#![recursion_limit = "1024"]
 
 pub mod audio_common;
 pub mod bass;

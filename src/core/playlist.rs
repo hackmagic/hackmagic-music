@@ -521,6 +521,11 @@ impl Playlist {
         self.init_shuffle(self.current_index);
     }
 
+    /// Reverse playlist order
+    pub fn reverse(&mut self) {
+        self.tracks.reverse();
+    }
+
     /// Search tracks by keyword
     pub fn search(&self, keyword: &str) -> Vec<(usize, &Track)> {
         let kw = keyword.to_lowercase();
@@ -541,6 +546,24 @@ impl Playlist {
         let track = self.tracks.remove(from);
         self.tracks.insert(to, track);
         Ok(())
+    }
+
+    /// Toggle favourite for a track
+    pub fn toggle_favourite(&mut self, index: usize) -> bool {
+        if let Some(track) = self.tracks.get_mut(index) {
+            track.is_favourite = !track.is_favourite;
+            return track.is_favourite;
+        }
+        false
+    }
+
+    /// Set rating for a track (0-5)
+    pub fn set_rating(&mut self, index: usize, rating: u32) -> bool {
+        if let Some(track) = self.tracks.get_mut(index) {
+            track.rating = rating.min(5);
+            return true;
+        }
+        false
     }
 
     /// Remove duplicate tracks (by `file_path`)

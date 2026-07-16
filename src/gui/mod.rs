@@ -2,13 +2,16 @@ pub mod theme;
 pub mod styles;
 pub mod i18n;
 pub mod layout;
+pub mod responsive;
+pub mod desktop_lyrics;
+pub mod lyric_editor;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 use gpui::*;
 use gpui_component::{h_flex, v_flex, IconName, Root};
 use gpui_component::button::{Button, ButtonVariants};
-use gpui_component::menu::PopupMenuItem;
+use gpui_component::menu::{ContextMenuExt, PopupMenuItem};
 use gpui_component::slider::{Slider, SliderState, SliderValue};
 use i18n::{Locale, Tr};
 use theme::UiColors;
@@ -16,6 +19,7 @@ use crate::config::Config;
 use crate::core::engine_trait::EngineType;
 use crate::core::player::Player;
 use crate::core::playlist::Track;
+use responsive::{LayoutMode, ResponsiveState};
 
 static ACTIVE_PANEL: AtomicU8 = AtomicU8::new(0);
 
@@ -26,6 +30,7 @@ enum Panel {
     Search,
     FileBrowser,
     Lyrics,
+    LyricEditor,
     Settings,
 }
 
@@ -37,7 +42,8 @@ impl Panel {
             2 => Panel::MediaLib,
             3 => Panel::Search,
             4 => Panel::Lyrics,
-            5 => Panel::Settings,
+            5 => Panel::LyricEditor,
+            6 => Panel::Settings,
             _ => Panel::Playlist,
         }
     }
@@ -48,7 +54,8 @@ impl Panel {
             Panel::MediaLib => 2,
             Panel::Search => 3,
             Panel::Lyrics => 4,
-            Panel::Settings => 5,
+            Panel::LyricEditor => 5,
+            Panel::Settings => 6,
         }
     }
 }
@@ -79,12 +86,23 @@ pub struct MusicPlayer {
     tr: &'static Tr,
     title: String,
     artist: String,
+    album: String,
     position: f64,
     duration: f64,
     volume: u32,
     is_playing: bool,
+    is_muted: bool,
+    is_favourite: bool,
     maximized: bool,
     volume_slider: Entity<SliderState>,
+    responsive: ResponsiveState,
+    eq_open: bool,
+    lyric_visible: bool,
+    media_lib_open: bool,
+    lyric_state: desktop_lyrics::LyricsState,
+    last_lpc_path: String,
+    editor_state: lyric_editor::LyricEditorState,
+    show_editor: bool,
 }
 
 impl MusicPlayer {
@@ -146,12 +164,23 @@ impl MusicPlayer {
             tr,
             title: String::new(),
             artist: String::new(),
+            album: String::new(),
             position: 0.0,
             duration: 0.0,
             volume: cfg.play.default_volume,
             is_playing: false,
+            is_muted: false,
+            is_favourite: false,
             maximized: false,
             volume_slider,
+            responsive: ResponsiveState::new(1200.0, 800.0),
+            eq_open: false,
+            lyric_visible: true,
+            media_lib_open: false,
+            lyric_state: desktop_lyrics::LyricsState::new(),
+            last_lpc_path: String::new(),
+            editor_state: lyric_editor::LyricEditorState::new(),
+            show_editor: false,
         }
     }
 
@@ -161,6 +190,7 @@ impl MusicPlayer {
         self.duration = p.duration().as_secs_f64();
         self.volume = p.volume();
         self.is_playing = p.state() == crate::core::engine_trait::EngineState::Playing;
+        self.is_muted = self.volume == 0;
 
         let pl = p.playlist();
         if let Some(track) = pl.current_track() {
@@ -174,9 +204,63 @@ impl MusicPlayer {
             } else {
                 "未知艺术家".into()
             };
+            let album = if !track.album.is_empty() {
+                track.album.clone()
+            } else {
+                String::new()
+            };
             if self.title != display { self.title = display; }
             if self.artist != artist { self.artist = artist; }
+            if self.album != album { self.album = album; }
+            self.is_favourite = track.is_favourite;
+
+            // Auto-load lyrics when track changes
+            let track_path = track.file_path.clone();
+            if track_path != self.last_lpc_path {
+                self.last_lpc_path = track_path.clone();
+                self.load_lyrics_for_track(&track_path);
+            }
         }
+
+        // Update lyrics progress every frame
+        self.lyric_state.recompute((self.position * 1000.0) as u64);
+    }
+
+    /// Search for and load lyrics for the given audio file path.
+    fn load_lyrics_for_track(&mut self, audio_path: &str) {
+        if audio_path.is_empty() {
+            return;
+        }
+        let path = std::path::Path::new(audio_path);
+        let file_stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+        let parent = path.parent().unwrap_or(std::path::Path::new("."));
+
+        // Search order: sibling .lrc, then lyrics/ subdirectory
+        let sibling_lrc = parent.join(format!("{}.lrc", file_stem));
+        let sibling_lrc_lower = parent.join(format!("{}.lrc", file_stem.to_lowercase()));
+
+        let lyrics_dir = parent.join("lyrics");
+        let lyrics_dir_lrc = lyrics_dir.join(format!("{}.lrc", file_stem));
+        let lyrics_dir_lrc_lower = lyrics_dir.join(format!("{}.lrc", file_stem.to_lowercase()));
+
+        for candidate in [&sibling_lrc, &sibling_lrc_lower, &lyrics_dir_lrc, &lyrics_dir_lrc_lower] {
+            if candidate.exists() {
+                match crate::lyric::load_lyric_file(candidate.to_str().unwrap_or("")) {
+                    Ok(lyrics) => {
+                        tracing::info!("[Lyric] Loaded: {:?}", candidate);
+                        self.lyric_state.update(Some(lyrics), (self.position * 1000.0) as u64);
+                        return;
+                    }
+                    Err(e) => {
+                        tracing::warn!("[Lyric] Parse error {}: {}", candidate.display(), e);
+                    }
+                }
+            }
+        }
+
+        // No lyrics found — clear state
+        tracing::debug!("[Lyric] No lyrics found for: {}", audio_path);
+        self.lyric_state.update(None, (self.position * 1000.0) as u64);
     }
 }
 
@@ -186,6 +270,13 @@ impl Render for MusicPlayer {
         cx.notify();
         let tr = self.tr;
         let c = &self.colours;
+
+        // Update responsive state based on window size
+        let window_bounds = window.bounds();
+        let window_width: f32 = window_bounds.size.width.into();
+        let window_height: f32 = window_bounds.size.height.into();
+        self.responsive.update(window_width, window_height);
+        let layout_mode = self.responsive.mode;
 
         let pos_str = format!(
             "{:02}:{:02} / {:02}:{:02}",
@@ -207,8 +298,8 @@ impl Render for MusicPlayer {
         let player_stop = self.player.clone();
         let player_seek = self.player.clone();
         let player_repeat = self.player.clone();
-        let repeat_mode = self.player.repeat_mode();
-        let repeat_label = match repeat_mode {
+        let repeat_mode_config = self.player.repeat_mode();
+        let repeat_label = match repeat_mode_config {
             crate::core::playlist::RepeatMode::LoopPlaylist => "🔁",
             crate::core::playlist::RepeatMode::LoopTrack => "🔂",
             crate::core::playlist::RepeatMode::PlayShuffle => "🔀",
@@ -220,121 +311,226 @@ impl Render for MusicPlayer {
         let playlist_tracks = self.player.playlist().tracks().to_vec();
         let current_idx = self.player.playlist().current_index();
 
-        let sidebar = {
+        let sidebar = if layout_mode.show_sidebar() {
             let active = panel;
+            let sidebar_width = layout_mode.sidebar_width();
+            let btn_size = layout_mode.button_size();
             let make_btn = |id: &'static str, icon: IconName, p: Panel, c: &UiColors| {
                 let bg = if active == p { c.accent } else { Hsla { h: 0.0, s: 0.0, l: 0.0, a: 0.0 } };
                 Button::new(id)
                     .icon(icon)
                     .ghost()
                     .compact()
-                    .w(px(40.0)).h(px(40.0))
+                    .w(px(btn_size)).h(px(btn_size))
                     .rounded(px(8.0))
                     .bg(bg)
                     .on_click(move |_, _, _cx| {
                         ACTIVE_PANEL.store(p.to_u8(), Ordering::Relaxed);
                     })
             };
-            v_flex()
-                .items_center()
-                .w(px(52.0))
-                .h_full()
-                .py_2().gap_1()
-                .bg(c.panel)
-                .child(make_btn("queue", IconName::LayoutDashboard, Panel::Playlist, c))
-                .child(make_btn("folders", IconName::Folder, Panel::FileBrowser, c))
-                .child(make_btn("playlists", IconName::SquareTerminal, Panel::MediaLib, c))
-                .child(make_btn("recent", IconName::Calendar, Panel::Search, c))
-                .child(make_btn("media", IconName::File, Panel::Settings, c))
-                .child(div().flex_grow())
-                .child(make_btn("search", IconName::Search, Panel::Search, c))
-                .child(make_btn("lyrics", IconName::BookOpen, Panel::Lyrics, c))
+            Some(
+                v_flex()
+                    .items_center()
+                    .w(px(sidebar_width))
+                    .h_full()
+                    .py_2().gap_1()
+                    .bg(c.panel)
+                    .child(make_btn("queue", IconName::LayoutDashboard, Panel::Playlist, c))
+                    .child(make_btn("folders", IconName::Folder, Panel::FileBrowser, c))
+                    .child(make_btn("playlists", IconName::SquareTerminal, Panel::MediaLib, c))
+                    .child(make_btn("recent", IconName::Calendar, Panel::Search, c))
+                    .child(make_btn("media", IconName::File, Panel::Settings, c))
+                    .child(div().flex_grow())
+                    .child(make_btn("search", IconName::Search, Panel::Search, c))
+                    .child(make_btn("lyrics", IconName::BookOpen, Panel::Lyrics, c))
+                    .child(make_btn("lyr_edit", IconName::File, Panel::LyricEditor, c))
+            )
+        } else {
+            None
         };
 
         let content_area = div().flex_grow().h_full().child(match panel {
-            Panel::Playlist => self.render_playlist(&playlist_tracks, current_idx).into_any_element(),
+            Panel::Playlist => self.render_playlist(&playlist_tracks, current_idx, layout_mode).into_any_element(),
+            Panel::Lyrics => desktop_lyrics::render_lyrics_panel(&self.lyric_state, c).into_any_element(),
+            Panel::LyricEditor => self.render_lyric_editor_panel(c, window, cx).into_any_element(),
             _ => layout::content_area(c, tr).into_any_element(),
         });
 
-        v_flex()
-            .size_full()
-            .bg(c.bg)
-            .child(layout::title_bar(c, tr))
-            .child(self.render_menu_bar(c, tr, window, cx))
-            .child(
-                h_flex().w_full().flex_grow()
-                    .child(sidebar)
-                    .child(content_area)
-            )
-            .child(
-                v_flex()
+        let control_bar_h = layout_mode.control_bar_height();
+        let progress_h = layout_mode.progress_bar_height();
+        let title_size = layout_mode.title_font_size();
+        let artist_size = layout_mode.artist_font_size();
+        let vol_width = layout_mode.volume_slider_width();
+
+        // Build main layout with responsive adjustments
+        let mut main_layout = v_flex().size_full().bg(c.bg);
+
+        // Title bar - always shown
+        main_layout = main_layout.child(layout::title_bar(c, tr));
+
+        // Menu bar - only shown in BIG and NARROW modes
+        if layout_mode.show_menubar() {
+            main_layout = main_layout.child(self.render_menu_bar(c, tr, window, cx));
+        }
+
+        // Main content area
+        let mut content_flex = h_flex().w_full().flex_grow();
+        if let Some(sidebar_el) = sidebar {
+            content_flex = content_flex.child(sidebar_el);
+        }
+        content_flex = content_flex.child(content_area);
+        main_layout = main_layout.child(content_flex);
+
+        // Prepare button states
+        let player_mute = self.player.clone();
+
+        // Control bar at bottom
+        main_layout = main_layout.child(
+            v_flex()
+                .w_full()
+                .bg(c.control_bar_bg)
+                .child({
+                    let dur = self.duration;
+                    h_flex()
+                        .id("progress-bar")
+                        .w_full()
+                        .h(px(progress_h))
+                        .cursor(gpui::CursorStyle::PointingHand)
+                        .child(
+                            h_flex().w_full().h_full()
+                                .bg(c.progress_track)
+                                .child(
+                                    div()
+                                        .h_full()
+                                        .w(DefiniteLength::Fraction(seek_pct / 100.0))
+                                        .bg(c.accent),
+                                ),
+                        )
+                        .on_mouse_down(gpui::MouseButton::Left, move |e, window, _cx| {
+                            let win_bounds = window.bounds();
+                            let total_w: f32 = win_bounds.size.width.into();
+                            let padding: f32 = 32.0;
+                            let bar_w = total_w - padding;
+                            if bar_w > 0.0 {
+                                let mouse_x: f32 = e.position.x.into();
+                                let ratio = ((mouse_x - padding / 2.0) / bar_w).clamp(0.0, 1.0);
+                                let seek_to = dur * ratio as f64;
+                                let _ = player_seek.seek(std::time::Duration::from_secs_f64(seek_to));
+                            }
+                        })
+                })
+                .child(
+                    h_flex()
+                        .items_center()
+                        .w_full()
+                        .px_4().gap_4()
+                        .h(px(control_bar_h))
+                        // Left: playback controls
+                        .child(
+                            h_flex().items_center().gap_3()
+                                .child(Button::new("prev").icon(IconName::ChevronLeft).ghost().compact().on_click(move |_, _, _| { let _ = player_prev.prev(); }))
+                                .child(Button::new("play").label(play_label).primary().compact().on_click(move |_, _, _| { let _ = player_play.toggle_pause(); }))
+                                .child(Button::new("next").icon(IconName::ChevronRight).ghost().compact().on_click(move |_, _, _| { let _ = player_next.next(); }))
+                                .child(Button::new("repeat").label(repeat_label).ghost().compact().on_click(move |_, _, _| {
+                                    use crate::core::playlist::RepeatMode;
+                                    let modes = [RepeatMode::PlayOrder, RepeatMode::LoopPlaylist, RepeatMode::LoopTrack, RepeatMode::PlayShuffle, RepeatMode::PlayRandom];
+                                    let current = player_repeat.repeat_mode();
+                                    let idx = modes.iter().position(|m| *m == current).unwrap_or(0);
+                                    let next = modes[(idx + 1) % modes.len()];
+                                    player_repeat.set_repeat_mode(next);
+                                }))
+                                .child(Button::new("stop").label("⏹").ghost().compact().on_click(move |_, _, _| { let _ = player_stop.stop(); })),
+                        )
+                        // Center: track info
+                        .child(
+                            v_flex().flex_grow().gap_1()
+                                .child(crate::gui::layout::txt(&self.title, title_size, c.text_title))
+                                .child(crate::gui::layout::txt(&self.artist, artist_size, c.text_dim)),
+                        )
+                        // Right: extra buttons and controls
+                        .child(
+                            h_flex().items_center().gap_2()
+                                .child(layout::txt(&pos_str, artist_size, c.text_dim))
+                                .child(if !speed_str.is_empty() { layout::txt(&speed_str, 10.0, c.accent) } else { layout::txt("", 10.0, c.text_dim) })
+                                // Mute button
+                                .child(Button::new("mute").label(if self.is_muted { "X" } else { "V" }).ghost().compact().on_click(move |_, _, _| {
+                                    let vol = player_mute.volume();
+                                    if vol > 0 {
+                                        let _ = player_mute.set_volume(0);
+                                    } else {
+                                        let _ = player_mute.set_volume(80);
+                                    }
+                                }))
+                                // Volume slider
+                                .child(Slider::new(&self.volume_slider).horizontal().w(px(vol_width)))
+                                // Favourite button
+                                .child(Button::new("favourite").label(if self.is_favourite { "♥" } else { "♡" }).ghost().compact())
+                                // Lyrics toggle button
+                                .child(Button::new("lyric_btn").icon(IconName::BookOpen).ghost().compact())
+                                // Settings button
+                                .child(Button::new("settings_btn").icon(IconName::Settings).ghost().compact())
+                                // Equalizer button (using Settings icon as fallback)
+                                .child(Button::new("eq_btn").label("EQ").ghost().compact()),
+                        ),
+                ),
+        );
+
+        // Extra toolbar row for BIG mode (favourite, playlist ops, media library, etc.)
+        if matches!(layout_mode, LayoutMode::Big) {
+            let track_count = playlist_tracks.len();
+            let total_dur = self.player.playlist().total_duration_str();
+            main_layout = main_layout.child(
+                h_flex()
+                    .items_center()
                     .w_full()
+                    .h(px(28.0))
+                    .px_4().gap_3()
                     .bg(c.control_bar_bg)
-                    .child({
-                        let dur = self.duration;
-                        h_flex()
-                            .id("progress-bar")
-                            .w_full()
-                            .h(px(theme::PROGRESS_BAR_HEIGHT))
-                            .cursor(gpui::CursorStyle::PointingHand)
-                            .child(
-                                h_flex().w_full().h_full()
-                                    .bg(c.progress_track)
-                                    .child(
-                                        div()
-                                            .h_full()
-                                            .w(DefiniteLength::Fraction(seek_pct / 100.0))
-                                            .bg(c.accent),
-                                    ),
-                            )
-                            .on_mouse_down(gpui::MouseButton::Left, move |e, window, _cx| {
-                                let win_bounds = window.bounds();
-                                let total_w: f32 = win_bounds.size.width.into();
-                                let padding: f32 = 32.0;
-                                let bar_w = total_w - padding;
-                                if bar_w > 0.0 {
-                                    let mouse_x: f32 = e.position.x.into();
-                                    let ratio = ((mouse_x - padding / 2.0) / bar_w).clamp(0.0, 1.0);
-                                    let seek_to = dur * ratio as f64;
-                                    let _ = player_seek.seek(std::time::Duration::from_secs_f64(seek_to));
-                                }
-                            })
-                    })
-                    .child(
-                        h_flex()
-                            .items_center()
-                            .w_full()
-                            .px_4().gap_4()
-                            .h(px(theme::CONTROL_BAR_HEIGHT))
-                            .child(
-                                h_flex().items_center().gap_3()
-                                    .child(Button::new("prev").icon(IconName::ChevronLeft).ghost().compact().on_click(move |_, _, _| { let _ = player_prev.prev(); }))
-                                    .child(Button::new("play").label(play_label).primary().compact().on_click(move |_, _, _| { let _ = player_play.toggle_pause(); }))
-                                    .child(Button::new("next").icon(IconName::ChevronRight).ghost().compact().on_click(move |_, _, _| { let _ = player_next.next(); }))
-                                    .child(Button::new("repeat").label(repeat_label).ghost().compact().on_click(move |_, _, _| {
-                                        use crate::core::playlist::RepeatMode;
-                                        let modes = [RepeatMode::PlayOrder, RepeatMode::LoopPlaylist, RepeatMode::LoopTrack, RepeatMode::PlayShuffle, RepeatMode::PlayRandom];
-                                        let current = player_repeat.repeat_mode();
-                                        let idx = modes.iter().position(|m| *m == current).unwrap_or(0);
-                                        let next = modes[(idx + 1) % modes.len()];
-                                        player_repeat.set_repeat_mode(next);
-                                    })),
-                            )
-                            .child(
-                                v_flex().flex_grow().gap_1()
-                                    .child(crate::gui::layout::txt(&self.title, 13.0, c.text_title))
-                                    .child(crate::gui::layout::txt(&self.artist, 11.0, c.text_dim)),
-                            )
-                            .child(
-                                h_flex().items_center().gap_2()
-                                    .child(layout::txt(&pos_str, 11.0, c.text_dim))
-                                    .child(if !speed_str.is_empty() { layout::txt(&speed_str, 10.0, c.accent) } else { layout::txt("", 10.0, c.text_dim) })
-                                    .child(Button::new("stop").label("⏹").ghost().compact().on_click(move |_, _, _| { let _ = player_stop.stop(); }))
-                                    .child(Slider::new(&self.volume_slider).horizontal().w(px(96.0))),
-                            ),
-                    ),
-            )
-            .child(layout::status_bar(c, tr))
+                    .child(Button::new("media_lib_btn").icon(IconName::Folder).ghost().compact().label("媒体库"))
+                    .child(Button::new("add_files_btn").icon(IconName::Plus).ghost().compact().label("添加"))
+                    .child(Button::new("save_pl_btn").icon(IconName::File).ghost().compact().label("保存"))
+                    .child(div().flex_grow())
+                    .child(layout::txt(&format!("{} 首 | {}", track_count, total_dur), 10.0, c.text_dim))
+            );
+        }
+
+        // Status bar - only shown in BIG mode
+        if layout_mode.show_statusbar() {
+            let track_count = playlist_tracks.len();
+            let total_dur = self.player.playlist().total_duration_str();
+            let repeat_desc = self.player.repeat_mode().description();
+            let engine_name = self.player.engine_name();
+            let file_type = if let Some(track) = self.player.playlist().current_track() {
+                if !track.file_type.is_empty() {
+                    track.file_type.clone()
+                } else {
+                    "unknown".to_string()
+                }
+            } else {
+                "--".to_string()
+            };
+            main_layout = main_layout.child(
+                h_flex()
+                    .items_center()
+                    .w_full()
+                    .h(px(theme::STATUSBAR_HEIGHT))
+                    .px_3().gap_4()
+                    .bg(c.statusbar_bg)
+                    .child(layout::txt(&format!("� {} 首", track_count), 10.0, c.text_dim))
+                    .child(div().w(px(1.0)).h(px(12.0)).bg(c.border))
+                    .child(layout::txt(&format!("� {}", total_dur), 10.0, c.text_dim))
+                    .child(div().w(px(1.0)).h(px(12.0)).bg(c.border))
+                    .child(layout::txt(&format!("� {}", file_type), 10.0, c.text_dim))
+                    .child(div().w(px(1.0)).h(px(12.0)).bg(c.border))
+                    .child(layout::txt(&format!("� {}", repeat_desc), 10.0, c.text_dim))
+                    .child(div().w(px(1.0)).h(px(12.0)).bg(c.border))
+                    .child(layout::txt(&format!("⚙ {}", engine_name), 10.0, c.text_dim))
+                    .child(div().flex_grow())
+                    .child(layout::txt("HackMagic Music Player v1.0", 10.0, c.text_dim))
+            );
+        }
+
+        main_layout
     }
 }
 
@@ -346,25 +542,32 @@ impl MusicPlayer {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        // Copy i18n strings to satisfy 'static lifetime for closures
+        let s_open_file = tr.menu_open_file;
+        let s_open_folder = tr.menu_open_folder;
+        let s_open_url = tr.menu_open_url;
+        let s_exit = tr.menu_exit;
+
         h_flex()
             .items_center()
             .w_full()
             .h(px(theme::MENUBAR_HEIGHT))
             .px_2().gap_1()
             .bg(c.control_bar_bg)
+            // File menu
             .child({
                 let player = self.player.clone();
                 layout::menu_dropdown(tr.menu_file, IconName::Folder, move |menu, _w, _cx| {
                     let p = player.clone();
-                    menu.item(PopupMenuItem::new("打开文件").on_click(move |_, _, _| {
+                    menu.item(PopupMenuItem::new(s_open_file).on_click(move |_, _, _| {
                         if let Some(path) = rfd::FileDialog::new()
-                            .add_filter("音频文件", &["mp3", "flac", "wav", "ogg", "aac", "m4a", "wma", "ape"])
+                            .add_filter("音频文件", &["mp3", "flac", "wav", "ogg", "aac", "m4a", "wma", "ape", "cue"])
                             .pick_file()
                         {
                             let _ = p.play_file(path.to_str().unwrap_or_default());
                         }
                     }))
-                    .item(PopupMenuItem::new("打开文件夹").on_click({
+                    .item(PopupMenuItem::new(s_open_folder).on_click({
                         let p = player.clone();
                         move |_, _, _| {
                             if let Some(folder) = rfd::FileDialog::new().pick_folder() {
@@ -384,10 +587,19 @@ impl MusicPlayer {
                             }
                         }
                     }))
+                    .item(PopupMenuItem::new(s_open_url).on_click({
+                        let p = player.clone();
+                        move |_, _, _| {
+                            if let Some(path) = rfd::FileDialog::new().pick_file() {
+                                let _ = p.play_file(path.to_str().unwrap_or_default());
+                            }
+                        }
+                    }))
                     .separator()
-                    .item(PopupMenuItem::new("退出").on_click(|_, _, _| std::process::exit(0)))
+                    .item(PopupMenuItem::new(s_exit).on_click(|_, _, _| std::process::exit(0)))
                 })
             })
+            // Playback menu
             .child({
                 let player = self.player.clone();
                 layout::menu_dropdown(tr.menu_playback, IconName::ChevronRight, move |menu, _w, _cx| {
@@ -404,11 +616,23 @@ impl MusicPlayer {
                     let p11 = player.clone();
                     let p12 = player.clone();
                     let p13 = player.clone();
-                    let _p14 = player.clone();
+                    let p14 = player.clone();
                     menu.item(PopupMenuItem::new("播放/暂停").on_click(move |_, _, _| { let _ = p1.toggle_pause(); }))
                         .item(PopupMenuItem::new("停止").on_click(move |_, _, _| { let _ = p2.stop(); }))
                         .item(PopupMenuItem::new("上一曲").on_click(move |_, _, _| { let _ = p3.prev(); }))
                         .item(PopupMenuItem::new("下一曲").on_click(move |_, _, _| { let _ = p4.next(); }))
+                        .separator()
+                        .item(PopupMenuItem::new("快退5秒").on_click({
+                            let p = p14.clone();
+                            move |_, _, _| {
+                                let pos = p.position();
+                                let _ = p.seek(std::time::Duration::from_secs_f64((pos.as_secs_f64() - 5.0).max(0.0)));
+                            }
+                        }))
+                        .item(PopupMenuItem::new("快进5秒").on_click(move |_, _, _| {
+                            let pos = p14.position();
+                            let _ = p14.seek(std::time::Duration::from_secs_f64(pos.as_secs_f64() + 5.0));
+                        }))
                         .separator()
                         .item(PopupMenuItem::new("加速").on_click(move |_, _, _| { let _ = p5.speed_up(); }))
                         .item(PopupMenuItem::new("减速").on_click(move |_, _, _| { let _ = p6.speed_down(); }))
@@ -423,43 +647,618 @@ impl MusicPlayer {
                         .item(PopupMenuItem::new("清除 AB 循环").on_click(move |_, _, _| { p13.ab_reset(); }))
                 })
             })
-            .child(layout::menu_dropdown(tr.menu_playlist, IconName::SquareTerminal, |menu, _, _| {
-                menu.item(PopupMenuItem::new("添加").on_click(|_, _, _| {}))
-                    .item(PopupMenuItem::new("删除").on_click(|_, _, _| {}))
+            // Playlist menu
+            .child({
+                let player = self.player.clone();
+                layout::menu_dropdown(tr.menu_playlist, IconName::SquareTerminal, move |menu, _, _| {
+                    let p1 = player.clone();
+                    let p2 = player.clone();
+                    let p3 = player.clone();
+                    menu.item(PopupMenuItem::new("添加文件").on_click(move |_, _, _| {
+                        if let Some(paths) = rfd::FileDialog::new()
+                            .add_filter("音频文件", &["mp3", "flac", "wav", "ogg", "aac", "m4a", "wma", "ape"])
+                            .pick_files()
+                        {
+                            let mut pl = p1.playlist_mut();
+                            for path in &paths {
+                                pl.add_track(crate::core::playlist::Track::new(path.to_str().unwrap_or_default()));
+                            }
+                        }
+                    }))
+                    .item(PopupMenuItem::new("添加文件夹").on_click(move |_, _, _| {
+                        if let Some(folder) = rfd::FileDialog::new().pick_folder() {
+                            if let Ok(entries) = crate::media::scan_directory(folder.to_str().unwrap_or_default(), true, None) {
+                                let mut pl = p2.playlist_mut();
+                                for e in entries {
+                                    pl.add_track(crate::core::playlist::Track::new(&e.file_path));
+                                }
+                            }
+                        }
+                    }))
+                    .item(PopupMenuItem::new("删除选中").on_click(move |_, _, _| {
+                        // Placeholder: would need selection tracking
+                        tracing::info!("Delete selected tracks");
+                    }))
+                    .item(PopupMenuItem::new("清空播放列表").on_click(move |_, _, _| {
+                        p3.playlist_mut().clear();
+                    }))
                     .separator()
-                    .item(PopupMenuItem::new("另存为新播放列表").on_click(|_, _, _| {}))
-            }))
-            .child(layout::menu_dropdown(tr.menu_lyric, IconName::BookOpen, |menu, _, _| {
-                menu.item(PopupMenuItem::new("重新加载歌词").on_click(|_, _, _| {}))
-                    .item(PopupMenuItem::new("编辑歌词").on_click(|_, _, _| {}))
+                    .item(PopupMenuItem::new("移除重复").on_click({
+                        let p = player.clone();
+                        move |_, _, _| {
+                            let removed = p.playlist_mut().dedup();
+                            tracing::info!("Removed {} duplicate tracks", removed);
+                        }
+                    }))
+                    .item(PopupMenuItem::new("移除失效文件").on_click({
+                        let p = player.clone();
+                        move |_, _, _| {
+                            let removed = p.playlist_mut().clean();
+                            tracing::info!("Removed {} missing tracks", removed);
+                        }
+                    }))
                     .separator()
-                    .item(PopupMenuItem::new("显示桌面歌词").on_click(|_, _, _| {}))
-            }))
-            .child(layout::menu_dropdown(tr.menu_view, IconName::LayoutDashboard, |menu, _, _| {
-                menu.item(PopupMenuItem::new("显示播放列表").on_click(|_, _, _| {}))
+                    .item(PopupMenuItem::new("保存播放列表").on_click({
+                        let p = player.clone();
+                        move |_, _, _| {
+                            if let Err(e) = p.save_current_playlist() {
+                                tracing::warn!("Save playlist failed: {}", e);
+                            }
+                        }
+                    }))
+                    .item(PopupMenuItem::new("另存为新播放列表").on_click(move |_, _, _| {
+                        // Would need dialog for name input
+                        tracing::info!("Save as new playlist");
+                    }))
                     .separator()
-                    .item(PopupMenuItem::new("深色模式").on_click(|_, _, _| {}))
-            }))
-            .child(layout::menu_dropdown(tr.menu_tools, IconName::Settings, |menu, _, _| {
-                menu.item(PopupMenuItem::new("媒体库").on_click(|_, _, _| {}))
-                    .item(PopupMenuItem::new("均衡器").on_click(|_, _, _| {}))
+                    // Sort submenu
+                    .item(PopupMenuItem::new("排序").on_click({
+                        let p = player.clone();
+                        move |_, _, _| {
+                            // Default sort by title ascending
+                            p.playlist_mut().sort(crate::core::playlist::SortMode::Title, false);
+                            tracing::info!("Playlist sorted by title");
+                        }
+                    }))
+                    .item(PopupMenuItem::new("按艺术家排序").on_click({
+                        let p = player.clone();
+                        move |_, _, _| {
+                            p.playlist_mut().sort(crate::core::playlist::SortMode::Artist, false);
+                            tracing::info!("Playlist sorted by artist");
+                        }
+                    }))
+                    .item(PopupMenuItem::new("按专辑排序").on_click({
+                        let p = player.clone();
+                        move |_, _, _| {
+                            p.playlist_mut().sort(crate::core::playlist::SortMode::Album, false);
+                            tracing::info!("Playlist sorted by album");
+                        }
+                    }))
+                    .item(PopupMenuItem::new("按时长排序").on_click({
+                        let p = player.clone();
+                        move |_, _, _| {
+                            p.playlist_mut().sort(crate::core::playlist::SortMode::Time, false);
+                            tracing::info!("Playlist sorted by duration");
+                        }
+                    }))
+                    .item(PopupMenuItem::new("按文件名排序").on_click({
+                        let p = player.clone();
+                        move |_, _, _| {
+                            p.playlist_mut().sort(crate::core::playlist::SortMode::FileName, false);
+                            tracing::info!("Playlist sorted by filename");
+                        }
+                    }))
+                    .item(PopupMenuItem::new("随机排序").on_click({
+                        let p = player.clone();
+                        move |_, _, _| {
+                            p.playlist_mut().sort(crate::core::playlist::SortMode::Random, false);
+                            tracing::info!("Playlist shuffled");
+                        }
+                    }))
+                    .item(PopupMenuItem::new("倒序排列").on_click({
+                        let p = player.clone();
+                        move |_, _, _| {
+                            p.playlist_mut().reverse();
+                            tracing::info!("Playlist reversed");
+                        }
+                    }))
+                })
+            })
+            // Lyric menu
+            .child({
+                let player = self.player.clone();
+                let s_lyric_label = tr.menu_lyric;
+                let s_reload_lyric = tr.menu_reload_lyric;
+                let s_copy_line = tr.menu_copy_current_line;
+                let s_copy_all = tr.menu_copy_all_lyric;
+                let s_edit_lyric = tr.menu_edit_lyric;
+                let s_download_lyric = tr.menu_download_lyric;
+                let s_batch_download = tr.menu_batch_download_lyric;
+                let s_show_trans = tr.menu_show_translation;
+                let s_show_desktop = tr.menu_show_desktop_lyric;
+                layout::menu_dropdown(s_lyric_label, IconName::BookOpen, move |menu, _, _| {
+                    let p1 = player.clone();
+                    let p2 = player.clone();
+                    let p3 = player.clone();
+                    menu.item(PopupMenuItem::new(s_reload_lyric).on_click(move |_, _, _| {
+                        // Reload lyrics: search for .lrc file in same directory as current track
+                        if let Some(track) = p1.playlist().current_track() {
+                            let path = std::path::Path::new(&track.file_path);
+                            if let Some(parent) = path.parent() {
+                                let stem = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+                                let lrc_path = parent.join(format!("{}.lrc", stem));
+                                if lrc_path.exists() {
+                                    match crate::lyric::parser::load_lyric_file(lrc_path.to_str().unwrap_or_default()) {
+                                        Ok(lyrics) => {
+                                            tracing::info!("Reloaded lyrics: {} lines", lyrics.len());
+                                            // In a real implementation, would update UI state with new lyrics
+                                        }
+                                        Err(e) => tracing::warn!("Failed to reload lyrics: {}", e),
+                                    }
+                                } else {
+                                    tracing::info!("No lyric file found at {:?}", lrc_path);
+                                }
+                            }
+                        }
+                    }))
+                    .item(PopupMenuItem::new(s_copy_line).on_click(move |_, _, _| {
+                        // Copy current lyric line to clipboard
+                        if let Some(_track) = p2.playlist().current_track() {
+                            // Would need to get lyrics state and current position
+                            let pos_ms = (p2.position().as_secs_f64() * 1000.0) as u64;
+                            tracing::info!("Copy current lyric at position {}ms", pos_ms);
+                            // In real implementation, would use arboard or similar to set clipboard
+                        }
+                    }))
+                    .item(PopupMenuItem::new(s_copy_all).on_click(move |_, _, _| {
+                        tracing::info!("Copy all lyrics to clipboard");
+                    }))
+                    .item(PopupMenuItem::new(s_edit_lyric).on_click(move |_, _, _| {
+                        // Open lyric editor - would launch external editor or embedded editor
+                        if let Some(track) = p3.playlist().current_track() {
+                            let path = std::path::Path::new(&track.file_path);
+                            if let Some(parent) = path.parent() {
+                                let stem = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+                                let lrc_path = parent.join(format!("{}.lrc", stem));
+                                let path_str = lrc_path.to_string_lossy().to_string();
+                                tracing::info!("Opening lyric editor for: {}", path_str);
+                                // Would open editor window here
+                                #[cfg(windows)]
+                                {
+                                    let _ = std::process::Command::new("notepad").arg(&path_str).spawn();
+                                }
+                                #[cfg(not(windows))]
+                                {
+                                    let _ = std::process::Command::new("xdg-open").arg(&path_str).spawn();
+                                }
+                            }
+                        }
+                    }))
+                    .item(PopupMenuItem::new(s_download_lyric).on_click(move |_, _, _| {
+                        tracing::info!("Search and download lyrics online");
+                        // Would integrate with online lyric download (netease/qq music APIs)
+                    }))
+                    .item(PopupMenuItem::new(s_batch_download).on_click(move |_, _, _| {
+                        tracing::info!("Batch download lyrics for all tracks");
+                    }))
                     .separator()
-                    .item(PopupMenuItem::new("选项设置").on_click(|_, _, _| {}))
-            }))
-            .child(layout::menu_dropdown(tr.menu_help, IconName::Info, |menu, _, _| {
-                menu.item(PopupMenuItem::new("帮助 (F1)").on_click(|_, _, _| {}))
+                    .item(PopupMenuItem::new(s_show_trans).on_click(|_, _, _| {
+                        tracing::info!("Toggle lyric translation display");
+                    }))
+                    .item(PopupMenuItem::new(s_show_desktop).on_click(|_, _, _| {
+                        tracing::info!("Toggle desktop lyrics window");
+                        // Would toggle desktop lyrics overlay
+                    }))
+                    .item(PopupMenuItem::new("桌面歌词锁定").on_click(|_, _, _| {
+                        tracing::info!("Lock/unlock desktop lyrics position");
+                    }))
                     .separator()
-                    .item(PopupMenuItem::new("关于").on_click(|_, _, _| {}))
-            }))
+                    .item(PopupMenuItem::new("歌词前进0.5秒").on_click(|_, _, _| {
+                        tracing::info!("Shift lyrics forward 0.5s");
+                    }))
+                    .item(PopupMenuItem::new("歌词后退0.5秒").on_click(|_, _, _| {
+                        tracing::info!("Shift lyrics backward 0.5s");
+                    }))
+                })
+            })
+            // View menu
+            .child({
+                let s_view_label = tr.menu_view;
+                let s_toggle_playlist = tr.menu_toggle_playlist;
+                let s_float_playlist = tr.menu_float_playlist;
+                let s_toggle_menubar = tr.menu_toggle_menubar;
+                let s_toggle_statusbar = tr.menu_toggle_statusbar;
+                let s_mini_mode = tr.menu_mini_mode;
+                let s_fullscreen = tr.menu_fullscreen;
+                let s_toggle_dark = tr.menu_toggle_dark_mode;
+                let s_always_on_top = tr.menu_always_on_top;
+                layout::menu_dropdown(s_view_label, IconName::LayoutDashboard, move |menu, _, _| {
+                let cfg = crate::config::Config::load();
+                let dark_mode = cfg.appearance.dark_mode;
+                menu.item(PopupMenuItem::new(s_toggle_playlist).on_click(|_, _, _| {
+                    ACTIVE_PANEL.store(0, Ordering::Relaxed);
+                }))
+                .item(PopupMenuItem::new(s_float_playlist).on_click(|_, _, _| {
+                    tracing::info!("Toggle floating playlist window");
+                }))
+                .item(PopupMenuItem::new(s_toggle_menubar).on_click(|_, _, _| {
+                    tracing::info!("Toggle menu bar visibility (BIG/NARROW modes only)");
+                }))
+                .item(PopupMenuItem::new(s_toggle_statusbar).on_click(|_, _, _| {
+                    tracing::info!("Toggle status bar visibility (BIG mode only)");
+                }))
+                .separator()
+                .item(PopupMenuItem::new(s_mini_mode).on_click(|_, _, _| {
+                    tracing::info!("Switch to Mini Mode window");
+                    // Would create mini mode popup window
+                }))
+                .item(PopupMenuItem::new(s_fullscreen).on_click(|_, _, _| {
+                    tracing::info!("Toggle fullscreen mode");
+                }))
+                .separator()
+                .item(PopupMenuItem::new(if dark_mode { "浅色模式" } else { s_toggle_dark }).on_click(|_, _, _| {
+                    // Toggle dark mode in config and reload
+                    let mut cfg = crate::config::Config::load();
+                    cfg.appearance.dark_mode = !cfg.appearance.dark_mode;
+                    let _ = cfg.save();
+                    tracing::info!("Dark mode toggled to: {}", cfg.appearance.dark_mode);
+                    // In real implementation, would trigger UI reload/repaint
+                }))
+                .item(PopupMenuItem::new("切换主题颜色").on_click(|_, _, _| {
+                    // Cycle through theme colors: Default -> Ocean -> Forest -> Lavender -> Default
+                    let mut cfg = crate::config::Config::load();
+                    cfg.appearance.theme = match cfg.appearance.theme.as_str() {
+                        "ocean" => "forest".to_string(),
+                        "forest" => "lavender".to_string(),
+                        "lavender" => "default".to_string(),
+                        _ => "ocean".to_string(),
+                    };
+                    let _ = cfg.save();
+                    tracing::info!("Theme switched to: {}", cfg.appearance.theme);
+                }))
+                .item(PopupMenuItem::new(s_always_on_top).on_click(|_, _, _| {
+                    tracing::info!("Toggle always on top");
+                }))
+                })
+            })
+            // Tools menu
+            .child({
+                let player = self.player.clone();
+                let s_tools_label = tr.menu_tools;
+                let s_media_lib = tr.media_lib_title;
+                let s_find = tr.menu_find;
+                let s_equalizer = tr.menu_equalizer;
+                let s_settings = tr.menu_settings;
+                layout::menu_dropdown(s_tools_label, IconName::Settings, move |menu, _, _| {
+                let player_eq = player.clone();
+                menu.item(PopupMenuItem::new(s_media_lib).on_click(|_, _, _| {
+                    ACTIVE_PANEL.store(2, Ordering::Relaxed);
+                }))
+                .item(PopupMenuItem::new(s_find).on_click(|_, _, _| {
+                    ACTIVE_PANEL.store(3, Ordering::Relaxed);
+                }))
+                .item(PopupMenuItem::new("探索文件路径").on_click(|_, _, _| {
+                    ACTIVE_PANEL.store(1, Ordering::Relaxed);
+                }))
+                .item(PopupMenuItem::new("歌曲信息").on_click(move |_, _, _| {
+                    if let Some(track) = player_eq.playlist().current_track() {
+                        tracing::info!("Track info: {} - {} ({})", track.title, track.artist, track.album);
+                        // Would show property dialog
+                    }
+                }))
+                .item(PopupMenuItem::new(s_equalizer).on_click(|_, _, _| {
+                    tracing::info!("Open equalizer dialog");
+                    // Would show equalizer overlay/dialog
+                }))
+                .item(PopupMenuItem::new("格式转换").on_click(|_, _, _| {
+                    tracing::info!("Open format converter");
+                    // Would show format conversion dialog
+                }))
+                .item(PopupMenuItem::new("定时停止").on_click(|_, _, _| {
+                    tracing::info!("Set sleep timer - stop playback after configured duration");
+                    // Would start a timer thread that stops playback
+                }))
+                .item(PopupMenuItem::new("文件关联").on_click(|_, _, _| {
+                    tracing::info!("Open file association settings");
+                }))
+                .separator()
+                .item(PopupMenuItem::new(s_settings).on_click(|_, _, _| {
+                    ACTIVE_PANEL.store(5, Ordering::Relaxed);
+                }))
+                })
+            })
+            // Help menu
+            .child({
+                let s_help_label = tr.menu_help;
+                let s_help_content = tr.menu_help_content;
+                let s_about = tr.menu_about;
+                layout::menu_dropdown(s_help_label, IconName::Info, move |menu, _, _| {
+                menu.item(PopupMenuItem::new(s_help_content).on_click(|_, _, _| {
+                    tracing::info!("Open local help documentation");
+                    #[cfg(windows)]
+                    let _ = std::process::Command::new("cmd").args(&["/c", "start", "https://github.com/zhongyang219/MusicPlayer2/wiki"]).spawn();
+                    #[cfg(target_os = "macos")]
+                    let _ = std::process::Command::new("open").arg("https://github.com/zhongyang219/MusicPlayer2/wiki").spawn();
+                    #[cfg(all(not(windows), not(target_os = "macos")))]
+                    let _ = std::process::Command::new("xdg-open").arg("https://github.com/zhongyang219/MusicPlayer2/wiki").spawn();
+                }))
+                .item(PopupMenuItem::new("在线帮助").on_click(|_, _, _| {
+                    tracing::info!("Opening online help");
+                    #[cfg(windows)]
+                    let _ = std::process::Command::new("cmd").args(&["/c", "start", "https://github.com/zhongyang219/MusicPlayer2"]).spawn();
+                    #[cfg(not(windows))]
+                    let _ = std::process::Command::new("xdg-open").arg("https://github.com/zhongyang219/MusicPlayer2").spawn();
+                }))
+                .item(PopupMenuItem::new("检查更新").on_click(|_, _, _| {
+                    tracing::info!("Check for updates from GitHub releases");
+                    // Would fetch latest release info from GitHub API
+                }))
+                .separator()
+                .item(PopupMenuItem::new("支持的格式").on_click(|_, _, _| {
+                    let formats = crate::audio_common::supported_extensions();
+                    tracing::info!("Supported formats: {:?}", formats);
+                }))
+                .item(PopupMenuItem::new(s_about).on_click(|_, _, _| {
+                    tracing::info!("About HackMagic Music Player v1.0.0");
+                    tracing::info!("Based on MusicPlayer2 by zhongyang219");
+                    tracing::info!("Rewritten in Rust with GPUI");
+                    // Would show about dialog with version info
+                }))
+                })
+            })
+    }
+
+    /// Render the lyric editor panel.
+    fn render_lyric_editor_panel(
+        &self,
+        c: &UiColors,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let state = &self.editor_state;
+        let row_count = state.rows.len();
+        let dirty_marker = if state.dirty { " *" } else { "" };
+
+        let mut children: Vec<gpui::AnyElement> = Vec::new();
+
+        // === Toolbar ===
+        let save_label = format!("💾 保存{}", dirty_marker);
+        let toolbar = h_flex()
+            .w_full()
+            .px_3().py_2()
+            .gap_2()
+            .bg(c.control_bar_bg)
+            .items_center()
+            .child(Button::new("lyr_save").label(&save_label).compact().primary()
+                .on_click(|_, _, _| {
+                    tracing::info!("[LyricEditor] 保存功能待实现");
+                }))
+            .child(Button::new("lyr_save_as").label("另存为...").compact()
+                .on_click(|_, _, _| {
+                    tracing::info!("[LyricEditor] 另存为功能待实现");
+                }))
+            .child(Button::new("lyr_open").label("� 打开").compact()
+                .on_click(|_, _, _| {
+                    tracing::info!("[LyricEditor] 打开文件功能待实现");
+                }))
+            .child(div().w(px(1.0)).h(px(16.0)).bg(c.divider))
+            .child(Button::new("lyr_add").label("➕ 插入行").compact()
+                .on_click(|_, _, _| {
+                    tracing::info!("[LyricEditor] 插入行功能待实现");
+                }))
+            .child(Button::new("lyr_delete").label("� 删除行").compact()
+                .on_click(|_, _, _| {
+                    tracing::info!("[LyricEditor] 删除行功能待实现");
+                }))
+            .child(div().w(px(1.0)).h(px(16.0)).bg(c.divider))
+            .child(Button::new("lyr_back_500").label("� -500ms").compact()
+                .on_click(|_, _, _| {
+                    tracing::info!("[LyricEditor] -500ms 调整功能待实现");
+                }))
+            .child(Button::new("lyr_back_100").label("� -100ms").compact()
+                .on_click(|_, _, _| {
+                    tracing::info!("[LyricEditor] -100ms 调整功能待实现");
+                }))
+            .child(Button::new("lyr_fwd_100").label("▶ +100ms").compact()
+                .on_click(|_, _, _| {
+                    tracing::info!("[LyricEditor] +100ms 调整功能待实现");
+                }))
+            .child(Button::new("lyr_fwd_500").label("⏩ +500ms").compact()
+                .on_click(|_, _, _| {
+                    tracing::info!("[LyricEditor] +500ms 调整功能待实现");
+                }))
+            .child(div().w(px(1.0)).h(px(16.0)).bg(c.divider))
+            .child(Button::new("lyr_shift_all").label("� 全部偏移").compact()
+                .on_click(|_, _, _| {
+                    tracing::info!("[LyricEditor] 全部偏移功能待实现");
+                }))
+            .child(div().flex_grow())
+            .child(
+                div()
+                    .text_size(px(10.0))
+                    .text_color(c.text_dim)
+                    .child(format!("{} 行{}", row_count, dirty_marker))
+            )
+            .into_any_element();
+        children.push(toolbar);
+
+        // === File path display ===
+        if !state.file_path.is_empty() {
+            children.push(
+                h_flex()
+                    .w_full()
+                    .px_3().py_1()
+                    .bg(c.panel_alt)
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_size(px(10.0))
+                            .text_color(c.text_dim)
+                            .flex_grow()
+                            .child(state.file_path.clone())
+                    )
+                    .child(
+                        div()
+                            .text_size(px(9.0))
+                            .text_color(if state.dirty { c.accent } else { c.text_dim })
+                            .child(if state.dirty { "● 未保存" } else { "✓ 已保存" })
+                    )
+                    .into_any_element()
+            );
+        }
+
+        // === Lyrics list ===
+        if state.rows.is_empty() {
+            children.push(
+                v_flex()
+                    .flex_grow()
+                    .size_full()
+                    .justify_center()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_size(px(14.0))
+                            .text_color(c.text_dim)
+                            .child("� 歌词编辑器为空")
+                    )
+                    .child(
+                        div()
+                            .text_size(px(11.0))
+                            .text_color(c.text_dim)
+                            .child("打开 LRC 文件或从当前曲目加载歌词")
+                    )
+                    .child(
+                        div()
+                            .mt_2()
+                            .text_size(px(10.0))
+                            .text_color(c.text_dim)
+                            .child("提示：选中的行可以使用时间偏移按钮调整时序")
+                    )
+                    .into_any_element()
+            );
+        } else {
+            let mut list = v_flex().w_full().flex_grow();
+
+            for (i, row) in state.rows.iter().enumerate() {
+                let is_selected = state.selected_row == Some(i);
+                let bg = if is_selected {
+                    c.playlist_item_selected
+                } else if i % 2 == 0 {
+                    c.panel
+                } else {
+                    c.panel_alt
+                };
+
+                let row_id = format!("lyr_row_{}", i);
+                list = list.child(
+                    h_flex()
+                        .id(("lyr_row", i as u64))
+                        .w_full()
+                        .px_2().py_1()
+                        .gap_2()
+                        .bg(bg)
+                        .items_center()
+                        .hover(|s| s.bg(c.playlist_item_selected.opacity(0.5)))
+                        .cursor(gpui::CursorStyle::PointingHand)
+                        .on_mouse_down(gpui::MouseButton::Left, move |_, _, _| {
+                            let _ = &row_id;
+                            tracing::info!("[LyricEditor] 选择行 {}", i);
+                        })
+                        .child(
+                            div()
+                                .w(px(28.0))
+                                .text_size(px(9.0))
+                                .text_color(if is_selected { c.text } else { c.text_dim })
+                                .text_right()
+                                .child(format!("{:03}", i + 1))
+                        )
+                        .child(
+                            div()
+                                .w(px(78.0))
+                                .text_size(px(11.0))
+                                .text_color(if is_selected { c.accent } else { c.text_dim })
+                                .font_family("monospace".to_string())
+                                .child(row.timestamp.clone())
+                        )
+                        .child(div().w(px(1.0)).h(px(16.0)).bg(c.divider))
+                        .child(
+                            div()
+                                .flex_grow()
+                                .text_size(px(12.0))
+                                .text_color(c.text)
+                                .child(if row.text.is_empty() {
+                                    "(空)".to_string()
+                                } else {
+                                    row.text.clone()
+                                })
+                        )
+                        .child(if is_selected {
+                            div()
+                                .w(px(16.0))
+                                .text_size(px(10.0))
+                                .text_color(c.accent)
+                                .child("◉")
+                        } else {
+                            div()
+                        })
+                );
+            }
+
+            children.push(list.into_any_element());
+        }
+
+        // === Status bar ===
+        let selection_info = match state.selected_row {
+            Some(idx) => format!("选中: #{:03}", idx + 1),
+            None => "未选中".to_string(),
+        };
+        children.push(
+            h_flex()
+                .w_full()
+                .px_3().py_1()
+                .bg(c.control_bar_bg)
+                .items_center()
+                .gap_2()
+                .child(div().text_size(px(9.0)).text_color(c.text_dim).child(selection_info))
+                .child(div().flex_grow())
+                .child(div().text_size(px(9.0)).text_color(c.text_dim).child("◀/▶ 调整时序 • ➕/� 增删行 • 💾 保存"))
+                .into_any_element()
+        );
+
+        v_flex()
+            .size_full()
+            .flex_grow()
+            .bg(c.bg)
+            .children(children)
     }
 
     fn render_playlist(
         &self,
         tracks: &[Track],
         current_idx: Option<usize>,
+        layout_mode: LayoutMode,
     ) -> impl IntoElement {
         let c = &self.colours;
         let player = self.player.clone();
+
+        // Adjust row height and font size based on layout mode
+        let row_height = match layout_mode {
+            LayoutMode::Big => 36.0,
+            LayoutMode::Narrow => 32.0,
+            LayoutMode::Small => 28.0,
+        };
+        let font_size = match layout_mode {
+            LayoutMode::Big => 12.0,
+            LayoutMode::Narrow => 11.0,
+            LayoutMode::Small => 10.0,
+        };
+        let header_size = match layout_mode {
+            LayoutMode::Big => 14.0,
+            LayoutMode::Narrow => 13.0,
+            LayoutMode::Small => 12.0,
+        };
 
         v_flex()
             .flex_grow()
@@ -470,7 +1269,7 @@ impl MusicPlayer {
                     .items_center().justify_between()
                     .w_full()
                     .px_4().py_3()
-                    .child(layout::txt(&format!("播放列表 ({} 首)", tracks.len()), 14.0, c.text_title))
+                    .child(layout::txt(&format!("播放列表 ({} 首)", tracks.len()), header_size, c.text_title))
             )
             .child(
                 div().flex_grow()
@@ -488,21 +1287,115 @@ impl MusicPlayer {
                                 let duration = track.duration;
                                 let dur_str = format!("{:02}:{:02}", duration.as_secs() / 60, duration.as_secs() % 60);
                                 let file_path = track.file_path.clone();
-                                let p = player.clone();
+                                let is_fav = track.is_favourite;
+                                let ctx_player = player.clone();
 
                                 h_flex()
                                     .id(("track", i))
                                     .items_center()
                                     .w_full()
-                                    .h(px(36.0))
+                                    .h(px(row_height))
                                     .px_4().gap_3()
                                     .bg(bg)
                                     .hover(|s| s.bg(c.playlist_item_selected))
                                     .cursor(gpui::CursorStyle::PointingHand)
-                                    .child(h_flex().flex_grow().child(layout::txt(&display_name, 12.0, text_color)))
-                                    .child(layout::txt(&dur_str, 11.0, c.text_dim))
-                                    .on_click(move |_, _, _| {
-                                        let _ = p.play_file(&file_path);
+                                    .child(h_flex().flex_grow().child(layout::txt(&display_name, font_size, text_color)))
+                                    .child(layout::txt(&dur_str, font_size - 1.0, c.text_dim))
+                                    .on_click({
+                                        let p = player.clone();
+                                        let fp = file_path.clone();
+                                        move |_, _, _| {
+                                            let _ = p.play_file(&fp);
+                                        }
+                                    })
+                                    .context_menu(move |menu, _w, _cx| {
+                                        // Pre-clone all state needed by inner closures
+                                        let p_play = ctx_player.clone();
+                                        let p_remove = ctx_player.clone();
+                                        let p_fav = ctx_player.clone();
+                                        let p_next = ctx_player.clone();
+                                        let p_r1 = ctx_player.clone();
+                                        let p_r2 = ctx_player.clone();
+                                        let p_r3 = ctx_player.clone();
+                                        let p_r4 = ctx_player.clone();
+                                        let p_r5 = ctx_player.clone();
+                                        let p_r0 = ctx_player.clone();
+                                        let fp_loc = file_path.clone();
+                                        let fp_copy = file_path.clone();
+                                        let dn = display_name.clone();
+                                        let fav = is_fav;
+                                        let idx = i;
+
+                                        menu.item(PopupMenuItem::new("播放").on_click(move |_, _, _| {
+                                            let _ = p_play.play_at_index(idx);
+                                        }))
+                                        .item(PopupMenuItem::new("下一首播放").on_click(move |_, _, _| {
+                                            p_next.push_next_track(idx);
+                                            tracing::info!("[Playlist] Track #{} queued as next", idx);
+                                        }))
+                                        .separator()
+                                        .item(PopupMenuItem::new("移除").on_click(move |_, _, _| {
+                                            p_remove.playlist_mut().remove(idx);
+                                            tracing::info!("[Playlist] Removed track #{}", idx);
+                                        }))
+                                        .item(PopupMenuItem::new(if fav { "取消收藏" } else { "收藏" }).on_click(move |_, _, _| {
+                                            let new_state = p_fav.playlist_mut().toggle_favourite(idx);
+                                            tracing::info!("[Playlist] Track #{} favourite: {}", idx, new_state);
+                                        }))
+                                        .separator()
+                                        .item(PopupMenuItem::new("评级: ★☆☆☆☆").on_click(move |_, _, _| {
+                                            p_r1.playlist_mut().set_rating(idx, 1);
+                                        }))
+                                        .item(PopupMenuItem::new("评级: ★★☆☆☆").on_click(move |_, _, _| {
+                                            p_r2.playlist_mut().set_rating(idx, 2);
+                                        }))
+                                        .item(PopupMenuItem::new("评级: ★★★☆☆").on_click(move |_, _, _| {
+                                            p_r3.playlist_mut().set_rating(idx, 3);
+                                        }))
+                                        .item(PopupMenuItem::new("评级: ★★★★☆").on_click(move |_, _, _| {
+                                            p_r4.playlist_mut().set_rating(idx, 4);
+                                        }))
+                                        .item(PopupMenuItem::new("评级: ★★★★★").on_click(move |_, _, _| {
+                                            p_r5.playlist_mut().set_rating(idx, 5);
+                                        }))
+                                        .item(PopupMenuItem::new("清除评级").on_click(move |_, _, _| {
+                                            p_r0.playlist_mut().set_rating(idx, 0);
+                                        }))
+                                        .separator()
+                                        .item(PopupMenuItem::new("打开文件位置").on_click(move |_, _, _| {
+                                            let path = std::path::Path::new(&fp_loc);
+                                            if let Some(_parent) = path.parent() {
+                                                #[cfg(windows)]
+                                                {
+                                                    let _ = std::process::Command::new("explorer")
+                                                        .arg("/select,")
+                                                        .arg(&fp_loc)
+                                                        .spawn();
+                                                }
+                                                #[cfg(target_os = "macos")]
+                                                {
+                                                    let _ = std::process::Command::new("open")
+                                                        .arg("-R")
+                                                        .arg(&fp_loc)
+                                                        .spawn();
+                                                }
+                                                #[cfg(all(not(windows), not(target_os = "macos")))]
+                                                {
+                                                    if let Some(p) = parent.to_str() {
+                                                        let _ = std::process::Command::new("xdg-open")
+                                                            .arg(p)
+                                                            .spawn();
+                                                    }
+                                                }
+                                            }
+                                            tracing::info!("[Playlist] Opening file location: {}", fp_loc);
+                                        }))
+                                        .item(PopupMenuItem::new("复制路径").on_click(move |_, _, _| {
+                                            tracing::info!("[Playlist] Copy path: {}", fp_copy);
+                                        }))
+                                        .item(PopupMenuItem::new("属性").on_click(move |_, _, _| {
+                                            tracing::info!("[Playlist] Properties: {}", dn);
+                                        }))
                                     })
                             }))
                     )
