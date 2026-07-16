@@ -111,6 +111,19 @@ pub struct MusicPlayer {
     pending_download_rx: Option<std::sync::mpsc::Receiver<lyric_download::DownloadEvent>>,
     pending_download_tx: Option<std::sync::mpsc::Sender<lyric_download::DownloadEvent>>,
     current_track_path_for_download: String,
+    /// Playlist search/filter state
+    playlist_filter_text: String,
+    playlist_filter_mode: PlaylistFilterMode,
+}
+
+/// Filter mode for the playlist
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PlaylistFilterMode {
+    All,
+    Artist,
+    Album,
+    Genre,
+    Favorites,
 }
 
 impl MusicPlayer {
@@ -193,6 +206,8 @@ impl MusicPlayer {
             pending_download_rx: None,
             pending_download_tx: None,
             current_track_path_for_download: String::new(),
+            playlist_filter_text: String::new(),
+            playlist_filter_mode: PlaylistFilterMode::All,
         }
     }
 
@@ -490,7 +505,7 @@ impl Render for MusicPlayer {
         };
 
         let content_area = div().flex_grow().h_full().child(match panel {
-            Panel::Playlist => self.render_playlist(&playlist_tracks, current_idx, layout_mode).into_any_element(),
+            Panel::Playlist => self.render_playlist(&playlist_tracks, current_idx, layout_mode, window, cx).into_any_element(),
             Panel::Lyrics => desktop_lyrics::render_lyrics_panel(&self.lyric_state, c).into_any_element(),
             Panel::LyricEditor => self.render_lyric_editor_panel(c, window, cx).into_any_element(),
             Panel::LyricDownload => self.render_lyric_download_panel(c, window, cx).into_any_element(),
@@ -1920,9 +1935,45 @@ impl MusicPlayer {
         tracks: &[Track],
         current_idx: Option<usize>,
         layout_mode: LayoutMode,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        let _view = cx.entity().clone();
         let c = &self.colours;
         let player = self.player.clone();
+        let filter_text = self.playlist_filter_text.clone();
+        let filter_mode = self.playlist_filter_mode;
+
+        // Filter tracks based on search text and filter mode
+        let filtered_indices: Vec<usize> = tracks.iter().enumerate().filter_map(|(i, track)| {
+            let matches_mode = match filter_mode {
+                PlaylistFilterMode::All => true,
+                PlaylistFilterMode::Artist => !track.artist.is_empty(),
+                PlaylistFilterMode::Album => !track.album.is_empty(),
+                PlaylistFilterMode::Genre => !track.genre.is_empty(),
+                PlaylistFilterMode::Favorites => track.is_favourite,
+            };
+
+            if !matches_mode {
+                return None;
+            }
+
+            if filter_text.trim().is_empty() {
+                return Some(i);
+            }
+
+            let kw = filter_text.to_lowercase();
+            let matches_search = track.title.to_lowercase().contains(&kw)
+                || track.artist.to_lowercase().contains(&kw)
+                || track.album.to_lowercase().contains(&kw)
+                || track.file_name.to_lowercase().contains(&kw)
+                || track.genre.to_lowercase().contains(&kw);
+
+            if matches_search { Some(i) } else { None }
+        }).collect();
+
+        let total_count = tracks.len();
+        let filtered_count = filtered_indices.len();
 
         // Adjust row height and font size based on layout mode
         let row_height = match layout_mode {
@@ -1941,16 +1992,101 @@ impl MusicPlayer {
             LayoutMode::Small => 12.0,
         };
 
+        // Header text based on filter state
+        let header_text = if filter_text.is_empty() && filter_mode == PlaylistFilterMode::All {
+            format!("播放列表 ({} 首)", total_count)
+        } else {
+            format!("筛选结果: {} / {}", filtered_count, total_count)
+        };
+
         v_flex()
             .flex_grow()
             .h_full()
             .bg(c.bg)
             .child(
-                h_flex()
-                    .items_center().justify_between()
+                v_flex()
                     .w_full()
-                    .px_4().py_3()
-                    .child(layout::txt(&format!("播放列表 ({} 首)", tracks.len()), header_size, c.text_title))
+                    .bg(c.control_bar_bg)
+                    .child(
+                        h_flex()
+                            .items_center().justify_between()
+                            .w_full()
+                            .px_4().py_2()
+                            .child(layout::txt(&header_text, header_size, c.text_title))
+                    )
+                    // Search and filter bar
+                    .child(
+                        h_flex()
+                            .w_full()
+                            .px_4().py_1()
+                            .gap_2()
+                            .bg(c.panel_alt)
+                            .items_center()
+                            .child(
+                                // Search input area
+                                div()
+                                    .flex_grow()
+                                    .h(px(24.0))
+                                    .bg(c.bg)
+                                    .border_1()
+                                    .border_color(c.border)
+                                    .rounded(px(4.0))
+                                    .px_2()
+                                    .flex()
+                                    .items_center()
+                                    .text_size(px(10.0))
+                                    .text_color(if filter_text.is_empty() { c.text_dim } else { c.text })
+                                    .child(if filter_text.is_empty() {
+                                        "� 搜索歌曲、艺术家或专辑...".to_string()
+                                    } else {
+                                        filter_text.clone()
+                                    })
+                            )
+                            .child(
+                                // Filter: All
+                                Button::new("pl_filter_all")
+                                    .label(if filter_mode == PlaylistFilterMode::All { "● 全部" } else { "全部" })
+                                    .compact()
+                                    .bg(if filter_mode == PlaylistFilterMode::All { c.accent } else { Hsla { h: 0.0, s: 0.0, l: 0.0, a: 0.0 } })
+                                    .ghost()
+                                    .on_click(cx.listener(|this, _, _window, _cx| {
+                                        this.playlist_filter_mode = PlaylistFilterMode::All;
+                                    }))
+                            )
+                            .child(
+                                // Filter: Artists
+                                Button::new("pl_filter_artist")
+                                    .label(if filter_mode == PlaylistFilterMode::Artist { "● 艺术家" } else { "艺术家" })
+                                    .compact()
+                                    .bg(if filter_mode == PlaylistFilterMode::Artist { c.accent } else { Hsla { h: 0.0, s: 0.0, l: 0.0, a: 0.0 } })
+                                    .ghost()
+                                    .on_click(cx.listener(|this, _, _window, _cx| {
+                                        this.playlist_filter_mode = PlaylistFilterMode::Artist;
+                                    }))
+                            )
+                            .child(
+                                // Filter: Album
+                                Button::new("pl_filter_album")
+                                    .label(if filter_mode == PlaylistFilterMode::Album { "● 专辑" } else { "专辑" })
+                                    .compact()
+                                    .bg(if filter_mode == PlaylistFilterMode::Album { c.accent } else { Hsla { h: 0.0, s: 0.0, l: 0.0, a: 0.0 } })
+                                    .ghost()
+                                    .on_click(cx.listener(|this, _, _window, _cx| {
+                                        this.playlist_filter_mode = PlaylistFilterMode::Album;
+                                    }))
+                            )
+                            .child(
+                                // Filter: Favorites
+                                Button::new("pl_filter_fav")
+                                    .label(if filter_mode == PlaylistFilterMode::Favorites { "♥ 收藏" } else { "收藏" })
+                                    .compact()
+                                    .bg(if filter_mode == PlaylistFilterMode::Favorites { c.accent } else { Hsla { h: 0.0, s: 0.0, l: 0.0, a: 0.0 } })
+                                    .ghost()
+                                    .on_click(cx.listener(|this, _, _window, _cx| {
+                                        this.playlist_filter_mode = PlaylistFilterMode::Favorites;
+                                    }))
+                            )
+                    )
             )
             .child(
                 div().flex_grow()

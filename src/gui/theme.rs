@@ -40,6 +40,7 @@ impl std::fmt::Display for ThemeName {
     }
 }
 
+#[derive(Clone)]
 pub struct UiColors {
     pub bg: Hsla,
     pub panel: Hsla,
