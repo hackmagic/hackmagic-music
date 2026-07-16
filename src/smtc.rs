@@ -9,7 +9,6 @@ use std::collections::HashSet;
 use std::sync::mpsc;
 
 use windows::core::{GUID, Result, HSTRING, Error, HRESULT, Interface, PCSTR, PCWSTR};
-use windows::Foundation::EventRegistrationToken;
 use windows::Foundation::TypedEventHandler;
 use windows::Media::{SystemMediaTransportControls, SystemMediaTransportControlsButtonPressedEventArgs, SystemMediaTransportControlsButton, MediaPlaybackStatus, MediaPlaybackType, ISystemMediaTransportControls};
 use windows::Win32::Foundation::{HWND, WPARAM, LPARAM, LRESULT, HINSTANCE};
@@ -57,7 +56,7 @@ unsafe extern "system" fn smtc_wnd_proc(
 pub struct SmtcManager {
     smtc: SystemMediaTransportControls,
     _hwnd: HWND,
-    _token: EventRegistrationToken,
+    _token: i64,
     rx: mpsc::Receiver<SmtcButtonEvent>,
     bt_monitor: BluetoothMonitor,
 }
@@ -80,20 +79,18 @@ impl SmtcManager {
         // Subscribe to ButtonPressed events
         let (tx, rx) = mpsc::channel::<SmtcButtonEvent>();
         let handler = TypedEventHandler::new(
-            move |_sender: &Option<SystemMediaTransportControls>,
-                  args: &Option<SystemMediaTransportControlsButtonPressedEventArgs>| {
-                if let Some(args) = args {
-                    let button = args.Button()?;
-                    let event = match button {
-                        SystemMediaTransportControlsButton::Play => SmtcButtonEvent::Play,
-                        SystemMediaTransportControlsButton::Pause => SmtcButtonEvent::Pause,
-                        SystemMediaTransportControlsButton::Stop => SmtcButtonEvent::Stop,
-                        SystemMediaTransportControlsButton::Next => SmtcButtonEvent::Next,
-                        SystemMediaTransportControlsButton::Previous => SmtcButtonEvent::Previous,
-                        _ => return Ok(()),
-                    };
-                    let _ = tx.send(event);
-                }
+            move |_sender: windows::core::Ref<'_, SystemMediaTransportControls>,
+                  args: windows::core::Ref<'_, SystemMediaTransportControlsButtonPressedEventArgs>| {
+                let button = args.ok()?.Button()?;
+                let event = match button {
+                    SystemMediaTransportControlsButton::Play => SmtcButtonEvent::Play,
+                    SystemMediaTransportControlsButton::Pause => SmtcButtonEvent::Pause,
+                    SystemMediaTransportControlsButton::Stop => SmtcButtonEvent::Stop,
+                    SystemMediaTransportControlsButton::Next => SmtcButtonEvent::Next,
+                    SystemMediaTransportControlsButton::Previous => SmtcButtonEvent::Previous,
+                    _ => return Ok(()),
+                };
+                let _ = tx.send(event);
                 Ok(())
             },
         );
@@ -438,9 +435,9 @@ fn create_hidden_window() -> Result<HWND> {
             PCWSTR::null(),
             WINDOW_STYLE(0),
             0, 0, 0, 0,
-            HWND_MESSAGE,
+            Some(HWND_MESSAGE),
             None,
-            HINSTANCE(instance.0),
+            Some(HINSTANCE(instance.0)),
             None,
         )?;
         Ok(hwnd)

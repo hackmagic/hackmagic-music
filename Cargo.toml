@@ -84,28 +84,12 @@ base64 = "0.22"
 
 # Native GUI
 rfd = "0.15"
-bevy = { version = "0.18", default-features = false, features = [
-    "bevy_ui",
-    "bevy_ui_render",
-    "bevy_winit",
-    "bevy_sprite",
-    "bevy_sprite_render",
-    "bevy_text",
-    "bevy_render",
-    "bevy_core_pipeline",
-    "bevy_asset",
-    "bevy_log",
-    "bevy_state",
-    "default_font",
-    "x11",
-    "detailed_trace",
-] }
-# Pin gpu-allocator to a version compatible with windows 0.58
-gpu-allocator = "0.28"
+gpui = "0.2.2"
+gpui-component = "0.5.1"
 
 # Windows SMTC integration
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.58", features = [
+windows = { version = "0.61", features = [
     "Media",
     "Foundation",
     "Storage_Streams",

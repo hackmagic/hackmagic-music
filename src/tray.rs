@@ -81,9 +81,9 @@ impl TrayManager {
                 0,
                 0,
                 0,
-                HWND_MESSAGE,
+                Some(HWND_MESSAGE),
                 None,
-                HINSTANCE(instance.0),
+                Some(HINSTANCE(instance.0)),
                 None,
             )?;
 
@@ -249,9 +249,9 @@ impl TrayManager {
         if GetCursorInfo(&raw mut cursor).is_ok() {
             let _ = SetForegroundWindow(hwnd);
             let flags = TPM_RIGHTBUTTON | TPM_LEFTALIGN | TPM_BOTTOMALIGN;
-            let _ = TrackPopupMenu(hmenu, flags, cursor.ptScreenPos.x, cursor.ptScreenPos.y, 0, hwnd, None);
+            let _ = TrackPopupMenu(hmenu, flags, cursor.ptScreenPos.x, cursor.ptScreenPos.y, Some(0), hwnd, None);
             // Force taskbar to re-evaluate foreground window
-            let _ = PostMessageW(hwnd, WM_NULL, WPARAM(0), LPARAM(0));
+            let _ = PostMessageW(Some(hwnd), WM_NULL, WPARAM(0), LPARAM(0));
         }
 
         let _ = DestroyMenu(hmenu);

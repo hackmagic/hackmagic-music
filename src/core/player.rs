@@ -185,22 +185,15 @@ impl Player {
 
         // Check "play next" queue
         if let Some(idx) = playlist.drain_next_track() {
-            let path = playlist.get(idx).map(|t| t.file_path.clone());
             drop(playlist);
-            if let Some(p) = path {
-                self.play_file(&p)?;
-            }
+            self.play_at_index(idx)?;
             return Ok(());
         }
 
         let next_idx = playlist.next_index();
         if let Some(idx) = next_idx {
-            let path = playlist.get(idx).map(|t| t.file_path.clone());
-            playlist.set_current(idx).ok();
             drop(playlist);
-            if let Some(p) = path {
-                self.play_file(&p)?;
-            }
+            self.play_at_index(idx)?;
         }
         Ok(())
     }
@@ -213,18 +206,14 @@ impl Player {
 
     /// Play previous track
     pub fn prev(&self) -> Result<()> {
-        let mut playlist = self.playlist.lock().unwrap();
+        let playlist = self.playlist.lock().unwrap();
         if playlist.is_empty() {
             return Ok(());
         }
         let prev_idx = playlist.prev_index();
         if let Some(idx) = prev_idx {
-            let path = playlist.get(idx).map(|t| t.file_path.clone());
-            playlist.set_current(idx).ok();
             drop(playlist);
-            if let Some(p) = path {
-                self.play_file(&p)?;
-            }
+            self.play_at_index(idx)?;
         }
         Ok(())
     }

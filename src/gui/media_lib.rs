@@ -1,12 +1,6 @@
-//! Media library management UI — browse, search, and manage your music library.
-//! Triggered from the "媒体库" menu option.
-
 use bevy::prelude::*;
 use crate::gui::styles::*;
-
-// ---------------------------------------------------------------------------
-// Marker components
-// ---------------------------------------------------------------------------
+use crate::gui::i18n::Tr;
 
 #[derive(Component)]
 pub struct MediaLibOverlay;
@@ -29,10 +23,6 @@ pub struct MediaLibCloseBtn;
 #[derive(Component)]
 pub struct MediaLibScanBtn;
 
-// ---------------------------------------------------------------------------
-// Resource
-// ---------------------------------------------------------------------------
-
 #[derive(Resource)]
 pub struct MediaLibState {
     pub visible: bool,
@@ -42,19 +32,11 @@ pub struct MediaLibState {
 
 impl Default for MediaLibState {
     fn default() -> Self {
-        Self {
-            visible: false,
-            search_query: String::new(),
-            items: Vec::new(),
-        }
+        Self { visible: false, search_query: String::new(), items: Vec::new() }
     }
 }
 
-// ---------------------------------------------------------------------------
-// Spawn
-// ---------------------------------------------------------------------------
-
-pub fn spawn_media_lib(commands: &mut Commands, colors: &UiColors) {
+pub fn spawn_media_lib(commands: &mut Commands, colors: &UiColors, tr: &Tr) {
     commands
         .spawn((
             Node {
@@ -83,7 +65,6 @@ pub fn spawn_media_lib(commands: &mut Commands, colors: &UiColors) {
                     MediaLibDialog,
                 ))
                 .with_children(|dialog| {
-                    // Title bar
                     dialog
                         .spawn((
                             Node {
@@ -98,12 +79,11 @@ pub fn spawn_media_lib(commands: &mut Commands, colors: &UiColors) {
                         ))
                         .with_children(|title| {
                             title.spawn((
-                                Text::new("Media Library"), // 媒体库
+                                Text::new(tr.media_lib_title),
                                 TextFont { font: crate::gui::ui_font(), font_size: 14.0, ..default() },
                                 TextColor(colors.text_title),
                                 Node { flex_grow: 1.0, ..default() },
                             ));
-                            // Scan button
                             title.spawn((
                                 Button,
                                 Node {
@@ -118,12 +98,11 @@ pub fn spawn_media_lib(commands: &mut Commands, colors: &UiColors) {
                                 MediaLibScanBtn,
                             )).with_children(|btn| {
                                 btn.spawn((
-                                    Text::new("Scan"), // 扫描
+                                    Text::new(tr.media_lib_scan),
                                     TextFont { font: crate::gui::ui_font(), font_size: 12.0, ..default() },
                                     TextColor(Color::WHITE),
                                 ));
                             });
-                            // Close button
                             title.spawn((
                                 Button,
                                 Node {
@@ -137,14 +116,13 @@ pub fn spawn_media_lib(commands: &mut Commands, colors: &UiColors) {
                                 MediaLibCloseBtn,
                             )).with_children(|btn| {
                                 btn.spawn((
-                                    Text::new("\u{00D7}"),
+                                    Text::new("X"),
                                     TextFont { font: crate::gui::ui_font(), font_size: 16.0, ..default() },
                                     TextColor(colors.text),
                                 ));
                             });
                         });
 
-                    // Search bar
                     dialog
                         .spawn((
                             Node {
@@ -159,14 +137,13 @@ pub fn spawn_media_lib(commands: &mut Commands, colors: &UiColors) {
                         ))
                         .with_children(|search| {
                             search.spawn((
-                                Text::new("\u{1F50D} Search media library..."), // 🔍 搜索媒体库...
+                                Text::new(tr.media_lib_search),
                                 TextFont { font: crate::gui::ui_font(), font_size: 12.0, ..default() },
                                 TextColor(colors.text_dim),
                                 MediaLibSearchInput,
                             ));
                         });
 
-                    // Item list
                     dialog.spawn((
                         Node {
                             width: Val::Percent(100.0),
@@ -182,11 +159,6 @@ pub fn spawn_media_lib(commands: &mut Commands, colors: &UiColors) {
         });
 }
 
-// ---------------------------------------------------------------------------
-// Systems
-// ---------------------------------------------------------------------------
-
-/// Toggle media library with Ctrl+M
 pub fn toggle_media_lib(
     mut state: ResMut<MediaLibState>,
     keys: Res<ButtonInput<KeyCode>>,
@@ -196,16 +168,16 @@ pub fn toggle_media_lib(
     }
 }
 
-/// Spawn/despawn media library dialog.
 pub fn media_lib_system(
     state: Res<MediaLibState>,
     mut commands: Commands,
     overlay_q: Query<Entity, With<MediaLibOverlay>>,
     colors: Res<UiColors>,
+    locale: Res<crate::gui::i18n::Locale>,
 ) {
     if state.is_changed() {
         if state.visible && overlay_q.is_empty() {
-            spawn_media_lib(&mut commands, &colors);
+            spawn_media_lib(&mut commands, &colors, locale.tr);
         } else if !state.visible {
             for entity in overlay_q.iter() {
                 commands.entity(entity).despawn();
@@ -214,7 +186,6 @@ pub fn media_lib_system(
     }
 }
 
-/// Handle close button.
 pub fn handle_media_lib_interaction(
     mut state: ResMut<MediaLibState>,
     colors: Res<UiColors>,

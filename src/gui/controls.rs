@@ -1,13 +1,9 @@
-//! Playback control bar + status bar systems.
-
 use bevy::prelude::*;
+use bevy::ui::RelativeCursorPosition;
 use crate::gui::styles::*;
 use crate::gui::PlayerResource;
 use crate::gui::PlayerState;
-
-// ---------------------------------------------------------------------------
-// Marker components for control buttons
-// ---------------------------------------------------------------------------
+use crate::gui::i18n::Locale;
 
 #[derive(Component)]
 pub struct BtnPrev;
@@ -24,13 +20,11 @@ pub struct BtnVolUp;
 #[derive(Component)]
 pub struct BtnRepeatMode;
 
-// Volume slider
 #[derive(Component)]
 pub struct VolumeSlider;
 #[derive(Component)]
 pub struct VolumeSliderFill;
 
-// Status bar
 #[derive(Component)]
 pub struct StatusFps;
 #[derive(Component)]
@@ -38,12 +32,6 @@ pub struct StatusNextTrack;
 #[derive(Component)]
 pub struct StatusRepeatMode;
 
-// ---------------------------------------------------------------------------
-// Systems
-// ---------------------------------------------------------------------------
-
-/// Handle playback control button clicks.
-/// Uses a SINGLE combined query with Option markers to avoid B0001 conflicts.
 pub fn handle_controls(
     player: Res<PlayerResource>,
     colors: Res<UiColors>,
@@ -71,13 +59,54 @@ pub fn handle_controls(
 
         bg.0 = colors.button_press;
 
-        if prev.is_some() { let _ = player.0.prev(); }
-        else if play.is_some() { let _ = player.0.toggle_pause(); }
-        else if stop.is_some() { let _ = player.0.stop(); }
-        else if next.is_some() { let _ = player.0.next(); }
-        else if vd.is_some() { let _ = player.0.volume_down(5); }
-        else if vu.is_some() { let _ = player.0.volume_up(5); }
-        else if rep.is_some() { cycle_repeat_mode(&player, &mut state); }
+        if prev.is_some() {
+            tracing::info!("[Controls] Previous");
+            let _ = player.0.prev();
+        } else if play.is_some() {
+            tracing::info!("[Controls] Toggle play/pause");
+            let _ = player.0.toggle_pause();
+        } else if stop.is_some() {
+            tracing::info!("[Controls] Stop");
+            let _ = player.0.stop();
+        } else if next.is_some() {
+            tracing::info!("[Controls] Next");
+            let _ = player.0.next();
+        } else if vd.is_some() {
+            let vol = player.0.volume().saturating_sub(5);
+            tracing::info!("[Controls] Volume down to {}", vol);
+            let _ = player.0.volume_down(5);
+        } else if vu.is_some() {
+            let vol = (player.0.volume() + 5).min(100);
+            tracing::info!("[Controls] Volume up to {}", vol);
+            let _ = player.0.volume_up(5);
+        } else if rep.is_some() {
+            tracing::info!("[Controls] Cycle repeat mode");
+            cycle_repeat_mode(&player, &mut state);
+        }
+    }
+}
+
+pub fn handle_sliders(
+    player: Res<PlayerResource>,
+    progress_q: Query<(&Interaction, &RelativeCursorPosition), (Changed<Interaction>, With<crate::gui::player_info::ProgressTrack>)>,
+    volume_q: Query<(&Interaction, &RelativeCursorPosition), (Changed<Interaction>, With<VolumeSlider>)>,
+) {
+    for (interaction, cursor) in &progress_q {
+        if *interaction == Interaction::Pressed {
+            if let Some(position) = cursor.normalized {
+                tracing::info!("[Controls] Seek to {:.1}%", position.x * 100.0);
+                let _ = player.0.seek_percent(position.x as f64);
+            }
+        }
+    }
+    for (interaction, cursor) in &volume_q {
+        if *interaction == Interaction::Pressed {
+            if let Some(position) = cursor.normalized {
+                let vol = (position.x * 100.0).round() as u32;
+                tracing::info!("[Controls] Volume slider to {}%", vol);
+                let _ = player.0.set_volume(vol);
+            }
+        }
     }
 }
 
@@ -89,61 +118,38 @@ fn cycle_repeat_mode(player: &PlayerResource, state: &mut PlayerState) {
         RepeatMode::LoopTrack | RepeatMode::PlayTrack => RepeatMode::PlayRandom,
         RepeatMode::PlayRandom | RepeatMode::PlayShuffle => RepeatMode::LoopPlaylist,
     };
+    tracing::info!("[Controls] Repeat mode: {:?} -> {:?}", current, next);
     player.0.set_repeat_mode(next);
     state.repeat_mode = format!("{next:?}");
 }
 
-/// Update play/pause button icon.
-pub fn update_play_button(
+pub fn update_status_dynamic(
     state: Res<PlayerState>,
-    mut btn_q: Query<&mut Text, With<BtnPlayPause>>,
-) {
-    if let Ok(mut text) = btn_q.single_mut() {
-        text.0 = if state.is_playing { "\u{23F8}" } else { "\u{25B6}" }.to_string();
-    }
-}
-
-/// Update status bar: FPS, next track, repeat mode.
-pub fn update_status_bar(
-    _state: Res<PlayerState>,
-    player: Res<PlayerResource>,
+    locale: Res<Locale>,
+    mut play_btn_q: Query<&mut Text, (With<BtnPlayPause>, Without<StatusFps>, Without<StatusNextTrack>, Without<StatusRepeatMode>)>,
+    mut fps_q: Query<&mut Text, (With<StatusFps>, Without<BtnPlayPause>, Without<StatusNextTrack>, Without<StatusRepeatMode>)>,
+    mut next_q: Query<&mut Text, (With<StatusNextTrack>, Without<BtnPlayPause>, Without<StatusFps>, Without<StatusRepeatMode>)>,
+    mut repeat_q: Query<&mut Text, (With<StatusRepeatMode>, Without<BtnPlayPause>, Without<StatusFps>, Without<StatusNextTrack>)>,
     time: Res<Time>,
-    mut fps_q: Query<&mut Text, (With<StatusFps>, Without<StatusNextTrack>, Without<StatusRepeatMode>)>,
-    mut next_q: Query<&mut Text, (With<StatusNextTrack>, Without<StatusFps>, Without<StatusRepeatMode>)>,
-    mut repeat_q: Query<&mut Text, (With<StatusRepeatMode>, Without<StatusFps>, Without<StatusNextTrack>)>,
 ) {
-    // FPS
+    let tr = locale.tr;
+    if let Ok(mut text) = play_btn_q.single_mut() {
+        text.0 = if state.is_playing { tr.ctrl_pause } else { tr.ctrl_play }.to_string();
+    }
     if let Ok(mut text) = fps_q.single_mut() {
-        text.0 = format!("FPS: {:.0}", 1.0 / time.delta_secs());
+        text.0 = format!("{:.0} FPS", 1.0 / time.delta_secs());
     }
-
-    // Next track
     if let Ok(mut text) = next_q.single_mut() {
-        let pl = player.0.playlist();
-        let idx = pl.current_index();
-        let next = idx.and_then(|i| pl.get(i + 1)).or_else(|| {
-            if pl.len() > 0 { pl.get(0) } else { None }
-        });
-        text.0 = if let Some(t) = next {
-            let title = if t.title.is_empty() { "Unknown" } else { &t.title };
-            format!("Next: {}", title)
-        } else {
-            "Next: --".to_string()
-        };
+        text.0 = tr.status_next_empty.to_string();
     }
-
-    // Repeat mode
     if let Ok(mut text) = repeat_q.single_mut() {
-        use crate::core::playlist::RepeatMode;
-        let mode = player.0.repeat_mode();
-        let (icon, label) = match mode {
-            RepeatMode::LoopPlaylist => ("\u{1F503}", "Loop"),
-            RepeatMode::LoopTrack => ("\u{1F501}", "Single"),
-            RepeatMode::PlayRandom => ("\u{1F500}", "Random"),
-            RepeatMode::PlayShuffle => ("\u{1F500}", "Shuffle"),
-            RepeatMode::PlayOrder => ("\u{1F503}", "Order"),
-            RepeatMode::PlayTrack => ("\u{1F501}", "Single"),
+        let label = match state.repeat_mode.as_str() {
+            "LoopPlaylist" | "PlayOrder" => tr.repeat_loop_pl,
+            "LoopTrack" | "PlayTrack" => tr.repeat_single,
+            "PlayRandom" => tr.repeat_random,
+            "PlayShuffle" => tr.repeat_shuffle,
+            _ => tr.repeat_loop_pl,
         };
-        text.0 = format!("{icon} {label}");
+        text.0 = label.to_string();
     }
 }
