@@ -6,6 +6,7 @@ pub mod responsive;
 pub mod desktop_lyrics;
 pub mod lyric_editor;
 pub mod lyric_download;
+pub mod dialogs;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -33,6 +34,7 @@ enum Panel {
     Lyrics,
     LyricEditor,
     LyricDownload,
+    Equalizer,
     Settings,
 }
 
@@ -46,7 +48,8 @@ impl Panel {
             4 => Panel::Lyrics,
             5 => Panel::LyricEditor,
             6 => Panel::LyricDownload,
-            7 => Panel::Settings,
+            7 => Panel::Equalizer,
+            8 => Panel::Settings,
             _ => Panel::Playlist,
         }
     }
@@ -59,7 +62,8 @@ impl Panel {
             Panel::Lyrics => 4,
             Panel::LyricEditor => 5,
             Panel::LyricDownload => 6,
-            Panel::Settings => 7,
+            Panel::Settings => 8,
+            Panel::Equalizer => 7,
         }
     }
 }
@@ -118,6 +122,16 @@ pub struct MusicPlayer {
     playlist_drag_from: Option<usize>,
     playlist_drag_to: Option<usize>,
     playlist_drag_active: bool,
+    /// Media library panel state
+    media_lib_category: MediaLibCategory,
+    media_lib_selected: Option<String>,
+    media_lib_search: String,
+    /// Equalizer state
+    eq_enabled: bool,
+    eq_sliders: Vec<Entity<SliderState>>,
+    eq_preset_name: String,
+    /// Settings dialog state
+    settings_tab: dialogs::SettingsTab,
 }
 
 /// Filter mode for the playlist
@@ -128,6 +142,17 @@ enum PlaylistFilterMode {
     Album,
     Genre,
     Favorites,
+}
+
+/// Media library browsing category
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MediaLibCategory {
+    AllTracks,
+    Artists,
+    Albums,
+    Genres,
+    Years,
+    FileTypes,
 }
 
 impl MusicPlayer {
@@ -215,6 +240,13 @@ impl MusicPlayer {
             playlist_drag_from: None,
             playlist_drag_to: None,
             playlist_drag_active: false,
+            media_lib_category: MediaLibCategory::AllTracks,
+            media_lib_selected: None,
+            media_lib_search: String::new(),
+            eq_enabled: false,
+            eq_sliders: (0..10).map(|_| cx.new(|_| SliderState::new().min(-12.0).max(12.0).step(0.5).default_value(0.0))).collect(),
+            eq_preset_name: "自定义".to_string(),
+            settings_tab: dialogs::SettingsTab::General,
         }
     }
 
@@ -506,6 +538,7 @@ impl Render for MusicPlayer {
                     .child(make_btn("lyrics", IconName::BookOpen, Panel::Lyrics, c))
                     .child(make_btn("lyr_edit", IconName::File, Panel::LyricEditor, c))
                     .child(make_btn("lyr_download", IconName::ArrowDown, Panel::LyricDownload, c))
+                    .child(make_btn("eq", IconName::Settings, Panel::Equalizer, c))
             )
         } else {
             None
@@ -513,8 +546,12 @@ impl Render for MusicPlayer {
 
         let content_area = div().flex_grow().h_full().child(match panel {
             Panel::Playlist => self.render_playlist(&playlist_tracks, current_idx, layout_mode, window, cx).into_any_element(),
+            Panel::MediaLib => self.render_media_lib_panel(c, window, cx).into_any_element(),
             Panel::Lyrics => desktop_lyrics::render_lyrics_panel(&self.lyric_state, c).into_any_element(),
             Panel::LyricEditor => self.render_lyric_editor_panel(c, window, cx).into_any_element(),
+            Panel::Equalizer => self.render_equalizer_panel(c, window, cx).into_any_element(),
+            Panel::Search => dialogs::render_search_panel(c, &self.playlist_filter_text, window, cx).into_any_element(),
+            Panel::Settings => dialogs::render_settings_panel(c, self.settings_tab, window, cx).into_any_element(),
             Panel::LyricDownload => self.render_lyric_download_panel(c, window, cx).into_any_element(),
             _ => layout::content_area(c, tr).into_any_element(),
         });
@@ -2344,5 +2381,313 @@ impl MusicPlayer {
                             }))
                     )
             )
+    }
+
+    /// Render the media library panel with category browsing.
+    fn render_media_lib_panel(
+        &self,
+        c: &UiColors,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let state_entity = cx.entity().clone();
+        let lib = crate::media::MediaLib::load();
+        let total_tracks = lib.entries.len();
+        let total_dur_secs: u64 = lib.entries.iter().map(|e| e.duration_secs).sum();
+        let total_dur = format!(
+            "{}:{:02}:{:02}",
+            total_dur_secs / 3600,
+            (total_dur_secs % 3600) / 60,
+            total_dur_secs % 60
+        );
+        let cat = self.media_lib_category;
+        let sel = self.media_lib_selected.clone();
+
+        let (sidebar_items, list_items): (Vec<String>, Vec<ViewEntry>) = match cat {
+            MediaLibCategory::AllTracks => (
+                Vec::new(),
+                lib.entries.iter().map(ViewEntry::from).collect(),
+            ),
+            MediaLibCategory::Artists => {
+                let artists = lib.artists();
+                let items = sel.as_ref()
+                    .map(|n| lib.by_artist(Some(n)).iter().map(|e| ViewEntry::from(*e)).collect())
+                    .unwrap_or_default();
+                (artists, items)
+            }
+            MediaLibCategory::Albums => {
+                let albums = lib.albums();
+                let items = sel.as_ref()
+                    .map(|n| lib.by_album(Some(n)).iter().map(|e| ViewEntry::from(*e)).collect())
+                    .unwrap_or_default();
+                (albums, items)
+            }
+            MediaLibCategory::Genres => {
+                let genres = lib.genres();
+                let items = sel.as_ref()
+                    .map(|n| lib.by_genre(n).iter().map(|e| ViewEntry::from(*e)).collect())
+                    .unwrap_or_default();
+                (genres, items)
+            }
+            MediaLibCategory::Years => {
+                let years: Vec<String> = lib.years().iter().map(|y| y.to_string()).collect();
+                let items = sel.as_ref()
+                    .and_then(|y_str| y_str.parse::<u32>().ok())
+                    .map(|year| lib.by_year(year).iter().map(|e| ViewEntry::from(*e)).collect())
+                    .unwrap_or_default();
+                (years, items)
+            }
+            MediaLibCategory::FileTypes => {
+                let types = lib.file_types();
+                let items = sel.as_ref()
+                    .map(|ext| lib.by_file_type(ext).iter().map(|e| ViewEntry::from(*e)).collect())
+                    .unwrap_or_default();
+                (types, items)
+            }
+        };
+
+        let mk_btn = |label: &'static str, id: &'static str, target: MediaLibCategory| {
+            let is_active = cat == target;
+            let bg = if is_active { c.accent } else { Hsla { h: 0.0, s: 0.0, l: 0.0, a: 0.0 } };
+            Button::new(id).label(label).compact().ghost().bg(bg)
+                .on_click(cx.listener(move |this, _, _w, _cx| {
+                    this.media_lib_category = target;
+                    this.media_lib_selected = None;
+                }))
+        };
+
+        let header_text = format!("媒体库 ({} 首 | {})", total_tracks, total_dur);
+        let show_sidebar = !matches!(cat, MediaLibCategory::AllTracks) && !sidebar_items.is_empty();
+
+        let sidebar_el = if show_sidebar {
+            let items: Vec<String> = sidebar_items.clone();
+            div().w(px(150.0)).h_full().bg(c.panel_alt).border_r(px(1.0)).border_color(c.border)
+                .child(v_flex().w_full().h_full().py_1()
+                    .children(items.into_iter().map(|item| {
+                        let is_active = sel.as_ref().map(|s| s.as_str()) == Some(item.as_str());
+                        let bg = if is_active { c.accent.opacity(0.2) } else { Hsla { h: 0.0, s: 0.0, l: 0.0, a: 0.0 } };
+                        div().px_3().py_1().bg(bg).text_size(px(11.0))
+                            .text_color(if is_active { c.accent } else { c.text })
+                            .cursor(gpui::CursorStyle::PointingHand)
+                            .hover(|s| s.bg(c.playlist_item_selected))
+                            .child(if item.is_empty() { "(未知)".to_string() } else { item.clone() })
+                             .on_mouse_up(gpui::MouseButton::Left, {
+                                 let item2 = item.clone();
+                                 cx.listener(move |this, _, _w, _cx| {
+                                     this.media_lib_selected = Some(item2.clone());
+                                 })
+                             })
+                    }))
+                )
+        } else {
+            div().w(px(0.0))
+        };
+
+        v_flex().flex_grow().h_full().bg(c.bg)
+            .child(
+                h_flex().items_center().justify_between().w_full().px_4().py_2().bg(c.control_bar_bg)
+                    .child(layout::txt(&header_text, 13.0, c.text_title))
+            )
+            .child(
+                h_flex().w_full().px_4().py_1().gap_2().bg(c.panel_alt).border_b(px(1.0)).border_color(c.border).items_center()
+                    .child(mk_btn("全部曲目", "ml_cat_all", MediaLibCategory::AllTracks))
+                    .child(mk_btn("艺术家", "ml_cat_artist", MediaLibCategory::Artists))
+                    .child(mk_btn("专辑", "ml_cat_album", MediaLibCategory::Albums))
+                    .child(mk_btn("流派", "ml_cat_genre", MediaLibCategory::Genres))
+                    .child(mk_btn("年份", "ml_cat_year", MediaLibCategory::Years))
+                    .child(mk_btn("文件类型", "ml_cat_ftype", MediaLibCategory::FileTypes))
+                    .child(div().flex_grow())
+                    .child(
+                        Button::new("ml_scan_btn").label("� 扫描").compact().ghost()
+                            .on_click(cx.listener(move |_this, _, _w, _cx| {
+                                let _ = state_entity;
+                                std::thread::spawn(|| {
+                                    let cfg = crate::config::Config::load();
+                                    let mut lib = crate::media::MediaLib::load();
+                                    for dir in &cfg.media_lib.media_dirs {
+                                        if let Ok(entries) = crate::media::scan_directory(dir, true, None) {
+                                            for e in entries { lib.upsert(e); }
+                                        }
+                                    }
+                                    let _ = lib.save();
+                                    tracing::info!("[MediaLib] 扫描完成: {} 首", lib.entries.len());
+                                });
+                            }))
+                    )
+            )
+            .child(
+                h_flex().flex_grow().w_full()
+                    .child(sidebar_el)
+                    .child(
+                        v_flex().flex_grow().h_full().bg(c.bg)
+                            .children(list_items.iter().enumerate().map(|(i, item)| {
+                                let is_even = i % 2 == 0;
+                                let bg = if is_even { c.playlist_item } else { c.playlist_item_hover };
+                                let title = item.title.clone();
+                                let path = item.file_path.clone();
+                                let dur_str = format!("{:02}:{:02}", item.duration / 60, item.duration % 60);
+                                h_flex().w_full().h(px(26.0)).px_4().gap_3().bg(bg)
+                                    .hover(|s| s.bg(c.playlist_item_selected))
+                                    .items_center().cursor(gpui::CursorStyle::PointingHand)
+                                    .child(layout::txt(&title, 11.0, c.text))
+                                    .child(div().flex_grow())
+                                    .child(layout::txt(&item.artist, 10.0, c.text_dim))
+                                    .child(layout::txt(&dur_str, 10.0, c.text_dim))
+                                    .on_mouse_down(gpui::MouseButton::Left, move |_, _, _| {
+                                        tracing::info!("[MediaLib] 播放: {}", path);
+                                    })
+                            }))
+                    )
+            )
+    }
+
+    /// Render the 10-band equalizer panel.
+    fn render_equalizer_panel(
+        &self,
+        c: &UiColors,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        const BAND_LABELS: &[&str] = &[
+            "32Hz", "64Hz", "125Hz", "250Hz", "500Hz",
+            "1kHz", "2kHz", "4kHz", "8kHz", "16kHz",
+        ];
+
+        // Preset definition: name -> gains
+        let presets: Vec<(&str, &[f32; 10])> = vec![
+            ("平坦", &[0.0_f32; 10]),
+            ("流行", &[3.0, 2.0, 0.0, -1.0, -2.0, 0.0, 2.0, 3.0, 3.0, 2.0]),
+            ("摇滚", &[4.0, 3.0, -1.0, -2.0, 1.0, 3.0, 4.0, 5.0, 5.0, 4.0]),
+            ("古典", &[3.0, 2.0, 0.0, 0.0, -1.0, -1.0, 0.0, 2.0, 3.0, 4.0]),
+            ("爵士", &[3.0, 2.0, 0.0, 2.0, -1.0, -1.0, 0.0, 1.0, 2.0, 3.0]),
+            ("电子", &[4.0, 3.0, 1.0, 0.0, -2.0, 0.0, 2.0, 4.0, 5.0, 4.0]),
+            ("低音增强", &[6.0, 5.0, 4.0, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+            ("人声增强", &[-2.0, -1.0, 0.0, 0.0, 3.0, 4.0, 3.0, 1.0, -1.0, -2.0]),
+        ];
+
+        // Header with enable toggle
+        let enabled = self.eq_enabled;
+        let preset_name = self.eq_preset_name.clone();
+
+        let header = h_flex()
+            .w_full()
+            .px_4().py_2()
+            .bg(c.control_bar_bg)
+            .items_center()
+            .gap_4()
+            .child(layout::txt("均衡器", 14.0, c.text_title))
+            .child(
+                Button::new("eq_enable")
+                    .label(if enabled { "� 已启用" } else { "🔇 已禁用" })
+                    .compact()
+                    .bg(if enabled { c.accent } else { Hsla { h: 0.0, s: 0.0, l: 0.0, a: 0.0 } })
+                    .ghost()
+                    .on_click(cx.listener(move |this, _, _w, _cx| {
+                        this.eq_enabled = !this.eq_enabled;
+                        tracing::info!("[EQ] enabled={}", this.eq_enabled);
+                    }))
+            )
+            .child(div().flex_grow())
+            .child(layout::txt(&format!("预设: {}", preset_name), 11.0, c.text_dim));
+
+        // Preset list (scrollable)
+        let preset_buttons: Vec<String> = presets.iter().map(|(n, _)| n.to_string()).collect();
+        let presets_el = h_flex()
+            .w_full()
+            .px_4().py_2()
+            .bg(c.panel_alt)
+            .border_b(px(1.0))
+            .border_color(c.border)
+            .items_center()
+            .gap_2()
+            .children(preset_buttons.iter().enumerate().map(|(pi, name)| {
+                let is_active = preset_name == *name;
+                let n = name.clone();
+                Button::new(("eq_preset", pi as u64))
+                    .label(n.clone())
+                    .compact()
+                    .bg(if is_active { c.accent } else { Hsla { h: 0.0, s: 0.0, l: 0.0, a: 0.0 } })
+                    .ghost()
+                    .on_click(cx.listener(move |this, _, _w, _cx| {
+                        this.eq_preset_name = n.clone();
+                    }))
+            }));
+
+        // EQ band sliders
+        let sliders_row = h_flex()
+            .flex_1()
+            .w_full()
+            .px_4().py_4()
+            .gap_3()
+            .items_end()
+            .children(self.eq_sliders.iter().enumerate().map(|(i, slider)| {
+                let label = BAND_LABELS[i.min(BAND_LABELS.len() - 1)];
+                div()
+                    .w(px(48.0))
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .gap_1()
+                    // Value display
+                    .child(
+                        div()
+                            .text_size(px(10.0))
+                            .text_color(c.text_dim)
+                            .child(format!("+12"))
+                    )
+                    // Vertical slider
+                    .child(
+                        div()
+                            .w(px(12.0))
+                            .h(px(150.0))
+                            .bg(c.progress_track)
+                            .border(px(1.0))
+                            .border_color(c.border)
+                            .child(
+                                Slider::new(slider).vertical()
+                            )
+                    )
+                    // Frequency label
+                    .child(
+                        div()
+                            .text_size(px(10.0))
+                            .text_color(c.text)
+                            .child(label)
+                    )
+                    .child(
+                        div()
+                            .text_size(px(10.0))
+                            .text_color(c.text_dim)
+                            .child(format!("-12"))
+                    )
+            }));
+
+        v_flex()
+            .flex_1()
+            .h_full()
+            .bg(c.bg)
+            .child(header)
+            .child(presets_el)
+            .child(sliders_row)
+    }
+}
+
+struct ViewEntry {
+    file_path: String,
+    title: String,
+    artist: String,
+    album: String,
+    duration: u64,
+}
+
+impl<'a> From<&'a crate::media::LibEntry> for ViewEntry {
+    fn from(e: &'a crate::media::LibEntry) -> Self {
+        Self {
+            file_path: e.file_path.clone(),
+            title: e.title.clone(),
+            artist: e.artist.clone(),
+            album: e.album.clone(),
+            duration: e.duration_secs,
+        }
     }
 }
