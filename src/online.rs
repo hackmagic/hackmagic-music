@@ -2,6 +2,7 @@ use crate::error::{PlayerError, Result};
 use serde_json::Value;
 
 /// Search result from online service
+#[derive(Debug, Clone)]
 pub struct SearchResult {
     pub id: String,
     pub title: String,

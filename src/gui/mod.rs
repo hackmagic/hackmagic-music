@@ -5,6 +5,7 @@ pub mod layout;
 pub mod responsive;
 pub mod desktop_lyrics;
 pub mod lyric_editor;
+pub mod lyric_download;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -31,6 +32,7 @@ enum Panel {
     FileBrowser,
     Lyrics,
     LyricEditor,
+    LyricDownload,
     Settings,
 }
 
@@ -43,7 +45,8 @@ impl Panel {
             3 => Panel::Search,
             4 => Panel::Lyrics,
             5 => Panel::LyricEditor,
-            6 => Panel::Settings,
+            6 => Panel::LyricDownload,
+            7 => Panel::Settings,
             _ => Panel::Playlist,
         }
     }
@@ -55,7 +58,8 @@ impl Panel {
             Panel::Search => 3,
             Panel::Lyrics => 4,
             Panel::LyricEditor => 5,
-            Panel::Settings => 6,
+            Panel::LyricDownload => 6,
+            Panel::Settings => 7,
         }
     }
 }
@@ -103,6 +107,10 @@ pub struct MusicPlayer {
     last_lpc_path: String,
     editor_state: lyric_editor::LyricEditorState,
     show_editor: bool,
+    download_state: lyric_download::LyricDownloadState,
+    pending_download_rx: Option<std::sync::mpsc::Receiver<lyric_download::DownloadEvent>>,
+    pending_download_tx: Option<std::sync::mpsc::Sender<lyric_download::DownloadEvent>>,
+    current_track_path_for_download: String,
 }
 
 impl MusicPlayer {
@@ -181,18 +189,24 @@ impl MusicPlayer {
             last_lpc_path: String::new(),
             editor_state: lyric_editor::LyricEditorState::new(),
             show_editor: false,
+            download_state: lyric_download::LyricDownloadState::new(),
+            pending_download_rx: None,
+            pending_download_tx: None,
+            current_track_path_for_download: String::new(),
         }
     }
 
     fn poll_player_state(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {
-        let p = &self.player;
-        self.position = p.position().as_secs_f64();
-        self.duration = p.duration().as_secs_f64();
-        self.volume = p.volume();
-        self.is_playing = p.state() == crate::core::engine_trait::EngineState::Playing;
+        self.position = self.player.position().as_secs_f64();
+        self.duration = self.player.duration().as_secs_f64();
+        self.volume = self.player.volume();
+        self.is_playing = self.player.state() == crate::core::engine_trait::EngineState::Playing;
         self.is_muted = self.volume == 0;
 
-        let pl = p.playlist();
+        // Process pending download events
+        self.poll_download_events();
+
+        let pl = self.player.playlist();
         if let Some(track) = pl.current_track() {
             let display = if !track.title.is_empty() {
                 track.title.clone()
@@ -218,7 +232,14 @@ impl MusicPlayer {
             let track_path = track.file_path.clone();
             if track_path != self.last_lpc_path {
                 self.last_lpc_path = track_path.clone();
+                self.current_track_path_for_download = track_path.clone();
                 self.load_lyrics_for_track(&track_path);
+            }
+            // Update download state keyword from current track
+            if !track.title.is_empty() || !track.artist.is_empty() {
+                if self.download_state.keyword.is_empty() || self.download_state.track_title != track.title {
+                    self.download_state.auto_fill(&track.title, &track.artist);
+                }
             }
         }
 
@@ -261,6 +282,124 @@ impl MusicPlayer {
         // No lyrics found — clear state
         tracing::debug!("[Lyric] No lyrics found for: {}", audio_path);
         self.lyric_state.update(None, (self.position * 1000.0) as u64);
+    }
+
+    /// Process pending download events from background thread.
+    fn poll_download_events(&mut self) {
+        if let Some(rx) = &self.pending_download_rx {
+            while let Ok(event) = rx.try_recv() {
+                match event {
+                    lyric_download::DownloadEvent::SearchComplete(results) => {
+                        self.download_state.searching = false;
+                        match results {
+                            Ok(items) => {
+                                let count = items.len();
+                                self.download_state.results = items;
+                                self.download_state.selected_index = None;
+                                self.download_state.status = format!("找到 {} 条结果", count);
+                                tracing::info!("[LyricDownload] 搜索完成: {} 条结果", count);
+                            }
+                            Err(e) => {
+                                self.download_state.status = e.clone();
+                                tracing::warn!("[LyricDownload] 搜索失败: {}", e);
+                            }
+                        }
+                    }
+                    lyric_download::DownloadEvent::DownloadComplete { song_id, result } => {
+                        self.download_state.downloading = false;
+                        match result {
+                            Ok(lrc_text) => {
+                                // Determine save path
+                                let save_path = self.compute_lyric_save_path();
+                                match std::fs::write(&save_path, &lrc_text) {
+                                    Ok(()) => {
+                                        self.download_state.status =
+                                            format!("下载成功: {}", save_path.display());
+                                        tracing::info!(
+                                            "[Lyric下载] 保存到: {}",
+                                            save_path.display()
+                                        );
+                                        // Also update current lyrics
+                                        match crate::lyric::load_lyric_file(
+                                            save_path.to_str().unwrap_or_default(),
+                                        ) {
+                                            Ok(lyrics) => {
+                                                self.lyric_state.update(
+                                                    Some(lyrics),
+                                                    (self.position * 1000.0) as u64,
+                                                );
+                                            }
+                                            Err(e) => {
+                                                tracing::warn!(
+                                                    "[Lyric下载] 加载歌词失败: {}",
+                                                    e
+                                                );
+                                            }
+                                        }
+                                    }
+                                    Err(e) => {
+                                        self.download_state.status =
+                                            format!("保存失败: {}", e);
+                                        tracing::error!(
+                                            "[Lyric下载] 保存失败 {}: {}",
+                                            save_path.display(),
+                                            e
+                                        );
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                self.download_state.status = e.clone();
+                                tracing::warn!("[Lyric下载] 下载失败: {}", e);
+                            }
+                        }
+                        let _ = song_id;
+                    }
+                    lyric_download::DownloadEvent::ProgressUpdate { current, total } => {
+                        self.download_state.progress = if total > 0 {
+                            current as f32 / total as f32
+                        } else {
+                            0.0
+                        };
+                        self.download_state.total_tracks = total;
+                        self.download_state.status =
+                            format!("正在下载... {}/{}", current, total);
+                    }
+                }
+            }
+            // Clear channel if done
+            if self.pending_download_rx.as_ref().map_or(false, |rx| rx.try_recv().is_err()) {
+                // Check if we have any more events pending - if not, clear after a short check
+                if !self.download_state.searching && !self.download_state.downloading {
+                    self.pending_download_rx = None;
+                }
+            }
+        }
+    }
+
+    /// Compute the save path for the lyric file.
+    fn compute_lyric_save_path(&self) -> std::path::PathBuf {
+        if self.current_track_path_for_download.is_empty() {
+            // Fallback to lyrics directory in current dir
+            return std::path::PathBuf::from("lyrics")
+                .join("downloaded.lrc");
+        }
+
+        let track_path = std::path::Path::new(&self.current_track_path_for_download);
+        let file_stem = track_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("unknown");
+
+        if self.download_state.save_to_song_dir {
+            // Save next to the audio file
+            let parent = track_path.parent().unwrap_or(std::path::Path::new("."));
+            parent.join(format!("{}.lrc", file_stem))
+        } else {
+            // Save to lyrics/ subdirectory
+            let parent = track_path.parent().unwrap_or(std::path::Path::new("."));
+            parent.join("lyrics").join(format!("{}.lrc", file_stem))
+        }
     }
 }
 
@@ -344,6 +483,7 @@ impl Render for MusicPlayer {
                     .child(make_btn("search", IconName::Search, Panel::Search, c))
                     .child(make_btn("lyrics", IconName::BookOpen, Panel::Lyrics, c))
                     .child(make_btn("lyr_edit", IconName::File, Panel::LyricEditor, c))
+                    .child(make_btn("lyr_download", IconName::ArrowDown, Panel::LyricDownload, c))
             )
         } else {
             None
@@ -353,6 +493,7 @@ impl Render for MusicPlayer {
             Panel::Playlist => self.render_playlist(&playlist_tracks, current_idx, layout_mode).into_any_element(),
             Panel::Lyrics => desktop_lyrics::render_lyrics_panel(&self.lyric_state, c).into_any_element(),
             Panel::LyricEditor => self.render_lyric_editor_panel(c, window, cx).into_any_element(),
+            Panel::LyricDownload => self.render_lyric_download_panel(c, window, cx).into_any_element(),
             _ => layout::content_area(c, tr).into_any_element(),
         });
 
@@ -1224,6 +1365,546 @@ impl MusicPlayer {
                 .child(div().text_size(px(9.0)).text_color(c.text_dim).child(selection_info))
                 .child(div().flex_grow())
                 .child(div().text_size(px(9.0)).text_color(c.text_dim).child("◀/▶ 调整时序 • ➕/� 增删行 • 💾 保存"))
+                .into_any_element()
+        );
+
+        v_flex()
+            .size_full()
+            .flex_grow()
+            .bg(c.bg)
+            .children(children)
+    }
+
+    /// Render the lyric download panel with full event handling.
+    fn render_lyric_download_panel(
+        &self,
+        c: &UiColors,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let state = &self.download_state;
+        let mut children: Vec<gpui::AnyElement> = Vec::new();
+
+        // === Header ===
+        children.push(
+            div()
+                .w_full()
+                .px_3().py_2()
+                .bg(c.control_bar_bg)
+                .child(
+                    div()
+                        .text_size(px(13.0))
+                        .text_color(c.text)
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child("歌词下载")
+                )
+                .into_any_element()
+        );
+
+        // === Search bar ===
+        let searching = state.searching;
+        let source_netease = state.source == "netease";
+        let keyword = state.keyword.clone();
+
+        // Note: pending_download_tx is initialized per-search inside the click handler
+
+        children.push(
+            h_flex()
+                .w_full()
+                .px_3().py_2()
+                .gap_2()
+                .bg(c.panel)
+                .items_center()
+                .child(
+                    // Source selector
+                    h_flex()
+                        .gap_1()
+                        .child(
+                            Button::new("src_netease")
+                                .label("● 网易云")
+                                .compact()
+                                .ghost()
+                                .bg(if source_netease { c.accent } else { Hsla { h: 0.0, s: 0.0, l: 0.0, a: 0.0 } })
+                                .on_click(cx.listener(move |this, _, _window, _cx| {
+                                    this.download_state.source = "netease".to_string();
+                                    tracing::info!("[LyricDownload] 切换到网易云");
+                                }))
+                        )
+                        .child(
+                            Button::new("src_qqmusic")
+                                .label("○ QQ音乐")
+                                .compact()
+                                .ghost()
+                                .bg(if !source_netease { c.accent } else { Hsla { h: 0.0, s: 0.0, l: 0.0, a: 0.0 } })
+                                .on_click(cx.listener(move |this, _, _window, _cx| {
+                                    this.download_state.source = "qqmusic".to_string();
+                                    tracing::info!("[LyricDownload] 切换到QQ音乐");
+                                }))
+                        )
+                )
+                .child(div().w(px(1.0)).h_full().bg(c.divider))
+                .child(
+                    // Keyword display (shows current search term)
+                    div()
+                        .flex_grow()
+                        .text_size(px(11.0))
+                        .text_color(if keyword.is_empty() { c.text_dim } else { c.text })
+                        .child(if keyword.is_empty() {
+                            "输入歌曲名或艺术家...".to_string()
+                        } else {
+                            keyword
+                        })
+                )
+                .child(
+                    Button::new("lyd_search")
+                        .label(if searching { "搜索中..." } else { "搜索" })
+                        .compact()
+                        .bg(if searching { c.progress_track } else { c.accent })
+                        .on_click(cx.listener(move |this, _, _window, _cx| {
+                            if this.download_state.keyword.trim().is_empty() {
+                                this.download_state.status = "请输入搜索关键词".to_string();
+                                return;
+                            }
+                            if this.download_state.searching {
+                                return;
+                            }
+                            this.download_state.searching = true;
+                            this.download_state.status = "正在搜索...".to_string();
+                            this.download_state.results.clear();
+                            this.download_state.selected_index = None;
+
+                            let keyword = this.download_state.keyword.clone();
+                            let source = this.download_state.source.clone();
+
+                            // Create channel for this search
+                            let (tx, rx) = std::sync::mpsc::channel();
+                            this.pending_download_rx = Some(rx);
+                            this.pending_download_tx = Some(tx.clone());
+
+                            let display_kw = keyword.clone();
+                            let is_qq = source == "qqmusic";
+
+                            // Spawn background thread to perform search
+                            std::thread::spawn(move || {
+                                let rt = match tokio::runtime::Runtime::new() {
+                                    Ok(rt) => rt,
+                                    Err(e) => {
+                                        let _ = tx.send(
+                                            lyric_download::DownloadEvent::SearchComplete(
+                                                Err(format!("创建运行时失败: {}", e)),
+                                            ),
+                                        );
+                                        return;
+                                    }
+                                };
+                                let result = rt.block_on(async {
+                                    lyric_download::search_lyrics(&source, &keyword).await
+                                });
+                                let _ = tx.send(
+                                    lyric_download::DownloadEvent::SearchComplete(result),
+                                );
+                            });
+
+                            tracing::info!(
+                                "[LyricDownload] 开始搜索: '{}' 来自 {}",
+                                display_kw,
+                                if is_qq { "QQ音乐" } else { "网易云" }
+                            );
+                        }))
+                )
+                .into_any_element()
+        );
+
+        // === Options bar ===
+        let include_translation = state.include_translation;
+        let save_to_song_dir = state.save_to_song_dir;
+        children.push(
+            h_flex()
+                .w_full()
+                .px_3().py_1()
+                .gap_3()
+                .bg(c.panel_alt)
+                .items_center()
+                .child(
+                    div()
+                        .text_size(px(10.0))
+                        .text_color(c.text_dim)
+                        .child("选项：")
+                )
+                .child(
+                    Button::new("lyd_translate")
+                        .label(if include_translation { "✓ 包含翻译" } else { "翻译" })
+                        .compact()
+                        .bg(if !include_translation { Hsla { h: 0.0, s: 0.0, l: 0.0, a: 0.0 } } else { c.accent })
+                        .ghost()
+                        .on_click(cx.listener(move |this, _, _window, _cx| {
+                            this.download_state.include_translation = !this.download_state.include_translation;
+                            tracing::info!(
+                                "[LyricDownload] 包含翻译: {}",
+                                this.download_state.include_translation
+                            );
+                        }))
+                )
+                .child(
+                    Button::new("lyd_save_loc")
+                        .label(if save_to_song_dir { "保存到歌曲目录" } else { "保存到歌词目录" })
+                        .compact()
+                        .bg(if !save_to_song_dir { Hsla { h: 0.0, s: 0.0, l: 0.0, a: 0.0 } } else { c.accent })
+                        .ghost()
+                        .on_click(cx.listener(move |this, _, _window, _cx| {
+                            this.download_state.save_to_song_dir = !this.download_state.save_to_song_dir;
+                            tracing::info!(
+                                "[LyricDownload] 保存位置: {}",
+                                if this.download_state.save_to_song_dir { "歌曲目录" } else { "歌词目录" }
+                            );
+                        }))
+                )
+                .child(div().flex_grow())
+                .child(
+                    div()
+                        .text_size(px(9.0))
+                        .text_color(c.text_dim)
+                        .child(format!("来源: {}", if source_netease { "网易云音乐" } else { "QQ音乐" }))
+                )
+                .into_any_element()
+        );
+
+        // === Status bar (status message) ===
+        if !state.status.is_empty() {
+            children.push(
+                h_flex()
+                    .w_full()
+                    .px_3().py_1()
+                    .bg(c.panel_alt)
+                    .items_center()
+                    .child(
+                        div()
+                            .text_size(px(10.0))
+                            .text_color(c.accent)
+                            .child(state.status.clone())
+                    )
+                    .into_any_element()
+            );
+        }
+
+        // === Results area ===
+        if state.results.is_empty() && !state.searching {
+            children.push(
+                v_flex()
+                    .flex_grow()
+                    .size_full()
+                    .px_4().py_8()
+                    .justify_center()
+                    .items_center()
+                    .gap_3()
+                    .bg(c.bg)
+                    .child(
+                        div()
+                            .text_size(px(14.0))
+                            .text_color(c.text_dim)
+                            .child("🔍 搜索歌词")
+                    )
+                    .child(
+                        div()
+                            .text_size(px(11.0))
+                            .text_color(c.text_dim)
+                            .child("输入歌曲名称和艺术家，然后按搜索")
+                    )
+                    .child(
+                        div()
+                            .mt_2()
+                            .text_size(px(10.0))
+                            .text_color(c.text_dim)
+                            .child("支持网易云音乐和QQ音乐搜索")
+                    )
+                    .into_any_element()
+            );
+        } else if state.searching {
+            children.push(
+                v_flex()
+                    .flex_grow()
+                    .size_full()
+                    .px_4().py_8()
+                    .justify_center()
+                    .items_center()
+                    .gap_2()
+                    .bg(c.bg)
+                    .child(
+                        div()
+                            .text_size(px(14.0))
+                            .text_color(c.accent)
+                            .child("搜索中...")
+                    )
+                    .child(
+                        div()
+                            .text_size(px(10.0))
+                            .text_color(c.text_dim)
+                            .child("正在从在线音乐库搜索歌词")
+                    )
+                    .into_any_element()
+            );
+        } else {
+            // Results list
+            let result_count = state.results.len();
+            let downloading = state.downloading;
+            let source = state.source.clone();
+            let include_translation = state.include_translation;
+
+            let mut list = v_flex().w_full().flex_grow();
+
+            for (i, result) in state.results.iter().enumerate() {
+                let is_selected = state.selected_index == Some(i);
+                let bg = if is_selected {
+                    c.playlist_item_selected
+                } else if i % 2 == 0 {
+                    c.panel
+                } else {
+                    c.panel_alt
+                };
+
+                let info_line = if !result.artist.is_empty() && !result.album.is_empty() {
+                    format!("{} - {}", result.artist, result.album)
+                } else if !result.artist.is_empty() {
+                    result.artist.clone()
+                } else if !result.album.is_empty() {
+                    result.album.clone()
+                } else {
+                    "未知".to_string()
+                };
+
+                let title = result.title.clone();
+                let song_id = result.id.clone();
+                let src = source.clone();
+                let inc_trans = include_translation;
+
+                // Pre-clone for the download closure to avoid borrow issues
+                let dl_title = title.clone();
+                let dl_song_id = song_id.clone();
+                let dl_src = src.clone();
+
+                list = list.child(
+                    h_flex()
+                        .id(("lyr_dld_result", i as u64))
+                        .w_full()
+                        .px_3().py_2()
+                        .gap_2()
+                        .bg(bg)
+                        .items_center()
+                        .hover(|s| s.bg(c.playlist_item_selected.opacity(0.5)))
+                        .cursor(CursorStyle::PointingHand)
+                        .on_click(cx.listener(move |this, _, _window, _cx| {
+                            this.download_state.selected_index = Some(i);
+                            tracing::info!("[LyricDownload] 选中结果 #{}", i);
+                        }))
+                        .child(
+                            // Index indicator
+                            div()
+                                .w(px(24.0))
+                                .text_size(px(9.0))
+                                .text_color(if is_selected { c.text } else { c.text_dim })
+                                .text_right()
+                                .child(format!("{:02}", i + 1))
+                        )
+                        .child(
+                            // Cover placeholder
+                            div()
+                                .w(px(32.0)).h(px(32.0))
+                                .rounded(px(4.0))
+                                .bg(c.panel_alt)
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child(
+                                    div()
+                                        .text_size(px(14.0))
+                                        .text_color(c.text_dim)
+                                        .child("♪")
+                                )
+                        )
+                        .child({
+                            div()
+                                .flex_grow()
+                                .child(
+                                    div()
+                                        .text_size(px(12.0))
+                                        .text_color(c.text)
+                                        .child(title.clone())
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(10.0))
+                                        .text_color(c.text_dim)
+                                        .mt(px(1.0))
+                                        .child(info_line)
+                                )
+                        })
+                        .child(
+                            // Download button
+                            Button::new(("lyd_dld_btn", i as u64))
+                                .label(if downloading && is_selected { "下载中" } else { "下载" })
+                                .compact()
+                                .bg(if downloading { c.progress_track } else { Hsla { h: 0.0, s: 0.0, l: 0.0, a: 0.0 } })
+                                .ghost()
+                                .on_click(cx.listener(move |this, _, _window, _cx| {
+                                    if this.download_state.downloading {
+                                        return;
+                                    }
+                                    this.download_state.downloading = true;
+                                    this.download_state.selected_index = Some(i);
+
+                                    let display_title = dl_title.clone();
+                                    let song_id_val = dl_song_id.clone();
+                                    this.download_state.status = format!("正在下载: {}", display_title);
+
+                                    let source = dl_src.clone();
+                                    let include_translation = inc_trans;
+                                    let song_id = song_id_val.clone();
+                                    let (tx, rx) = std::sync::mpsc::channel();
+                                    this.pending_download_rx = Some(rx);
+                                    this.pending_download_tx = Some(tx.clone());
+
+                                    std::thread::spawn(move || {
+                                        let rt = match tokio::runtime::Runtime::new() {
+                                            Ok(rt) => rt,
+                                            Err(e) => {
+                                                let _ = tx.send(
+                                                    lyric_download::DownloadEvent::DownloadComplete {
+                                                        song_id: song_id.clone(),
+                                                        result: Err(format!("创建运行时失败: {}", e)),
+                                                    },
+                                                );
+                                                return;
+                                            }
+                                        };
+                                        let result = rt.block_on(async {
+                                            lyric_download::download_lyric(
+                                                &source,
+                                                &song_id,
+                                                include_translation,
+                                            )
+                                            .await
+                                        });
+                                        let _ = tx.send(
+                                            lyric_download::DownloadEvent::DownloadComplete {
+                                                song_id,
+                                                result,
+                                            },
+                                        );
+                                    });
+
+                                    tracing::info!("[Lyric下载] 开始下载: {} (ID: {})", display_title, song_id_val);
+                                }))
+                        )
+                );
+            }
+
+            // Progress bar for batch download
+            if state.total_tracks > 0 {
+                let pct = (state.progress * 100.0) as u32;
+                let progress_current = (state.progress * state.total_tracks as f32) as usize;
+                list = list.child(
+                    h_flex()
+                        .w_full()
+                        .px_3().py_1()
+                        .bg(c.control_bar_bg)
+                        .gap_2()
+                        .items_center()
+                        .child(
+                            div()
+                                .w(px(80.0))
+                                .text_size(px(9.0))
+                                .text_color(c.text_dim)
+                                .child(format!("{}/{}", progress_current, state.total_tracks))
+                        )
+                        .child(
+                            div()
+                                .flex_grow()
+                                .h(px(4.0))
+                                .bg(c.progress_track)
+                                .rounded(px(2.0))
+                                .child(
+                                    div()
+                                        .h_full()
+                                        .w(DefiniteLength::Fraction(state.progress.clamp(0.0, 1.0)))
+                                        .bg(c.accent)
+                                        .rounded(px(2.0))
+                                )
+                        )
+                        .child(
+                            div()
+                                .w(px(36.0))
+                                .text_size(px(9.0))
+                                .text_color(c.text_dim)
+                                .child(format!("{}%", pct))
+                        )
+                );
+            }
+
+            children.push(list.into_any_element());
+
+            // Add a label with result count
+            children.push(
+                h_flex()
+                    .w_full()
+                    .px_3().py_1()
+                    .bg(c.panel_alt)
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_size(px(9.0))
+                            .text_color(c.text_dim)
+                            .child(format!("找到 {} 条结果", result_count))
+                    )
+                    .child(div().flex_grow())
+                    .child(
+                        div()
+                            .text_size(px(9.0))
+                            .text_color(c.text_dim)
+                            .child("单击选中 • 点击下载")
+                    )
+                    .into_any_element()
+            );
+        }
+
+        // === Bottom status bar ===
+        let status_text = if state.results.is_empty() {
+            if state.searching { "正在搜索...".to_string() } else { "就绪".to_string() }
+        } else {
+            format!("{} 条结果", state.results.len())
+        };
+
+        children.push(
+            h_flex()
+                .w_full()
+                .px_3().py_1()
+                .bg(c.control_bar_bg)
+                .items_center()
+                .gap_2()
+                .child(
+                    div()
+                        .text_size(px(9.0))
+                        .text_color(c.text_dim)
+                        .child(status_text)
+                )
+                .child(div().flex_grow())
+                .child({
+                    let path_text = if self.current_track_path_for_download.is_empty() {
+                        "先播放一首歌曲以自动保存歌词到其目录".to_string()
+                    } else {
+                        let path_display = self.current_track_path_for_download.clone();
+                        let display = if path_display.len() > 60 {
+                            format!("...{}", &path_display[path_display.len()-57..])
+                        } else {
+                            path_display
+                        };
+                        format!("保存到: {}", display)
+                    };
+                    div()
+                        .text_size(px(9.0))
+                        .text_color(c.text_dim)
+                        .child(path_text)
+                })
                 .into_any_element()
         );
 
