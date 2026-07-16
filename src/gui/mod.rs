@@ -114,6 +114,10 @@ pub struct MusicPlayer {
     /// Playlist search/filter state
     playlist_filter_text: String,
     playlist_filter_mode: PlaylistFilterMode,
+    /// Playlist drag-drop reorder state
+    playlist_drag_from: Option<usize>,
+    playlist_drag_to: Option<usize>,
+    playlist_drag_active: bool,
 }
 
 /// Filter mode for the playlist
@@ -208,6 +212,9 @@ impl MusicPlayer {
             current_track_path_for_download: String::new(),
             playlist_filter_text: String::new(),
             playlist_filter_mode: PlaylistFilterMode::All,
+            playlist_drag_from: None,
+            playlist_drag_to: None,
+            playlist_drag_active: false,
         }
     }
 
@@ -642,9 +649,66 @@ impl Render for MusicPlayer {
                     .h(px(28.0))
                     .px_4().gap_3()
                     .bg(c.control_bar_bg)
-                    .child(Button::new("media_lib_btn").icon(IconName::Folder).ghost().compact().label("媒体库"))
-                    .child(Button::new("add_files_btn").icon(IconName::Plus).ghost().compact().label("添加"))
-                    .child(Button::new("save_pl_btn").icon(IconName::File).ghost().compact().label("保存"))
+                    .child(Button::new("media_lib_btn").icon(IconName::Folder).ghost().compact().label("媒体库")
+                        .on_click(cx.listener(|this, _, _window, _cx| {
+                            this.media_lib_open = !this.media_lib_open;
+                            tracing::info!("[Playlist] 媒体库 toggled: {}", this.media_lib_open);
+                        })))
+                    .child(Button::new("add_files_btn").icon(IconName::Plus).ghost().compact().label("添加")
+                        .on_click(cx.listener(|this, _, _window, _cx| {
+                            if let Some(file) = rfd::FileDialog::new()
+                                .add_filter("音频文件", &["mp3", "flac", "wav", "ogg", "aac", "m4a", "wma", "ape"])
+                                .add_filter("播放列表", &["m3u", "m3u8"])
+                                .pick_file()
+                            {
+                                let path = file.to_string_lossy().to_string();
+                                if path.ends_with(".m3u") || path.ends_with(".m3u8") {
+                                    // Import M3U playlist
+                                    match crate::core::playlist::Playlist::import_m3u(&path) {
+                                        Ok(tracks) => {
+                                            let count = tracks.len();
+                                            this.player.playlist_mut().add_tracks(tracks);
+                                            tracing::info!("[Playlist] 导入 {} 首从 {}", count, path);
+                                        }
+                                        Err(e) => tracing::error!("[Playlist] 导入失败: {}", e),
+                                    }
+                                } else {
+                                    // Add audio file
+                                    let _ = this.player.play_file(&path);
+                                }
+                            }
+                        })))
+                    .child(Button::new("import_pl_btn").icon(IconName::ArrowDown).ghost().compact().label("导入")
+                        .on_click(cx.listener(|this, _, _window, _cx| {
+                            if let Some(file) = rfd::FileDialog::new()
+                                .add_filter("播放列表", &["m3u", "m3u8"])
+                                .pick_file()
+                            {
+                                let path = file.to_string_lossy().to_string();
+                                match crate::core::playlist::Playlist::import_m3u(&path) {
+                                    Ok(tracks) => {
+                                        let count = tracks.len();
+                                        this.player.playlist_mut().add_tracks(tracks);
+                                        tracing::info!("[Playlist] 导入 {} 首从 {}", count, path);
+                                    }
+                                    Err(e) => tracing::error!("[Playlist] 导入失败: {}", e),
+                                }
+                            }
+                        })))
+                    .child(Button::new("save_pl_btn").icon(IconName::File).ghost().compact().label("导出")
+                        .on_click(cx.listener(|this, _, _window, _cx| {
+                            if let Some(file) = rfd::FileDialog::new()
+                                .add_filter("M3U播放列表", &["m3u8"])
+                                .set_file_name("playlist.m3u8")
+                                .save_file()
+                            {
+                                let path = file.to_string_lossy().to_string();
+                                match this.player.playlist().export_m3u(&path, true) {
+                                    Ok(()) => tracing::info!("[Playlist] 导出到 {}", path),
+                                    Err(e) => tracing::error!("[Playlist] 导出失败: {}", e),
+                                }
+                            }
+                        })))
                     .child(div().flex_grow())
                     .child(layout::txt(&format!("{} 首 | {}", track_count, total_dur), 10.0, c.text_dim))
             );
@@ -1938,11 +2002,13 @@ impl MusicPlayer {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let _view = cx.entity().clone();
+        let view = cx.entity().clone();
         let c = &self.colours;
         let player = self.player.clone();
         let filter_text = self.playlist_filter_text.clone();
         let filter_mode = self.playlist_filter_mode;
+        let drag_active = self.playlist_drag_active;
+        let drag_to = self.playlist_drag_to;
 
         // Filter tracks based on search text and filter mode
         let filtered_indices: Vec<usize> = tracks.iter().enumerate().filter_map(|(i, track)| {
@@ -2107,22 +2173,83 @@ impl MusicPlayer {
                                 let is_fav = track.is_favourite;
                                 let ctx_player = player.clone();
 
+                                // Highlight track as drop target when dragging
+                                let is_drop_target = drag_active && drag_to == Some(i);
+                                let row_bg = if is_drop_target {
+                                    c.accent.opacity(0.3)
+                                } else {
+                                    bg
+                                };
+
                                 h_flex()
                                     .id(("track", i))
                                     .items_center()
                                     .w_full()
                                     .h(px(row_height))
                                     .px_4().gap_3()
-                                    .bg(bg)
-                                    .hover(|s| s.bg(c.playlist_item_selected))
+                                    .bg(row_bg)
+                                    .hover(|s| s.bg(if is_drop_target { c.accent.opacity(0.4) } else { c.playlist_item_selected }))
                                     .cursor(gpui::CursorStyle::PointingHand)
+                                    // Drag handle (grip dots)
+                                    .child(
+                                        div()
+                                            .w(px(10.0))
+                                            .h(px(row_height - 4.0))
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .cursor(gpui::CursorStyle::PointingHand)
+                                            .text_color(c.text_dim)
+                                            .text_size(px(10.0))
+                                            .child("⠿")
+                                            .on_mouse_down(gpui::MouseButton::Left, {
+                                                let v = view.clone();
+                                                let idx = i;
+                                                move |_, _, cx| {
+                                                    let _ = v.update(cx, |this, _cx| {
+                                                        this.playlist_drag_active = true;
+                                                        this.playlist_drag_from = Some(idx);
+                                                        this.playlist_drag_to = Some(idx);
+                                                    });
+                                                }
+                                            })
+                                            .on_mouse_up(gpui::MouseButton::Left, {
+                                                let v = view.clone();
+                                                move |_, _, cx| {
+                                                    let _ = v.update(cx, |this, _cx| {
+                                                        if this.playlist_drag_active {
+                                                            if let (Some(from), Some(to)) = (this.playlist_drag_from, this.playlist_drag_to) {
+                                                                if from != to {
+                                                                    let _ = this.player.playlist_mut().move_track(from, to);
+                                                                }
+                                                            }
+                                                        }
+                                                        this.playlist_drag_active = false;
+                                                        this.playlist_drag_from = None;
+                                                        this.playlist_drag_to = None;
+                                                    });
+                                                }
+                                            })
+                                    )
                                     .child(h_flex().flex_grow().child(layout::txt(&display_name, font_size, text_color)))
+                                    .child(if is_fav { layout::txt("♥", font_size, c.accent) } else { layout::txt("", font_size, c.text_dim) })
                                     .child(layout::txt(&dur_str, font_size - 1.0, c.text_dim))
                                     .on_click({
                                         let p = player.clone();
                                         let fp = file_path.clone();
                                         move |_, _, _| {
                                             let _ = p.play_file(&fp);
+                                        }
+                                    })
+                                    .on_mouse_move({
+                                        let v = view.clone();
+                                        let idx = i;
+                                        move |_, _, cx| {
+                                            let _ = v.update(cx, |this, _cx| {
+                                                if this.playlist_drag_active && this.playlist_drag_to != Some(idx) {
+                                                    this.playlist_drag_to = Some(idx);
+                                                }
+                                            });
                                         }
                                     })
                                     .context_menu(move |menu, _w, _cx| {
