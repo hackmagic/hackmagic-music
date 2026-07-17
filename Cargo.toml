@@ -2,7 +2,7 @@
 name = "hm"
 version = "1.0.0"
 edition = "2021"
-description = "HackMagic Music Player - Cross-platform music player with native Bevy GUI"
+description = "HackMagic Music Player - Cross-platform music player with native GPUI"
 
 [[bin]]
 name = "hm"

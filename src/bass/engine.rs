@@ -237,9 +237,15 @@ impl PlayerEngine for BassEngine {
 
             *self.stream.lock().unwrap() = stream;
 
+            // tempo stream 需要额外的 bass_fx.dll；缺失时降级直接用原 stream 播放
             let tempo_flags = sys::BASS_FX_FREESOURCE | sys::BASS_FX_TEMPO_ALGO_LINEAR;
-            let tempo = sys::BASS_FX_TempoCreate(stream, tempo_flags)
-                .map_err(|e| PlayerError::BassError(format!("Cannot create tempo stream: {e}")))?;
+            let tempo = match sys::BASS_FX_TempoCreate(stream, tempo_flags) {
+                Ok(h) => h,
+                Err(e) => {
+                    tracing::warn!("[BASS] BASS_FX_TempoCreate 不可用（{}），降级用原 stream", e);
+                    stream
+                }
+            };
 
             *self.tempo_stream.lock().unwrap() = tempo;
 
@@ -666,13 +672,31 @@ impl PlayerEngine for BassEngine {
 }
 
 impl BassEngine {
+    /// 判断当前是否处于降级模式（没有 BASS_FX，tempo_stream 就是原 decode stream）。
+    /// 降级模式下 `BASS_ATTRIB_TEMPO` / `BASS_ATTRIB_TEMPO_PITCH` 都不可用。
+    fn is_fallback_mode(&self) -> bool {
+        let stream = *self.stream.lock().unwrap();
+        let tempo = *self.tempo_stream.lock().unwrap();
+        stream != 0 && stream == tempo
+    }
+
     fn apply_speed(&self, tempo: Dword, speed: f32) -> Result<()> {
+        // 没有 BASS_FX 时降级用原 stream，BASS_ATTRIB_TEMPO 不可用，直接跳过
+        if self.is_fallback_mode() {
+            tracing::debug!("[BASS] fallback mode: skip apply_speed({})", speed);
+            return Ok(());
+        }
         let tempo_attr = (speed - 1.0) * 100.0; // BASS tempo: 0 = normal, -95 = 5% speed, +5000 = 50x
         sys::BASS_ChannelSetAttribute(tempo, sys::BASS_ATTRIB_TEMPO, tempo_attr)
             .map_err(|e| PlayerError::BassError(format!("Set speed failed: {e}")))
     }
 
     fn apply_pitch(&self, tempo: Dword, pitch: i32) -> Result<()> {
+        // 没有 BASS_FX 时降级用原 stream，BASS_ATTRIB_TEMPO_PITCH 不可用，直接跳过
+        if self.is_fallback_mode() {
+            tracing::debug!("[BASS] fallback mode: skip apply_pitch({})", pitch);
+            return Ok(());
+        }
         let pitch_attr = pitch as f32;
         sys::BASS_ChannelSetAttribute(tempo, sys::BASS_ATTRIB_TEMPO_PITCH, pitch_attr)
             .map_err(|e| PlayerError::BassError(format!("Set pitch failed: {e}")))
