@@ -64,6 +64,7 @@ where
 {
     Button::new(label)
         .icon(icon)
+        .label(label)
         .ghost()
         .compact()
         .dropdown_menu(build_menu)

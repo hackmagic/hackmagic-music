@@ -109,7 +109,7 @@ impl SortMode {
 }
 
 /// A single track in the playlist
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Track {
     pub file_path: String,
     pub file_name: String,

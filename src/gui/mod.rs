@@ -161,7 +161,9 @@ impl MusicPlayer {
         let engine = EngineType::from_str(&cfg.play.engine);
         let player = Arc::new(Player::new(engine));
 
-        if let Err(e) = player.init() {
+        // BASS init may fail (missing DLLs); fall back to FFmpeg and use that as
+        // the active player so playback actually works.
+        let player = if let Err(e) = player.init() {
             tracing::warn!("BASS init failed ({}), trying FFmpeg", e);
             let fallback = Arc::new(Player::new(EngineType::Ffmpeg));
             if let Err(e2) = fallback.init() {
@@ -169,9 +171,11 @@ impl MusicPlayer {
                 std::process::exit(1);
             }
             fallback.set_volume(cfg.play.default_volume).ok();
+            fallback
         } else {
             player.set_volume(cfg.play.default_volume).ok();
-        }
+            player
+        };
 
         let dark = cfg.appearance.dark_mode;
         let theme_name = theme::ThemeName::from_config(&cfg.appearance.theme);
@@ -629,7 +633,21 @@ impl Render for MusicPlayer {
                         .child(
                             h_flex().items_center().gap_3()
                                 .child(Button::new("prev").icon(IconName::ChevronLeft).ghost().compact().on_click(move |_, _, _| { let _ = player_prev.prev(); }))
-                                .child(Button::new("play").label(play_label).primary().compact().on_click(move |_, _, _| { let _ = player_play.toggle_pause(); }))
+                                .child(Button::new("play").label(play_label).primary().compact().on_click(move |_, _, _| {
+                                    tracing::info!("[GUI] Play button clicked, is_playing={}", player_play.is_playing());
+                                    // Toggle pause if playing, otherwise play current/first track
+                                    let is_playing = player_play.is_playing();
+                                    if is_playing {
+                                        tracing::info!("[GUI] toggle_pause");
+                                        let _ = player_play.toggle_pause();
+                                    } else {
+                                        let idx = player_play.playlist().current_index().unwrap_or(0);
+                                        tracing::info!("[GUI] play_at_index({}), playlist len={}", idx, player_play.playlist().len());
+                                        let res = player_play.play_at_index(idx);
+                                        tracing::info!("[GUI] play_at_index result: {:?}", res.as_ref().map(|_| ()).map_err(|e| e.to_string()));
+                                        let _ = res;
+                                    }
+                                }))
                                 .child(Button::new("next").icon(IconName::ChevronRight).ghost().compact().on_click(move |_, _, _| { let _ = player_next.next(); }))
                                 .child(Button::new("repeat").label(repeat_label).ghost().compact().on_click(move |_, _, _| {
                                     use crate::core::playlist::RepeatMode;
@@ -831,13 +849,22 @@ impl MusicPlayer {
                                 let dir = folder.to_str().unwrap_or_default();
                                 match crate::media::scan_directory(dir, true, None) {
                                     Ok(entries) => {
+                                        // Add all tracks to playlist
+                                        let mut pl = p.playlist_mut();
+                                        let first_idx = pl.len();
+                                        for e in &entries {
+                                            pl.add_track(crate::core::playlist::Track::new(&e.file_path));
+                                        }
+                                        drop(pl);
+                                        // Save to media library
                                         let mut lib = crate::media::MediaLib::load();
-                                        let first_path = entries.first().map(|e| e.file_path.clone());
                                         for e in &entries { lib.upsert(e.clone()); }
                                         let _ = lib.save();
-                                        if let Some(path) = first_path {
-                                            let _ = p.play_file(&path);
+                                        // Play first track
+                                        if !entries.is_empty() {
+                                            let _ = p.play_at_index(first_idx);
                                         }
+                                        tracing::info!("[Menu] Loaded {} tracks from folder", entries.len());
                                     }
                                     Err(e) => tracing::warn!("Scan folder failed: {}", e),
                                 }
@@ -2273,9 +2300,10 @@ impl MusicPlayer {
                                     .child(layout::txt(&dur_str, font_size - 1.0, c.text_dim))
                                     .on_click({
                                         let p = player.clone();
-                                        let fp = file_path.clone();
+                                        let idx = i;
                                         move |_, _, _| {
-                                            let _ = p.play_file(&fp);
+                                            // Play track at index (don't duplicate)
+                                            let _ = p.play_at_index(idx);
                                         }
                                     })
                                     .on_mouse_move({

@@ -136,16 +136,25 @@ impl Player {
 
     // === Playback control ===
 
-    /// Open and play a file
+    /// Open and play a file.
+    /// If the file is already in the playlist, the existing entry is played
+    /// instead of adding a duplicate.
     pub fn play_file(&self, path: &str) -> Result<()> {
-        // Add to playlist so frontend status/playlist API can see it
-        {
-            let mut pl = self.playlist.lock().unwrap();
-            pl.add_track(Track::new(path));
-        }
+        tracing::info!("[PLAY] play_file(\"{}\") called", path);
         let idx = {
             let pl = self.playlist.lock().unwrap();
-            pl.len() - 1
+            // Reuse existing entry if present to avoid duplicates on repeated opens
+            pl.tracks().iter().position(|t| t.file_path == path)
+        };
+        tracing::info!("[PLAY] play_file existing index={:?}", idx);
+        let idx = match idx {
+            Some(i) => i,
+            None => {
+                let mut pl = self.playlist.lock().unwrap();
+                pl.add_track(Track::new(path));
+                tracing::info!("[PLAY] play_file added new track at index {}", pl.len() - 1);
+                pl.len() - 1
+            }
         };
         // play_at_index opens the engine and plays
         self.play_at_index(idx)
@@ -220,15 +229,24 @@ impl Player {
 
     /// Play track at index
     pub fn play_at_index(&self, index: usize) -> Result<()> {
+        tracing::info!("[PLAY] play_at_index(index={}) called", index);
         let playlist = self.playlist.lock().unwrap();
+        tracing::info!("[PLAY] playlist len={}, current_index={:?}", playlist.len(), playlist.current_index());
         let (path, is_cue, start_pos, end_pos, track_gain, album_gain) = playlist.get(index).map(|t| {
+            tracing::info!("[PLAY] track found: file_path={}, title={}, is_cue={}, start_pos={:?}, end_pos={:?}",
+                t.file_path, t.title, t.is_cue, t.start_pos, t.end_pos);
             (t.file_path.clone(), t.is_cue, t.start_pos, t.end_pos, t.track_gain, t.album_gain)
         }).unwrap_or_default();
         drop(playlist);
         if path.is_empty() {
+            tracing::warn!("[PLAY] play_at_index({}) -> NoTrack (get returned None)", index);
             return Err(PlayerError::NoTrack);
         }
-        self.engine.open(&path)?;
+        tracing::info!("[PLAY] engine.open(\"{}\") using {}", path, self.engine.name());
+        self.engine.open(&path).map_err(|e| {
+            tracing::error!("[PLAY] engine.open failed for \"{}\": {}", path, e);
+            e
+        })?;
         // Apply ReplayGain
         let cfg = crate::config::Config::load();
         let gain_db = match cfg.play.replaygain.as_str() {
@@ -238,12 +256,21 @@ impl Player {
         };
         self.engine.set_replaygain(gain_db);
         if is_cue && start_pos != Duration::ZERO {
+            tracing::info!("[PLAY] CUE seek to {:?}", start_pos);
             self.engine.seek(start_pos)?;
         }
         *self.cue_end_pos.lock().unwrap() = if is_cue && end_pos != Duration::ZERO { Some(end_pos) } else { None };
-        self.engine.play()?;
+        tracing::info!("[PLAY] engine.play() calling");
+        self.engine.play().map_err(|e| {
+            tracing::error!("[PLAY] engine.play failed for \"{}\": {}", path, e);
+            e
+        })?;
         let mut playlist = self.playlist.lock().unwrap();
-        playlist.set_current(index).ok();
+        playlist.set_current(index).map_err(|e| {
+            tracing::warn!("[PLAY] set_current({}) failed: {}", index, e);
+            e
+        })?;
+        tracing::info!("[PLAY] play_at_index({}) OK, path=\"{}\"", index, path);
         Ok(())
     }
 

@@ -271,29 +271,34 @@ fn scan_dir_recursive(dir: &Path, recursive: bool, entries: &mut Vec<LibEntry>, 
             cb(&path_str, entries.len());
         }
 
-        if let Ok(track) = tag::reader::read_tags(&path_str) {
-            // 忽略短时文件（配置了 min_duration_secs 且 duration > 0 时检查）
-            let min_dur = crate::config::Config::load().media_lib.min_duration_secs;
-            if min_dur > 0 && track.duration.as_secs() > 0 && track.duration.as_secs() < min_dur {
-                continue;
-            }
-            entries.push(LibEntry {
-                file_path: path_str,
-                title: track.title,
-                artist: track.artist,
-                album: track.album,
-                genre: track.genre,
-                track_number: track.track_number,
-                year: track.year,
-                duration_secs: track.duration.as_secs(),
-                bitrate: track.bitrate,
-                is_favourite: false,
-                play_count: 0,
-                last_played: String::new(),
-                song_id_netease: track.song_id_netease,
-                song_id_qq_music: track.song_id_qq_music,
-            });
+        // 读取标签失败时也要把文件加入列表（用文件名作为标题），避免只加载部分文件
+        let track = tag::reader::read_tags(&path_str).unwrap_or_default();
+        let min_dur = crate::config::Config::load().media_lib.min_duration_secs;
+        if min_dur > 0 && track.duration.as_secs() > 0 && track.duration.as_secs() < min_dur {
+            continue;
         }
+        // 标题为空时回退到文件名（不含扩展名）
+        let title = if track.title.is_empty() {
+            path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default()
+        } else {
+            track.title
+        };
+        entries.push(LibEntry {
+            file_path: path_str,
+            title,
+            artist: track.artist,
+            album: track.album,
+            genre: track.genre,
+            track_number: track.track_number,
+            year: track.year,
+            duration_secs: track.duration.as_secs(),
+            bitrate: track.bitrate,
+            is_favourite: false,
+            play_count: 0,
+            last_played: String::new(),
+            song_id_netease: track.song_id_netease,
+            song_id_qq_music: track.song_id_qq_music,
+        });
     }
 
     Ok(())

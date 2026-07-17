@@ -178,11 +178,13 @@ impl PlayerEngine for BassEngine {
     }
 
     fn open(&self, path: &str) -> Result<()> {
+        tracing::info!("[BASS] open(\"{}\")", path);
         self.close()?;
 
         let is_midi = path.ends_with(".mid") || path.ends_with(".midi") || path.ends_with(".rmi")
             || path.ends_with(".MID") || path.ends_with(".MIDI") || path.ends_with(".RMI");
         let is_url = path.starts_with("http://") || path.starts_with("https://") || path.starts_with("ftp://") || path.starts_with("mms://");
+        tracing::info!("[BASS] is_midi={}, is_url={}", is_midi, is_url);
 
         *self.is_midi_file.lock().unwrap() = is_midi && !is_url && sys::is_bass_midi_loaded();
 
@@ -297,16 +299,26 @@ impl PlayerEngine for BassEngine {
     }
 
     fn play(&self) -> Result<()> {
+        tracing::info!("[BASS] play() called");
         let tempo = *self.tempo_stream.lock().unwrap();
+        tracing::info!("[BASS] tempo_stream handle = {}", tempo);
         if tempo == 0 {
+            tracing::warn!("[BASS] play() -> NoTrack (tempo_stream == 0, open not called?)");
             return Err(PlayerError::NoTrack);
         }
+        tracing::info!("[BASS] wasapi_active={}, fade_effect={}",
+            *self.wasapi_active.lock().unwrap(),
+            *self.fade_effect.lock().unwrap());
 
         if *self.wasapi_active.lock().unwrap() {
             // WASAPI mode: set stream handle and start output
             WASAPI_STREAM.store(tempo, Ordering::SeqCst);
             sys::BASS_WASAPI_Start()
-                .map_err(|e| PlayerError::Playback(format!("Cannot start WASAPI: {e}")))?;
+                .map_err(|e| {
+                    tracing::error!("[BASS] BASS_WASAPI_Start failed: {}", e);
+                    PlayerError::Playback(format!("Cannot start WASAPI: {e}"))
+                })?;
+            tracing::info!("[BASS] WASAPI started");
         } else if *self.fade_effect.lock().unwrap() {
             let fade_ms = *self.fade_time.lock().unwrap();
             let target_vol = *self.volume.lock().unwrap() / 100.0;
@@ -316,11 +328,17 @@ impl PlayerEngine for BassEngine {
                 .map_err(|e| PlayerError::Playback(format!("Cannot play: {e}")))?;
             sys::BASS_ChannelSlideAttribute(tempo, sys::BASS_ATTRIB_VOL, target_vol, fade_ms)
                 .map_err(|e| PlayerError::Playback(format!("Cannot fade in: {e}")))?;
+            tracing::info!("[BASS] fade-in play started ({} ms)", fade_ms);
         } else {
             sys::BASS_ChannelPlay(tempo, 0)
-                .map_err(|e| PlayerError::Playback(format!("Cannot play: {e}")))?;
+                .map_err(|e| {
+                    tracing::error!("[BASS] BASS_ChannelPlay failed: {}", e);
+                    PlayerError::Playback(format!("Cannot play: {e}"))
+                })?;
+            tracing::info!("[BASS] BASS_ChannelPlay ok");
         }
         *self.state.lock().unwrap() = EngineState::Playing;
+        tracing::info!("[BASS] play() OK, state=Playing");
         Ok(())
     }
 

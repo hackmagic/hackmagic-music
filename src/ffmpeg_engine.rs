@@ -41,6 +41,7 @@ impl FfmpegEngine {
     }
 
     fn probe_audio(path: &str) -> Result<(u32, usize, f64)> {
+        tracing::info!("[FFMPEG] probe_audio(\"{}\")", path);
         let out = std::process::Command::new("ffprobe")
             .args([
                 "-v", "quiet",
@@ -53,6 +54,8 @@ impl FfmpegEngine {
             .map_err(|e| PlayerError::Other(format!("Cannot run ffprobe: {e}")))?;
 
         if !out.status.success() {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            tracing::error!("[FFMPEG] ffprobe failed: {}", stderr);
             return Err(PlayerError::Other("ffprobe failed - is FFmpeg installed?".into()));
         }
 
@@ -77,26 +80,36 @@ impl FfmpegEngine {
     }
 
     fn decode_to_buffer(path: &str) -> Result<Vec<f32>> {
+        tracing::info!("[FFMPEG] decode_to_buffer(\"{}\")", path);
         let mut child = std::process::Command::new("ffmpeg")
             .args(["-i", path, "-f", "f32le", "-acodec", "pcm_f32le", "-"])
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
             .spawn()
-            .map_err(|e| PlayerError::Other(format!("Cannot spawn ffmpeg: {e}")))?;
+            .map_err(|e| {
+                tracing::error!("[FFMPEG] cannot spawn ffmpeg: {}", e);
+                PlayerError::Other(format!("Cannot spawn ffmpeg: {e}"))
+            })?;
 
         let mut stdout = child.stdout.take()
             .ok_or_else(|| PlayerError::Other("Cannot capture ffmpeg output".into()))?;
+        let mut stderr = child.stderr.take()
+            .ok_or_else(|| PlayerError::Other("Cannot capture ffmpeg stderr".into()))?;
 
         let mut raw = Vec::new();
         stdout.read_to_end(&mut raw)
             .map_err(|e| PlayerError::Other(format!("Cannot read ffmpeg output: {e}")))?;
+        let mut stderr_buf = String::new();
+        let _ = stderr.read_to_string(&mut stderr_buf);
 
         let status = child.wait()
             .map_err(|e| PlayerError::Other(format!("Cannot wait ffmpeg: {e}")))?;
 
         if !status.success() {
+            tracing::error!("[FFMPEG] ffmpeg decoding failed (status={}): {}", status, stderr_buf.trim());
             return Err(PlayerError::Other("ffmpeg decoding failed - is FFmpeg installed?".into()));
         }
+        tracing::info!("[FFMPEG] decode done, {} raw bytes", raw.len());
 
         let sample_count = raw.len() / 4;
         let mut samples = Vec::with_capacity(sample_count);
@@ -134,15 +147,24 @@ impl PlayerEngine for FfmpegEngine {
     }
 
     fn open(&self, path: &str) -> Result<()> {
+        tracing::info!("[FFMPEG] open(\"{}\")", path);
         *self.output_stream.lock().unwrap() = None;
         self.paused_flag.store(false, Ordering::SeqCst);
         self.play_pos.store(0, Ordering::SeqCst);
 
-        let (sample_rate, channels, duration) = Self::probe_audio(path)?;
+        let (sample_rate, channels, duration) = Self::probe_audio(path).map_err(|e| {
+            tracing::error!("[FFMPEG] probe_audio failed for \"{}\": {}", path, e);
+            e
+        })?;
+        tracing::info!("[FFMPEG] probe ok: {} Hz, {} ch, {:.2}s", sample_rate, channels, duration);
         *self.sample_rate.lock().unwrap() = sample_rate;
         *self.channels.lock().unwrap() = channels;
 
-        let samples = Self::decode_to_buffer(path)?;
+        let samples = Self::decode_to_buffer(path).map_err(|e| {
+            tracing::error!("[FFMPEG] decode_to_buffer failed for \"{}\": {}", path, e);
+            e
+        })?;
+        tracing::info!("[FFMPEG] decoded {} samples", samples.len());
         let total_frames = if channels > 0 { samples.len() / channels } else { 0 };
         let total_dur_frames = (duration * f64::from(sample_rate)) as u64;
 
@@ -164,24 +186,30 @@ impl PlayerEngine for FfmpegEngine {
     }
 
     fn play(&self) -> Result<()> {
+        tracing::info!("[FFMPEG] play() state={:?}", *self.state.lock().unwrap());
         let state = *self.state.lock().unwrap();
         if state == EngineState::Paused {
             self.paused_flag.store(false, Ordering::SeqCst);
             *self.state.lock().unwrap() = EngineState::Playing;
+            tracing::info!("[FFMPEG] resumed from paused");
             return Ok(());
         }
         if state == EngineState::Playing {
+            tracing::info!("[FFMPEG] already playing, no-op");
             return Ok(());
         }
 
         let buf_data = self.buffer.lock().unwrap().clone();
         if buf_data.is_empty() {
+            tracing::warn!("[FFMPEG] play() -> NoTrack (buffer empty, open not called?)");
             return Err(PlayerError::NoTrack);
         }
+        tracing::info!("[FFMPEG] buffer ready, {} samples", buf_data.len());
         let ch = *self.channels.lock().unwrap();
         let total = *self.total_frames.lock().unwrap();
         let init_vol = *self.volume.lock().unwrap();
         let init_speed = *self.speed.lock().unwrap();
+        tracing::info!("[FFMPEG] config: ch={}, total_frames={}, vol={}, speed={}", ch, total, init_vol, init_speed);
 
         let buf = Arc::new(Mutex::new(buf_data));
         let pos = Arc::new(AtomicU64::new(self.play_pos.load(Ordering::SeqCst)));
