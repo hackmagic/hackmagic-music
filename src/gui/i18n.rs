@@ -78,6 +78,7 @@ pub struct Tr {
     pub menu_remove_invalid: &'static str,
     pub menu_reload_playlist: &'static str,
     pub menu_save_as_new: &'static str,
+    pub menu_delete_from_disk: &'static str,
     pub menu_locate_current: &'static str,
     // -- Lyric menu items --
     pub menu_reload_lyric: &'static str,
@@ -253,6 +254,7 @@ impl Tr {
         menu_remove_invalid: "Remove Invalid",
         menu_reload_playlist: "Reload Playlist",
         menu_save_as_new: "Save As New",
+        menu_delete_from_disk: "Delete From Disk",
         menu_locate_current: "Locate Current",
         menu_reload_lyric: "Reload Lyric",
         menu_copy_current_line: "Copy Current Line",
@@ -392,6 +394,7 @@ impl Tr {
         menu_remove_invalid: "移除无效项目",
         menu_reload_playlist: "重新载入",
         menu_save_as_new: "另存为新播放列表",
+        menu_delete_from_disk: "从磁盘删除",
         menu_locate_current: "定位到当前",
         menu_reload_lyric: "重新载入歌词",
         menu_copy_current_line: "复制当前行",

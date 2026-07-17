@@ -15,6 +15,7 @@ use gpui_component::{h_flex, v_flex, IconName, Root};
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::menu::{ContextMenuExt, PopupMenuItem};
 use gpui_component::slider::{Slider, SliderState, SliderValue};
+use gpui_component::input::{TextInput, InputState};
 use i18n::{Locale, Tr};
 use theme::UiColors;
 use crate::config::Config;
@@ -136,6 +137,9 @@ pub struct MusicPlayer {
     eq_preset_name: String,
     /// Settings dialog state
     settings_tab: dialogs::SettingsTab,
+    /// Open URL dialog state
+    url_dialog_open: bool,
+    url_state: Entity<InputState>,
 }
 
 /// Filter mode for the playlist
@@ -280,6 +284,8 @@ impl MusicPlayer {
             eq_sliders: (0..10).map(|_| cx.new(|_| SliderState::new().min(-12.0).max(12.0).step(0.5).default_value(0.0))).collect(),
             eq_preset_name: "自定义".to_string(),
             settings_tab: dialogs::SettingsTab::General,
+            url_dialog_open: false,
+            url_state: cx.new(|_| InputState::new("")),
         }
     }
 
@@ -975,10 +981,27 @@ impl MusicPlayer {
                         }
                     }))
                     .item(PopupMenuItem::new(s_open_url).on_click({
+                        let entity = _cx.entity().clone();
+                        move |_, _window, cx| {
+                            entity.update(cx, |this, cx| {
+                                this.url_dialog_open = true;
+                                cx.notify();
+                            });
+                        }
+                    }))
+                    .item(PopupMenuItem::new(tr.menu_save_as_new).on_click({
                         let p = player.clone();
                         move |_, _, _| {
-                            if let Some(path) = rfd::FileDialog::new().pick_file() {
-                                let _ = p.play_file(path.to_str().unwrap_or_default());
+                            if let Some(file) = rfd::FileDialog::new()
+                                .add_filter("M3U 播放列表", &["m3u", "m3u8"])
+                                .set_file_name("playlist.m3u")
+                                .save_file()
+                            {
+                                let path = file.to_string_lossy().to_string();
+                                match p.playlist_mut().export_m3u(&path, true) {
+                                    Ok(()) => tracing::info!("[Menu] 另存为新播放列表: {}", path),
+                                    Err(e) => tracing::error!("[Menu] 保存失败: {}", e),
+                                }
                             }
                         }
                     }))
@@ -1692,101 +1715,6 @@ impl MusicPlayer {
                                 }))
                     )
             )
-            // Column headers
-            .child(
-                h_flex()
-                    .w_full()
-                    .h(px(24.0))
-                    .px_4().gap_3()
-                    .bg(c.panel_alt)
-                    .items_center()
-                    .child(div().w(px(10.0))) // align with drag handle
-                    .child(
-                        Button::new("sort_title")
-                            .label(&if self.playlist_sort_field == PlaylistSortField::Title {
-                                if self.playlist_sort_asc { "标题 ▲" } else { "标题 ▼" }
-                            } else { "标题" })
-                            .compact().ghost()
-                            .text_size(px(10.0))
-                            .text_color(c.text_dim)
-                            .flex_grow()
-                            .on_click(cx.listener(|this, _, _window, _cx| {
-                                if this.playlist_sort_field == PlaylistSortField::Title {
-                                    this.playlist_sort_asc = !this.playlist_sort_asc;
-                                } else {
-                                    this.playlist_sort_field = PlaylistSortField::Title;
-                                    this.playlist_sort_asc = true;
-                                }
-                                let _ = this.player.playlist_mut().sort(crate::core::playlist::SortMode::Title, !this.playlist_sort_asc);
-                            }))
-                    )
-                    .child(
-                        if matches!(layout_mode, LayoutMode::Big) {
-                            Button::new("sort_artist")
-                                .label(&if self.playlist_sort_field == PlaylistSortField::Artist {
-                                    if self.playlist_sort_asc { "艺术家 ▲" } else { "艺术家 ▼" }
-                                } else { "艺术家" })
-                                .compact().ghost()
-                                .text_size(px(10.0))
-                                .text_color(c.text_dim)
-                                .w(px(80.0))
-                                .on_click(cx.listener(|this, _, _window, _cx| {
-                                    if this.playlist_sort_field == PlaylistSortField::Artist {
-                                        this.playlist_sort_asc = !this.playlist_sort_asc;
-                                    } else {
-                                        this.playlist_sort_field = PlaylistSortField::Artist;
-                                        this.playlist_sort_asc = true;
-                                    }
-                                    let _ = this.player.playlist_mut().sort(crate::core::playlist::SortMode::Artist, !this.playlist_sort_asc);
-                                })).into_any_element()
-                        } else {
-                            div().into_any_element()
-                        }
-                    )
-                    .child(
-                        if matches!(layout_mode, LayoutMode::Big) {
-                            Button::new("sort_album")
-                                .label(&if self.playlist_sort_field == PlaylistSortField::Album {
-                                    if self.playlist_sort_asc { "专辑 ▲" } else { "专辑 ▼" }
-                                } else { "专辑" })
-                                .compact().ghost()
-                                .text_size(px(10.0))
-                                .text_color(c.text_dim)
-                                .w(px(80.0))
-                                .on_click(cx.listener(|this, _, _window, _cx| {
-                                    if this.playlist_sort_field == PlaylistSortField::Album {
-                                        this.playlist_sort_asc = !this.playlist_sort_asc;
-                                    } else {
-                                        this.playlist_sort_field = PlaylistSortField::Album;
-                                        this.playlist_sort_asc = true;
-                                    }
-                                    let _ = this.player.playlist_mut().sort(crate::core::playlist::SortMode::Album, !this.playlist_sort_asc);
-                                })).into_any_element()
-                        } else {
-                            div().into_any_element()
-                        }
-                    )
-                    .child(
-                        Button::new("sort_dur")
-                            .label(&if self.playlist_sort_field == PlaylistSortField::Duration {
-                                if self.playlist_sort_asc { "时长 ▲" } else { "时长 ▼" }
-                            } else { "时长" })
-                            .compact().ghost()
-                            .text_size(px(10.0))
-                            .text_color(c.text_dim)
-                            .w(px(48.0))
-                            .text_align_right()
-                            .on_click(cx.listener(|this, _, _window, _cx| {
-                                if this.playlist_sort_field == PlaylistSortField::Duration {
-                                    this.playlist_sort_asc = !this.playlist_sort_asc;
-                                } else {
-                                    this.playlist_sort_field = PlaylistSortField::Duration;
-                                    this.playlist_sort_asc = true;
-                                }
-                                let _ = this.player.playlist_mut().sort(crate::core::playlist::SortMode::Time, !this.playlist_sort_asc);
-                            }))
-                    )
-            )
             .child(
                     // Keyword display (shows current search term)
                     div()
@@ -2417,6 +2345,100 @@ impl MusicPlayer {
                                         this.playlist_filter_mode = PlaylistFilterMode::Favorites;
                                     }))
                             )
+                    )
+            )
+            // Column headers
+            .child(
+                h_flex()
+                    .w_full()
+                    .h(px(24.0))
+                    .px_4().gap_3()
+                    .bg(c.panel_alt)
+                    .items_center()
+                    .child(div().w(px(10.0))) // align with drag handle
+                    .child(
+                        Button::new("sort_title")
+                            .label((if self.playlist_sort_field == PlaylistSortField::Title {
+                                if self.playlist_sort_asc { "标题 ▲" } else { "标题 ▼" }
+                            } else { "标题" }).to_string())
+                            .compact().ghost()
+                            .text_size(px(10.0))
+                            .text_color(c.text_dim)
+                            .flex_grow()
+                            .on_click(cx.listener(|this, _, _window, _cx| {
+                                if this.playlist_sort_field == PlaylistSortField::Title {
+                                    this.playlist_sort_asc = !this.playlist_sort_asc;
+                                } else {
+                                    this.playlist_sort_field = PlaylistSortField::Title;
+                                    this.playlist_sort_asc = true;
+                                }
+                                let _ = this.player.playlist_mut().sort(crate::core::playlist::SortMode::Title, !this.playlist_sort_asc);
+                            }))
+                    )
+                    .child(
+                        if matches!(layout_mode, LayoutMode::Big) {
+                            Button::new("sort_artist")
+                                .label((if self.playlist_sort_field == PlaylistSortField::Artist {
+                                    if self.playlist_sort_asc { "艺术家 ▲" } else { "艺术家 ▼" }
+                                } else { "艺术家" }).to_string())
+                                .compact().ghost()
+                                .text_size(px(10.0))
+                                .text_color(c.text_dim)
+                                .w(px(80.0))
+                                .on_click(cx.listener(|this, _, _window, _cx| {
+                                    if this.playlist_sort_field == PlaylistSortField::Artist {
+                                        this.playlist_sort_asc = !this.playlist_sort_asc;
+                                    } else {
+                                        this.playlist_sort_field = PlaylistSortField::Artist;
+                                        this.playlist_sort_asc = true;
+                                    }
+                                    let _ = this.player.playlist_mut().sort(crate::core::playlist::SortMode::Artist, !this.playlist_sort_asc);
+                                })).into_any_element()
+                        } else {
+                            div().into_any_element()
+                        }
+                    )
+                    .child(
+                        if matches!(layout_mode, LayoutMode::Big) {
+                            Button::new("sort_album")
+                                .label((if self.playlist_sort_field == PlaylistSortField::Album {
+                                    if self.playlist_sort_asc { "专辑 ▲" } else { "专辑 ▼" }
+                                } else { "专辑" }).to_string())
+                                .compact().ghost()
+                                .text_size(px(10.0))
+                                .text_color(c.text_dim)
+                                .w(px(80.0))
+                                .on_click(cx.listener(|this, _, _window, _cx| {
+                                    if this.playlist_sort_field == PlaylistSortField::Album {
+                                        this.playlist_sort_asc = !this.playlist_sort_asc;
+                                    } else {
+                                        this.playlist_sort_field = PlaylistSortField::Album;
+                                        this.playlist_sort_asc = true;
+                                    }
+                                    let _ = this.player.playlist_mut().sort(crate::core::playlist::SortMode::Album, !this.playlist_sort_asc);
+                                })).into_any_element()
+                        } else {
+                            div().into_any_element()
+                        }
+                    )
+                    .child(
+                        Button::new("sort_dur")
+                            .label((if self.playlist_sort_field == PlaylistSortField::Duration {
+                                if self.playlist_sort_asc { "时长 ▲" } else { "时长 ▼" }
+                            } else { "时长" }).to_string())
+                            .compact().ghost()
+                            .text_size(px(10.0))
+                            .text_color(c.text_dim)
+                            .w(px(48.0))
+                            .on_click(cx.listener(|this, _, _window, _cx| {
+                                if this.playlist_sort_field == PlaylistSortField::Duration {
+                                    this.playlist_sort_asc = !this.playlist_sort_asc;
+                                } else {
+                                    this.playlist_sort_field = PlaylistSortField::Duration;
+                                    this.playlist_sort_asc = true;
+                                }
+                                let _ = this.player.playlist_mut().sort(crate::core::playlist::SortMode::Time, !this.playlist_sort_asc);
+                            }))
                     )
             )
             .child(
