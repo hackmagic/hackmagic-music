@@ -194,7 +194,7 @@ impl PlayerEngine for BassEngine {
                 0,
                 path_wide.as_ptr().cast::<c_void>(),
                 0, 0,
-                0, // no decode flag — direct playback
+                sys::BASS_UNICODE, // wide (UTF-16) path，否则中文路径打不开
                 0, // default freq (44100)
             ).map_err(|e| PlayerError::CannotOpen(format!("Cannot open MIDI '{path}': {e}")))?;
 
@@ -231,7 +231,7 @@ impl PlayerEngine for BassEngine {
                     0,
                     path_wide.as_ptr().cast::<c_void>(),
                     0, 0,
-                    flags,
+                    flags | sys::BASS_UNICODE, // wide (UTF-16) path，否则中文路径打不开
                 )
             }.map_err(|e| PlayerError::CannotOpen(format!("Cannot open '{path}': {e}")))?;
 

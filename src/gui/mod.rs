@@ -463,8 +463,12 @@ impl MusicPlayer {
 
 impl Render for MusicPlayer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // NOTE: do NOT call cx.notify() here — calling it every frame causes
+        // an infinite re-render loop and triggers GPUI's
+        // "RefCell already borrowed" panic. State changes that need a
+        // repaint should call cx.notify() from the event handler that
+        // produced the change, not from render itself.
         self.poll_player_state(window, cx);
-        cx.notify();
         let tr = self.tr;
         let c = &self.colours;
 

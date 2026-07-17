@@ -30,6 +30,8 @@ pub const BASS_DEVICE_STEREO: u32 = 0x8000;
 // BASS_StreamCreateFile flags
 pub const BASS_STREAM_DECODE: u32 = 0x0020_0000;
 pub const BASS_SAMPLE_FLOAT: u32 = 0x100;
+/// 路径/字符串是 UTF-16 wide string（必须与 wide 路径配合使用，否则中文路径打不开）
+pub const BASS_UNICODE: u32 = 0x8000_0000;
 pub const BASS_SAMPLE_LOOP: u32 = 0x4;
 pub const BASS_SAMPLE_3D: u32 = 0x8;
 pub const BASS_SAMPLE_SOFTWARE: u32 = 0x10;
