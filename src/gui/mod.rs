@@ -24,6 +24,7 @@ use crate::core::playlist::Track;
 use responsive::{LayoutMode, ResponsiveState};
 
 static ACTIVE_PANEL: AtomicU8 = AtomicU8::new(0);
+static MINI_MODE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Panel {
@@ -103,6 +104,7 @@ pub struct MusicPlayer {
     is_favourite: bool,
     maximized: bool,
     volume_slider: Entity<SliderState>,
+    speed_slider: Entity<SliderState>,
     responsive: ResponsiveState,
     eq_open: bool,
     lyric_visible: bool,
@@ -118,6 +120,8 @@ pub struct MusicPlayer {
     /// Playlist search/filter state
     playlist_filter_text: String,
     playlist_filter_mode: PlaylistFilterMode,
+    playlist_sort_field: PlaylistSortField,
+    playlist_sort_asc: bool,
     /// Playlist drag-drop reorder state
     playlist_drag_from: Option<usize>,
     playlist_drag_to: Option<usize>,
@@ -142,6 +146,15 @@ enum PlaylistFilterMode {
     Album,
     Genre,
     Favorites,
+}
+
+/// Playlist column sort field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PlaylistSortField {
+    Title,
+    Artist,
+    Album,
+    Duration,
 }
 
 /// Media library browsing category
@@ -188,6 +201,19 @@ impl MusicPlayer {
             SliderState::new().min(0.0).max(100.0).step(1.0).default_value(vol as f32)
         });
 
+        let speed_val = cfg.play.speed;
+        let speed_slider = cx.new(|_cx| {
+            SliderState::new().min(0.5).max(2.0).step(0.05).default_value(speed_val as f32)
+        });
+        let _sp_slider = speed_slider.clone();
+        let sp_player = player.clone();
+        let _ = cx.subscribe(&speed_slider, move |_, entity, _window, cx| {
+            let val = entity.read(cx).value();
+            if let SliderValue::Single(v) = val {
+                let _ = sp_player.set_speed(v);
+            }
+        });
+
         let _ = cx.subscribe(&volume_slider, |this, entity, _window, cx| {
             let val = entity.read(cx).value();
             if let SliderValue::Single(v) = val {
@@ -227,6 +253,7 @@ impl MusicPlayer {
             is_favourite: false,
             maximized: false,
             volume_slider,
+            speed_slider,
             responsive: ResponsiveState::new(1200.0, 800.0),
             eq_open: false,
             lyric_visible: true,
@@ -241,6 +268,8 @@ impl MusicPlayer {
             current_track_path_for_download: String::new(),
             playlist_filter_text: String::new(),
             playlist_filter_mode: PlaylistFilterMode::All,
+            playlist_sort_field: PlaylistSortField::Title,
+            playlist_sort_asc: true,
             playlist_drag_from: None,
             playlist_drag_to: None,
             playlist_drag_active: false,
@@ -479,6 +508,50 @@ impl Render for MusicPlayer {
         self.responsive.update(window_width, window_height);
         let layout_mode = self.responsive.mode;
 
+        // Mini mode: compact player window
+        if MINI_MODE.load(Ordering::Relaxed) {
+            let play_label = if self.is_playing { "⏸" } else { "▶" };
+            let player_p = self.player.clone();
+            let player_n = self.player.clone();
+            let player_rw = self.player.clone();
+            let player_ff = self.player.clone();
+            let player_s = self.player.clone();
+            let vol = self.volume;
+            let pos_str_mini = format!("{:02}:{:02} / {:02}:{:02}",
+                (self.position as u32) / 60, (self.position as u32) % 60,
+                (self.duration as u32) / 60, (self.duration as u32) % 60);
+            let seek_pct = if self.duration > 0.0 { (self.position / self.duration * 100.0) as f32 } else { 0.0 };
+
+            return v_flex().size_full().bg(c.bg).gap_4()
+                .child(v_flex().flex_grow().items_center().justify_center().gap_2()
+                    .child(div().size(px(200.0)).rounded(px(16.0)).bg(c.panel)) // album art placeholder
+                    .child(layout::txt(&self.title, 16.0, c.text_title))
+                    .child(layout::txt(&self.artist, 12.0, c.text_dim))
+                )
+                .child(v_flex().w_full().px_4().gap_2()
+                    .child(h_flex().w_full().h(px(4.0)).bg(c.progress_track)
+                        .child(div().h_full().w(DefiniteLength::Fraction(seek_pct / 100.0)).bg(c.accent))
+                    )
+                    .child(layout::txt(&pos_str_mini, 9.0, c.text_dim))
+                )
+                .child(h_flex().items_center().justify_center().gap_4().pb_4()
+                    .child(Button::new("mini_rw").label("⏪").ghost().on_click(move |_, _, _| {
+                        let pos = player_rw.position();
+                        let _ = player_rw.seek(pos.saturating_sub(std::time::Duration::from_secs(5)));
+                    }))
+                    .child(Button::new("mini_prev").icon(IconName::ChevronLeft).ghost().on_click(move |_, _, _| { let _ = player_p.prev(); }))
+                    .child(Button::new("mini_play").label(play_label).primary().on_click(move |_, _, _| { let _ = if player_n.is_playing() { player_n.toggle_pause() } else { player_n.play_at_index(player_n.playlist().current_index().unwrap_or(0)) }; }))
+                    .child(Button::new("mini_next").icon(IconName::ChevronRight).ghost().on_click(move |_, _, _| { let _ = player_s.next(); }))
+                    .child(Button::new("mini_ff").label("⏩").ghost().on_click(move |_, _, _| {
+                        let dur = player_ff.duration();
+                        let pos = player_ff.position();
+                        let _ = player_ff.seek((pos + std::time::Duration::from_secs(5)).min(dur));
+                    }))
+                    .child(layout::txt(&format!("{:02}%", vol), 9.0, c.text_dim))
+                )
+                .into_any_element();
+        }
+
         let pos_str = format!(
             "{:02}:{:02} / {:02}:{:02}",
             (self.position as u32) / 60,
@@ -493,11 +566,16 @@ impl Render for MusicPlayer {
         };
         let play_label = if self.is_playing { "⏸" } else { "▶" };
 
+        // -- spectrum --
+        const SPECTRUM_BARS: usize = 48;
+
         let player_play = self.player.clone();
         let player_prev = self.player.clone();
         let player_next = self.player.clone();
         let player_stop = self.player.clone();
         let player_seek = self.player.clone();
+        let player_rew = self.player.clone();
+        let player_ff = self.player.clone();
         let player_repeat = self.player.clone();
         let repeat_mode_config = self.player.repeat_mode();
         let repeat_label = match repeat_mode_config {
@@ -506,8 +584,8 @@ impl Render for MusicPlayer {
             crate::core::playlist::RepeatMode::PlayShuffle => "🔀",
             _ => "➡️",
         };
-        let speed = self.player.speed();
-        let speed_str = if (speed - 1.0).abs() > 0.01 { format!(" ×{:.1}", speed) } else { String::new() };
+        let raw_spec = self.player.calculate_spectrum();
+        let raw_peaks = self.player.spectrum_peak_data();
         let panel = Panel::from_u8(ACTIVE_PANEL.load(Ordering::Relaxed));
         let playlist_tracks = self.player.playlist().tracks().to_vec();
         let current_idx = self.player.playlist().current_index();
@@ -628,6 +706,9 @@ impl Render for MusicPlayer {
                         })
                 })
                 .child(
+                    self.render_spectrum_strip(&raw_spec, &raw_peaks, SPECTRUM_BARS, c)
+                )
+                .child(
                     h_flex()
                         .items_center()
                         .w_full()
@@ -637,6 +718,11 @@ impl Render for MusicPlayer {
                         .child(
                             h_flex().items_center().gap_3()
                                 .child(Button::new("prev").icon(IconName::ChevronLeft).ghost().compact().on_click(move |_, _, _| { let _ = player_prev.prev(); }))
+                                .child(Button::new("rew").label("⏪").ghost().compact().on_click(move |_, _, _| {
+                                    let pos = player_rew.position();
+                                    let new_pos = pos.saturating_sub(std::time::Duration::from_secs(5));
+                                    let _ = player_rew.seek(new_pos);
+                                }))
                                 .child(Button::new("play").label(play_label).primary().compact().on_click(move |_, _, _| {
                                     tracing::info!("[GUI] Play button clicked, is_playing={}", player_play.is_playing());
                                     // Toggle pause if playing, otherwise play current/first track
@@ -651,6 +737,12 @@ impl Render for MusicPlayer {
                                         tracing::info!("[GUI] play_at_index result: {:?}", res.as_ref().map(|_| ()).map_err(|e| e.to_string()));
                                         let _ = res;
                                     }
+                                }))
+                                .child(Button::new("ff").label("⏩").ghost().compact().on_click(move |_, _, _| {
+                                    let dur = player_ff.duration();
+                                    let pos = player_ff.position();
+                                    let new_pos = (pos + std::time::Duration::from_secs(5)).min(dur);
+                                    let _ = player_ff.seek(new_pos);
                                 }))
                                 .child(Button::new("next").icon(IconName::ChevronRight).ghost().compact().on_click(move |_, _, _| { let _ = player_next.next(); }))
                                 .child(Button::new("repeat").label(repeat_label).ghost().compact().on_click(move |_, _, _| {
@@ -673,7 +765,10 @@ impl Render for MusicPlayer {
                         .child(
                             h_flex().items_center().gap_2()
                                 .child(layout::txt(&pos_str, artist_size, c.text_dim))
-                                .child(if !speed_str.is_empty() { layout::txt(&speed_str, 10.0, c.accent) } else { layout::txt("", 10.0, c.text_dim) })
+                                // Speed slider (fine-grained speed control)
+                                .child(h_flex().items_center().gap_1().child(
+                                    layout::txt(&format!("{:.2}x", self.player.speed()), 9.0, c.accent)
+                                ).child(Slider::new(&self.speed_slider).horizontal().w(px(60.0))))
                                 // Mute button
                                 .child(Button::new("mute").label(if self.is_muted { "X" } else { "V" }).ghost().compact().on_click(move |_, _, _| {
                                     let vol = player_mute.volume();
@@ -691,8 +786,12 @@ impl Render for MusicPlayer {
                                 .child(Button::new("lyric_btn").icon(IconName::BookOpen).ghost().compact())
                                 // Settings button
                                 .child(Button::new("settings_btn").icon(IconName::Settings).ghost().compact())
-                                // Equalizer button (using Settings icon as fallback)
-                                .child(Button::new("eq_btn").label("EQ").ghost().compact()),
+                                // Equalizer button
+                                .child(Button::new("eq_btn").label("EQ").ghost().compact())
+                                // Fullscreen button
+                                .child(Button::new("fullscreen").label("⛶").ghost().compact().on_click(|_, window, _| {
+                                    window.toggle_fullscreen();
+                                })),
                         ),
                 ),
         );
@@ -809,7 +908,7 @@ impl Render for MusicPlayer {
             );
         }
 
-        main_layout
+        main_layout.into_any_element()
     }
 }
 
@@ -1176,12 +1275,16 @@ impl MusicPlayer {
                     tracing::info!("Toggle status bar visibility (BIG mode only)");
                 }))
                 .separator()
-                .item(PopupMenuItem::new(s_mini_mode).on_click(|_, _, _| {
-                    tracing::info!("Switch to Mini Mode window");
-                    // Would create mini mode popup window
+                .item(PopupMenuItem::new(s_mini_mode).on_click(|_, window, _| {
+                    let is_mini = MINI_MODE.fetch_xor(true, Ordering::Relaxed);
+                    if is_mini {
+                        window.resize(gpui::Size { width: px(1200.0), height: px(800.0) });
+                    } else {
+                        window.resize(gpui::Size { width: px(340.0), height: px(520.0) });
+                    }
                 }))
-                .item(PopupMenuItem::new(s_fullscreen).on_click(|_, _, _| {
-                    tracing::info!("Toggle fullscreen mode");
+                .item(PopupMenuItem::new(s_fullscreen).on_click(|_, window, _| {
+                    window.toggle_fullscreen();
                 }))
                 .separator()
                 .item(PopupMenuItem::new(if dark_mode { "浅色模式" } else { s_toggle_dark }).on_click(|_, _, _| {
@@ -1587,10 +1690,104 @@ impl MusicPlayer {
                                     this.download_state.source = "qqmusic".to_string();
                                     tracing::info!("[LyricDownload] 切换到QQ音乐");
                                 }))
-                        )
-                )
-                .child(div().w(px(1.0)).h_full().bg(c.divider))
-                .child(
+                    )
+            )
+            // Column headers
+            .child(
+                h_flex()
+                    .w_full()
+                    .h(px(24.0))
+                    .px_4().gap_3()
+                    .bg(c.panel_alt)
+                    .items_center()
+                    .child(div().w(px(10.0))) // align with drag handle
+                    .child(
+                        Button::new("sort_title")
+                            .label(&if self.playlist_sort_field == PlaylistSortField::Title {
+                                if self.playlist_sort_asc { "标题 ▲" } else { "标题 ▼" }
+                            } else { "标题" })
+                            .compact().ghost()
+                            .text_size(px(10.0))
+                            .text_color(c.text_dim)
+                            .flex_grow()
+                            .on_click(cx.listener(|this, _, _window, _cx| {
+                                if this.playlist_sort_field == PlaylistSortField::Title {
+                                    this.playlist_sort_asc = !this.playlist_sort_asc;
+                                } else {
+                                    this.playlist_sort_field = PlaylistSortField::Title;
+                                    this.playlist_sort_asc = true;
+                                }
+                                let _ = this.player.playlist_mut().sort(crate::core::playlist::SortMode::Title, !this.playlist_sort_asc);
+                            }))
+                    )
+                    .child(
+                        if matches!(layout_mode, LayoutMode::Big) {
+                            Button::new("sort_artist")
+                                .label(&if self.playlist_sort_field == PlaylistSortField::Artist {
+                                    if self.playlist_sort_asc { "艺术家 ▲" } else { "艺术家 ▼" }
+                                } else { "艺术家" })
+                                .compact().ghost()
+                                .text_size(px(10.0))
+                                .text_color(c.text_dim)
+                                .w(px(80.0))
+                                .on_click(cx.listener(|this, _, _window, _cx| {
+                                    if this.playlist_sort_field == PlaylistSortField::Artist {
+                                        this.playlist_sort_asc = !this.playlist_sort_asc;
+                                    } else {
+                                        this.playlist_sort_field = PlaylistSortField::Artist;
+                                        this.playlist_sort_asc = true;
+                                    }
+                                    let _ = this.player.playlist_mut().sort(crate::core::playlist::SortMode::Artist, !this.playlist_sort_asc);
+                                })).into_any_element()
+                        } else {
+                            div().into_any_element()
+                        }
+                    )
+                    .child(
+                        if matches!(layout_mode, LayoutMode::Big) {
+                            Button::new("sort_album")
+                                .label(&if self.playlist_sort_field == PlaylistSortField::Album {
+                                    if self.playlist_sort_asc { "专辑 ▲" } else { "专辑 ▼" }
+                                } else { "专辑" })
+                                .compact().ghost()
+                                .text_size(px(10.0))
+                                .text_color(c.text_dim)
+                                .w(px(80.0))
+                                .on_click(cx.listener(|this, _, _window, _cx| {
+                                    if this.playlist_sort_field == PlaylistSortField::Album {
+                                        this.playlist_sort_asc = !this.playlist_sort_asc;
+                                    } else {
+                                        this.playlist_sort_field = PlaylistSortField::Album;
+                                        this.playlist_sort_asc = true;
+                                    }
+                                    let _ = this.player.playlist_mut().sort(crate::core::playlist::SortMode::Album, !this.playlist_sort_asc);
+                                })).into_any_element()
+                        } else {
+                            div().into_any_element()
+                        }
+                    )
+                    .child(
+                        Button::new("sort_dur")
+                            .label(&if self.playlist_sort_field == PlaylistSortField::Duration {
+                                if self.playlist_sort_asc { "时长 ▲" } else { "时长 ▼" }
+                            } else { "时长" })
+                            .compact().ghost()
+                            .text_size(px(10.0))
+                            .text_color(c.text_dim)
+                            .w(px(48.0))
+                            .text_align_right()
+                            .on_click(cx.listener(|this, _, _window, _cx| {
+                                if this.playlist_sort_field == PlaylistSortField::Duration {
+                                    this.playlist_sort_asc = !this.playlist_sort_asc;
+                                } else {
+                                    this.playlist_sort_field = PlaylistSortField::Duration;
+                                    this.playlist_sort_asc = true;
+                                }
+                                let _ = this.player.playlist_mut().sort(crate::core::playlist::SortMode::Time, !this.playlist_sort_asc);
+                            }))
+                    )
+            )
+            .child(
                     // Keyword display (shows current search term)
                     div()
                         .flex_grow()
@@ -2701,6 +2898,82 @@ impl MusicPlayer {
             .child(header)
             .child(presets_el)
             .child(sliders_row)
+    }
+
+    /// Render a spectrum visualization strip.
+    fn render_spectrum_strip(
+        &self,
+        raw_spec: &[f32],
+        raw_peaks: &[f32],
+        cols: usize,
+        c: &UiColors,
+    ) -> impl IntoElement {
+        let bar_spacing = 2.0;
+        let bar_count = cols.min(64);
+        let bar_w = 4.0;
+        let strip_h = 36.0;
+        let max_h = strip_h - 4.0;
+
+        // sample spectrum data down to bar_count
+        let bars: Vec<f32> = if raw_spec.len() >= bar_count {
+            let step = raw_spec.len() / bar_count;
+            (0..bar_count)
+                .map(|i| {
+                    let idx = (i * step).min(raw_spec.len() - 1);
+                    (raw_spec[idx] * max_h).min(max_h).max(1.0)
+                })
+                .collect()
+        } else {
+            raw_spec
+                .iter()
+                .map(|v| (v * max_h).min(max_h).max(1.0))
+                .chain(std::iter::repeat(1.0).take(bar_count.saturating_sub(raw_spec.len())))
+                .take(bar_count)
+                .collect()
+        };
+
+        let peak_vals: Vec<f32> = if raw_peaks.len() >= bar_count {
+            let step = raw_peaks.len() / bar_count;
+            (0..bar_count)
+                .map(|i| {
+                    let idx = (i * step).min(raw_peaks.len() - 1);
+                    (raw_peaks[idx] * max_h).min(max_h)
+                })
+                .collect()
+        } else {
+            vec![0.0; bar_count]
+        };
+
+        h_flex()
+            .w_full()
+            .h(px(strip_h))
+            .px_4()
+            .items_end()
+            .gap(px(bar_spacing))
+            .children(bars.iter().enumerate().map(|(i, &bar_h)| {
+                let peak_h = peak_vals[i];
+                let show_peak = peak_h > bar_h + 2.0;
+                v_flex()
+                    .items_center()
+                    .h(px(max_h))
+                    .w(px(bar_w))
+                    .child(if show_peak {
+                        div()
+                            .w(px(3.0))
+                            .h(px(2.0))
+                            .bg(c.accent)
+                            .into_any_element()
+                    } else {
+                        div().w(px(3.0)).h(px(0.0)).into_any_element()
+                    })
+                    .child(
+                        div()
+                            .w_full()
+                            .h(px(bar_h))
+                            .bg(c.accent)
+                            .rounded(px(1.0))
+                    )
+            }))
     }
 }
 

@@ -214,7 +214,10 @@ impl PlayerEngine for BassEngine {
             let vol = *self.volume.lock().unwrap();
             let _ = sys::BASS_ChannelSetAttribute(stream, sys::BASS_ATTRIB_VOL, vol / 100.0);
         } else {
-            let flags = sys::BASS_STREAM_DECODE;
+            // BASS_FX 可用时用 decode channel + tempo stream 包装（支持变速变调）；
+            // BASS_FX 不可用时降级为普通可直接播放的流（decode channel 不能 BASS_ChannelPlay，会报 error 38）
+            let bass_fx_available = sys::is_bass_fx_loaded();
+            let flags = if bass_fx_available { sys::BASS_STREAM_DECODE } else { 0 };
 
             let stream = if is_url {
                 let url_bytes: Vec<u8> = path.bytes().chain(std::iter::once(0)).collect();
@@ -238,13 +241,18 @@ impl PlayerEngine for BassEngine {
             *self.stream.lock().unwrap() = stream;
 
             // tempo stream 需要额外的 bass_fx.dll；缺失时降级直接用原 stream 播放
-            let tempo_flags = sys::BASS_FX_FREESOURCE | sys::BASS_FX_TEMPO_ALGO_LINEAR;
-            let tempo = match sys::BASS_FX_TempoCreate(stream, tempo_flags) {
-                Ok(h) => h,
-                Err(e) => {
-                    tracing::warn!("[BASS] BASS_FX_TempoCreate 不可用（{}），降级用原 stream", e);
-                    stream
+            let tempo = if bass_fx_available {
+                let tempo_flags = sys::BASS_FX_FREESOURCE | sys::BASS_FX_TEMPO_ALGO_LINEAR;
+                match sys::BASS_FX_TempoCreate(stream, tempo_flags) {
+                    Ok(h) => h,
+                    Err(e) => {
+                        tracing::warn!("[BASS] BASS_FX_TempoCreate 失败（{}），降级用原 stream", e);
+                        stream
+                    }
                 }
+            } else {
+                tracing::info!("[BASS] BASS_FX 未加载，使用普通流直接播放（不支持变速变调）");
+                stream
             };
 
             *self.tempo_stream.lock().unwrap() = tempo;

@@ -214,6 +214,11 @@ pub fn is_bass_midi_loaded() -> bool {
     BASS_MIDI_LIB.get().is_some()
 }
 
+/// BASS_FX（tempo/pitch 变速变调）库是否已加载
+pub fn is_bass_fx_loaded() -> bool {
+    BASS_FX_LIB.get().is_some()
+}
+
 /// Load BASS libraries. Returns true if successful.
 pub fn load_bass(bass_path: Option<&str>, bass_fx_path: Option<&str>) -> bool {
     // Try loading from given paths or default names

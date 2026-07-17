@@ -62,6 +62,7 @@ pub struct PlayConfig {
     pub wasapi_device: i32,           // -1 = default
     pub use_ffmpeg: bool,
     pub merge_song_different_versions: bool,  // 合并同一歌曲的多版本（文件夹/媒体库模式）
+    pub speed: f64,  // 播放速度 0.5 ~ 2.0
 }
 
 impl Default for PlayConfig {
@@ -83,6 +84,7 @@ impl Default for PlayConfig {
             wasapi_device: -1,
             use_ffmpeg: false,
             merge_song_different_versions: true,
+            speed: 1.0,
         }
     }
 }
