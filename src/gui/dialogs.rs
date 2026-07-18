@@ -4,6 +4,7 @@
 use gpui::*;
 use gpui_component::{h_flex, v_flex};
 use gpui_component::button::{Button, ButtonVariants};
+use gpui_component::menu::{ContextMenuExt, PopupMenuItem};
 use gpui_component::switch::Switch;
 
 use crate::gui::theme::UiColors;
@@ -137,10 +138,12 @@ fn render_appearance_settings(c: &UiColors) -> Vec<AnyElement> {
     let cfg = crate::config::Config::load();
     let opacity = cfg.appearance.window_transparency;
     let opacity_label = if opacity == 0 { "不透明".to_string() } else { format!("{}%", 100 - opacity) };
+    let height_label = format!("{}px", cfg.appearance.spectrum_height);
     vec![
         section_title(c, "外观设置"),
         setting_row(c, "深色模式", toggle_control(c, "app_dark", cfg.appearance.dark_mode)),
         setting_row(c, "显示频谱分析", toggle_control(c, "app_spectrum", cfg.appearance.show_spectrum)),
+        setting_row(c, "频谱高度", txt(&height_label, 12.0, c.accent).into_any_element()),
         setting_row(c, "显示专辑封面", toggle_control(c, "app_cover", true)),
         setting_row(c, "背景高斯模糊", toggle_control(c, "app_blur", false)),
         setting_row(c, "窗口透明度", txt(&opacity_label, 12.0, c.accent).into_any_element()),
@@ -173,12 +176,29 @@ fn render_hotkeys_settings(c: &UiColors, _entity: &Entity<super::MusicPlayer>) -
 }
 
 fn render_media_lib_settings(c: &UiColors) -> Vec<AnyElement> {
+    let lib = crate::media::MediaLib::load();
+    let data_path = crate::config::get_config_dir().join("media_lib.json");
+    let data_size = if data_path.exists() {
+        let bytes = std::fs::metadata(&data_path).map(|m| m.len()).unwrap_or(0);
+        if bytes > 1024 * 1024 {
+            format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+        } else if bytes > 1024 {
+            format!("{:.0} KB", bytes as f64 / 1024.0)
+        } else {
+            format!("{} B", bytes)
+        }
+    } else {
+        "无数据".to_string()
+    };
     vec![
         section_title(c, "媒体库设置"),
         setting_row(c, "媒体库文件夹", toggle_control(c, "ml_folders", true)),
         setting_row(c, "启动时自动扫描", toggle_control(c, "ml_autoscan", true)),
         setting_row(c, "忽略短曲目", toggle_control(c, "ml_ignore_short", true)),
         setting_row(c, "最短时长(秒)", txt("5", 12.0, c.accent).into_any_element()),
+        section_title(c, "数据管理"),
+        setting_row(c, "数据文件大小", txt(&data_size, 12.0, c.accent).into_any_element()),
+        setting_row(c, "清理数据文件", toggle_control(c, "ml_clean", false)),
     ]
 }
 
@@ -294,8 +314,37 @@ pub fn render_search_panel(
                         .child(txt(&title, 11.0, c.text))
                         .child(div().flex_grow())
                         .child(txt(&r.artist, 10.0, c.text_dim))
-                        .on_mouse_up(gpui::MouseButton::Left, move |_, _, _| {
-                            tracing::info!("[Search] 播放: {}", path);
+                        .on_mouse_up(gpui::MouseButton::Left, {
+                            let path2 = path.clone();
+                            move |_, _, _| {
+                                tracing::info!("[Search] 播放: {}", path2);
+                            }
+                        })
+                        .context_menu(move |menu, _w, _cx| {
+                            let p_play = path.clone();
+                            let p_open = path.clone();
+                            let p_add = path.clone();
+                            let p_copy = path.clone();
+                            menu.item(PopupMenuItem::new("播放").on_click(move |_, _, _| {
+                                tracing::info!("[Search] 播放: {}", p_play);
+                            }))
+                            .item(PopupMenuItem::new("添加到播放列表").on_click(move |_, _, _| {
+                                tracing::info!("[Search] 添加到播放列表: {}", p_add);
+                            }))
+                            .separator()
+                            .item(PopupMenuItem::new("打开文件位置").on_click(move |_, _, _| {
+                                let path = std::path::Path::new(&p_open);
+                                if let Some(_parent) = path.parent() {
+                                    #[cfg(windows)]
+                                    { let _ = std::process::Command::new("explorer").arg("/select,").arg(&p_open).spawn(); }
+                                    #[cfg(not(windows))]
+                                    { let _ = std::process::Command::new("xdg-open").arg(&p_open).spawn(); }
+                                }
+                                tracing::info!("[Search] 打开文件位置: {}", p_open);
+                            }))
+                            .item(PopupMenuItem::new("复制路径").on_click(move |_, _, _| {
+                                tracing::info!("[Search] 复制路径: {}", p_copy);
+                            }))
                         })
                 }))
         )

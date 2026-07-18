@@ -29,6 +29,8 @@ static ACTIVE_PANEL: AtomicU8 = AtomicU8::new(0);
 static MINI_MODE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static STATUSBAR_VISIBLE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 static MEDIA_LIB_SCANNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static RPC_SERVER_RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static SLEEP_TIMER_ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Panel {
@@ -849,29 +851,53 @@ impl Render for MusicPlayer {
                     .child(Button::new("import_pl_btn").icon(IconName::ArrowDown).ghost().compact().label("导入")
                         .on_click(cx.listener(|this, _, _window, _cx| {
                             if let Some(file) = rfd::FileDialog::new()
-                                .add_filter("播放列表", &["m3u", "m3u8"])
+                                .add_filter("播放列表", &["m3u", "m3u8", "wpl", "ttpl", "playlist"])
                                 .pick_file()
                             {
                                 let path = file.to_string_lossy().to_string();
-                                match crate::core::playlist::Playlist::import_m3u(&path) {
-                                    Ok(tracks) => {
-                                        let count = tracks.len();
-                                        this.player.playlist_mut().add_tracks(tracks);
-                                        tracing::info!("[Playlist] 导入 {} 首从 {}", count, path);
+                                let ext = std::path::Path::new(&path).extension()
+                                    .and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+                                let result: Result<Vec<crate::core::playlist::Track>, String> = match ext.as_str() {
+                                    "m3u" | "m3u8" => crate::core::playlist::Playlist::import_m3u(&path).map_err(|e| e.to_string()),
+                                    "wpl" | "ttpl" | "playlist" => {
+                                        match crate::playlist_format::read_playlist(&path) {
+                                            Ok(paths) => Ok(paths.into_iter().map(|p| crate::core::playlist::Track::new(&p)).collect()),
+                                            Err(e) => Err(e.to_string()),
+                                        }
                                     }
-                                    Err(e) => tracing::error!("[Playlist] 导入失败: {}", e),
-                                }
+                                    _ => Err("不支持的格式".to_string()),
+                                };
+                                let tracks = match result {
+                                    Ok(t) => t,
+                                    Err(e) => {
+                                        tracing::error!("[Playlist] 导入失败: {}", e);
+                                        return;
+                                    }
+                                };
+                                let count = tracks.len();
                             }
                         })))
                     .child(Button::new("save_pl_btn").icon(IconName::File).ghost().compact().label("导出")
                         .on_click(cx.listener(|this, _, _window, _cx| {
                             if let Some(file) = rfd::FileDialog::new()
                                 .add_filter("M3U播放列表", &["m3u8"])
+                                .add_filter("WPL播放列表", &["wpl"])
+                                .add_filter("TTPL播放列表", &["ttpl"])
+                                .add_filter("原生播放列表", &["playlist"])
                                 .set_file_name("playlist.m3u8")
                                 .save_file()
                             {
                                 let path = file.to_string_lossy().to_string();
-                                match this.player.playlist().export_m3u(&path, true) {
+                                let ext = std::path::Path::new(&path).extension()
+                                    .and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+                                let result = match ext.as_str() {
+                                    "m3u" | "m3u8" => this.player.playlist().export_m3u(&path, true).map_err(|e| e.to_string()),
+                                    "wpl" => crate::playlist_format::write_playlist(&path, this.player.playlist().tracks(), None).map_err(|e| e.to_string()),
+                                    "ttpl" => crate::playlist_format::write_playlist(&path, this.player.playlist().tracks(), None).map_err(|e| e.to_string()),
+                                    "playlist" => crate::playlist_format::write_playlist(&path, this.player.playlist().tracks(), None).map_err(|e| e.to_string()),
+                                    _ => Err("不支持的格式".to_string()),
+                                };
+                                match result {
                                     Ok(()) => tracing::info!("[Playlist] 导出到 {}", path),
                                     Err(e) => tracing::error!("[Playlist] 导出失败: {}", e),
                                 }
@@ -914,7 +940,17 @@ impl Render for MusicPlayer {
                     .child(div().w(px(1.0)).h(px(12.0)).bg(c.border))
                     .child(layout::txt(&format!("⚙ {}", engine_name), 10.0, c.text_dim))
                     .child(div().flex_grow())
-                    .child(layout::txt("HackMagic Music Player v1.0", 10.0, c.text_dim))
+                    .child(
+                        h_flex().items_center().gap_2()
+                            .child(div().size(px(6.0)).rounded(px(3.0)).bg(
+                                if RPC_SERVER_RUNNING.load(Ordering::Relaxed) {
+                                    Hsla { h: 120.0/360.0, s: 0.8, l: 0.45, a: 1.0 }
+                                } else {
+                                    Hsla { h: 0.0, s: 0.8, l: 0.45, a: 1.0 }
+                                }
+                            ))
+                            .child(layout::txt(if RPC_SERVER_RUNNING.load(Ordering::Relaxed) { "RPC 在线" } else { "RPC 离线" }, 10.0, c.text_dim))
+                    )
             );
         }
 
@@ -1368,8 +1404,21 @@ impl MusicPlayer {
                     // Would show format conversion dialog
                 }))
                 .item(PopupMenuItem::new("定时停止").on_click(|_, _, _| {
-                    tracing::info!("Set sleep timer - stop playback after configured duration");
-                    // Would start a timer thread that stops playback
+                    if SLEEP_TIMER_ACTIVE.load(Ordering::Relaxed) {
+                        SLEEP_TIMER_ACTIVE.store(false, Ordering::Relaxed);
+                        tracing::info!("[SleepTimer] 已取消");
+                    } else {
+                        SLEEP_TIMER_ACTIVE.store(true, Ordering::Relaxed);
+                        std::thread::spawn(|| {
+                            std::thread::sleep(std::time::Duration::from_secs(3600)); // 1 hour default
+                            if SLEEP_TIMER_ACTIVE.load(Ordering::Relaxed) {
+                                tracing::info!("[SleepTimer] 定时停止播放");
+                                // Would stop playback here
+                            }
+                            SLEEP_TIMER_ACTIVE.store(false, Ordering::Relaxed);
+                        });
+                        tracing::info!("[SleepTimer] 已设置1小时后停止播放");
+                    }
                 }))
                 .item(PopupMenuItem::new("文件关联").on_click(|_, _, _| {
                     tracing::info!("Open file association settings");
@@ -2593,21 +2642,27 @@ impl MusicPlayer {
                                             p_r0.playlist_mut().set_rating(idx, 0);
                                         }))
                                         .separator()
-                                        .item(PopupMenuItem::new("打开文件位置").on_click(move |_, _, _| {
-                                            let path = std::path::Path::new(&fp_loc);
+                                        .item(PopupMenuItem::new("打开文件位置").on_click({
+                                            let fp_loc2 = fp_loc.clone();
+                                            let ctx_player2 = ctx_player.clone();
+                                            let idx2 = idx;
+                                            let dn2 = dn.clone();
+                                            let fav2 = fav;
+                                            move |_, _, _| {
+                                            let path = std::path::Path::new(&fp_loc2);
                                             if let Some(_parent) = path.parent() {
                                                 #[cfg(windows)]
                                                 {
                                                     let _ = std::process::Command::new("explorer")
                                                         .arg("/select,")
-                                                        .arg(&fp_loc)
+                                                        .arg(&fp_loc2)
                                                         .spawn();
                                                 }
                                                 #[cfg(target_os = "macos")]
                                                 {
                                                     let _ = std::process::Command::new("open")
                                                         .arg("-R")
-                                                        .arg(&fp_loc)
+                                                        .arg(&fp_loc2)
                                                         .spawn();
                                                 }
                                                 #[cfg(all(not(windows), not(target_os = "macos")))]
@@ -2619,14 +2674,31 @@ impl MusicPlayer {
                                                     }
                                                 }
                                             }
-                                            tracing::info!("[Playlist] Opening file location: {}", fp_loc);
-                                        }))
+                                            tracing::info!("[Playlist] Opening file location: {}", fp_loc2);
+                                        }}))
                                         .item(PopupMenuItem::new("复制路径").on_click(move |_, _, _| {
                                             tracing::info!("[Playlist] Copy path: {}", fp_copy);
                                         }))
-                                        .item(PopupMenuItem::new("属性").on_click(move |_, _, _| {
-                                            tracing::info!("[Playlist] Properties: {}", dn);
-                                        }))
+                                        .item(PopupMenuItem::new("属性").on_click({
+                                        let ctx_player2 = ctx_player.clone();
+                                        let fp_loc2 = fp_loc.clone();
+                                        let idx2 = idx;
+                                        let dn2 = dn.clone();
+                                        let fav2 = fav;
+                                        move |_, _, _| {
+                                        let info = format!(
+                                            "标题: {}\n艺术家: {}\n专辑: {}\n路径: {}\n时长: {}\n收藏: {}",
+                                            dn2, ctx_player2.playlist().get(idx2).map(|t| &t.artist).unwrap_or(&"".to_string()),
+                                            ctx_player2.playlist().get(idx2).map(|t| &t.album).unwrap_or(&"".to_string()),
+                                            fp_loc2,
+                                            ctx_player2.playlist().get(idx2).map(|t| { let d = t.duration; format!("{:02}:{:02}", d.as_secs()/60, d.as_secs()%60) }).unwrap_or_default(),
+                                            if fav2 { "是" } else { "否" },
+                                        );
+                                        let _ = rfd::MessageDialog::new()
+                                            .set_title("歌曲属性")
+                                            .set_description(&info)
+                                            .show();
+                                    }}))
                                     })
                             }))
                     )
@@ -2838,7 +2910,17 @@ impl MusicPlayer {
                     }))
             )
             .child(div().flex_grow())
-            .child(layout::txt(&format!("预设: {}", preset_name), 11.0, c.text_dim));
+            .child(layout::txt(&format!("预设: {}", preset_name), 11.0, c.text_dim))
+            .child(
+                Button::new("eq_save_preset").label("保存预设").compact().ghost()
+                    .on_click(cx.listener(move |this, _, _w, _cx| {
+                        let gains: Vec<String> = this.eq_sliders.iter().map(|s| {
+                            format!("{:.1}", s.read(_cx).value())
+                        }).collect();
+                        this.eq_preset_name = "自定义".to_string();
+                        tracing::info!("[EQ] 保存自定义预设: gains={:?}", gains);
+                    }))
+            );
 
         // Preset list (scrollable)
         let preset_buttons: Vec<String> = presets.iter().map(|(n, _)| n.to_string()).collect();

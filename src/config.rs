@@ -99,6 +99,7 @@ pub struct AppearanceConfig {
     pub spectrum_columns: u32,          // 4, 8, 16, 32, 64, 128
     pub fft_size: u32,                  // 256, 512, 1024, 2048
     pub spectrum_style: String,         // "log" or "linear"
+    pub spectrum_height: u32,           // 20-200, 频谱高度像素
     pub theme: String,                  // theme name: "default", "ocean", "forest", etc.
 }
 
@@ -112,6 +113,7 @@ impl Default for AppearanceConfig {
             spectrum_columns: 128,
             fft_size: 512,
             spectrum_style: "log".to_string(),
+            spectrum_height: 36,
             theme: "default".to_string(),
         }
     }
