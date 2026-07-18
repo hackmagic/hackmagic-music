@@ -4,6 +4,7 @@
 use gpui::*;
 use gpui_component::{h_flex, v_flex};
 use gpui_component::button::{Button, ButtonVariants};
+use gpui_component::switch::Switch;
 
 use crate::gui::theme::UiColors;
 use crate::gui::layout::txt;
@@ -16,6 +17,7 @@ pub enum SettingsTab {
     Playback,
     Hotkeys,
     MediaLib,
+    Lyrics,
 }
 
 /// Render the settings panel with tab navigation.
@@ -40,6 +42,7 @@ pub fn render_settings_panel(
         SettingsTab::Playback => render_playback_settings(c),
         SettingsTab::Hotkeys => render_hotkeys_settings(c, &cx.entity().clone()),
         SettingsTab::MediaLib => render_media_lib_settings(c),
+        SettingsTab::Lyrics => render_lyrics_settings(c),
     };
 
     v_flex()
@@ -69,6 +72,7 @@ pub fn render_settings_panel(
                 .child(tab_btn("常规", "set_tab_general", SettingsTab::General))
                 .child(tab_btn("外观", "set_tab_appearance", SettingsTab::Appearance))
                 .child(tab_btn("播放", "set_tab_playback", SettingsTab::Playback))
+                .child(tab_btn("歌词", "set_tab_lyrics", SettingsTab::Lyrics))
                 .child(tab_btn("热键", "set_tab_hotkeys", SettingsTab::Hotkeys))
                 .child(tab_btn("媒体库", "set_tab_medialib", SettingsTab::MediaLib))
         )
@@ -130,11 +134,16 @@ fn render_general_settings(c: &UiColors) -> Vec<AnyElement> {
 }
 
 fn render_appearance_settings(c: &UiColors) -> Vec<AnyElement> {
+    let cfg = crate::config::Config::load();
+    let opacity = cfg.appearance.window_transparency;
+    let opacity_label = if opacity == 0 { "不透明".to_string() } else { format!("{}%", 100 - opacity) };
     vec![
         section_title(c, "外观设置"),
-        setting_row(c, "深色模式", toggle_control(c, "app_dark", true)),
-        setting_row(c, "显示频谱分析", toggle_control(c, "app_spectrum", true)),
-        setting_row(c, "窗口透明度", toggle_control(c, "app_opacity", false)),
+        setting_row(c, "深色模式", toggle_control(c, "app_dark", cfg.appearance.dark_mode)),
+        setting_row(c, "显示频谱分析", toggle_control(c, "app_spectrum", cfg.appearance.show_spectrum)),
+        setting_row(c, "显示专辑封面", toggle_control(c, "app_cover", true)),
+        setting_row(c, "背景高斯模糊", toggle_control(c, "app_blur", false)),
+        setting_row(c, "窗口透明度", txt(&opacity_label, 12.0, c.accent).into_any_element()),
         setting_row(c, "显示状态栏", toggle_control(c, "app_statusbar", true)),
     ]
 }
@@ -170,6 +179,20 @@ fn render_media_lib_settings(c: &UiColors) -> Vec<AnyElement> {
         setting_row(c, "启动时自动扫描", toggle_control(c, "ml_autoscan", true)),
         setting_row(c, "忽略短曲目", toggle_control(c, "ml_ignore_short", true)),
         setting_row(c, "最短时长(秒)", txt("5", 12.0, c.accent).into_any_element()),
+    ]
+}
+
+fn render_lyrics_settings(c: &UiColors) -> Vec<AnyElement> {
+    vec![
+        section_title(c, "歌词显示"),
+        setting_row(c, "卡拉OK风格", toggle_control(c, "lyr_karaoke", true)),
+        setting_row(c, "双行显示", toggle_control(c, "lyr_two_line", true)),
+        setting_row(c, "内嵌歌词优先", toggle_control(c, "lyr_embedded", true)),
+        setting_row(c, "歌词模糊匹配", toggle_control(c, "lyr_fuzzy", true)),
+        section_title(c, "歌词下载"),
+        setting_row(c, "自动下载歌词", toggle_control(c, "lyr_auto_download", true)),
+        setting_row(c, "下载翻译", toggle_control(c, "lyr_download_trans", false)),
+        setting_row(c, "下载编码", txt("UTF-8", 12.0, c.accent).into_any_element()),
     ]
 }
 

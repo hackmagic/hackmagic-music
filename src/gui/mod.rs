@@ -15,7 +15,8 @@ use gpui_component::{h_flex, v_flex, IconName, Root};
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::menu::{ContextMenuExt, PopupMenuItem};
 use gpui_component::slider::{Slider, SliderState, SliderValue};
-use gpui_component::input::{TextInput, InputState};
+use gpui_component::tooltip::Tooltip;
+use gpui_component::input::{Input, InputState};
 use i18n::{Locale, Tr};
 use theme::UiColors;
 use crate::config::Config;
@@ -26,6 +27,8 @@ use responsive::{LayoutMode, ResponsiveState};
 
 static ACTIVE_PANEL: AtomicU8 = AtomicU8::new(0);
 static MINI_MODE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static STATUSBAR_VISIBLE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+static MEDIA_LIB_SCANNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Panel {
@@ -84,7 +87,8 @@ pub fn run(cx: &mut App) {
         ..Default::default()
     }, |window, cx| {
         cx.new(|cx| {
-            let content = cx.new(|cx| MusicPlayer::new(cx));
+            let url_state = cx.new(|c| InputState::new(window, c));
+            let content = cx.new(|cx| MusicPlayer::new(cx, url_state));
             Root::new(content, window, cx)
         })
     });
@@ -173,7 +177,7 @@ enum MediaLibCategory {
 }
 
 impl MusicPlayer {
-    fn new(cx: &mut Context<Self>) -> Self {
+    fn new(cx: &mut Context<Self>, url_state: Entity<InputState>) -> Self {
         let cfg = Config::load();
         let engine = EngineType::from_str(&cfg.play.engine);
         let player = Arc::new(Player::new(engine));
@@ -285,7 +289,7 @@ impl MusicPlayer {
             eq_preset_name: "自定义".to_string(),
             settings_tab: dialogs::SettingsTab::General,
             url_dialog_open: false,
-            url_state: cx.new(|_| InputState::new("")),
+            url_state,
         }
     }
 
@@ -927,10 +931,14 @@ impl MusicPlayer {
         _cx: &mut Context<Self>,
     ) -> impl IntoElement {
         // Copy i18n strings to satisfy 'static lifetime for closures
+        let s_file = tr.menu_file;
         let s_open_file = tr.menu_open_file;
         let s_open_folder = tr.menu_open_folder;
-        let s_open_url = tr.menu_open_url;
+        let s_save_as_new = tr.menu_save_as_new;
         let s_exit = tr.menu_exit;
+
+        let s_playback = tr.menu_playback;
+        let s_playlist = tr.menu_playlist;
 
         h_flex()
             .items_center()
@@ -941,7 +949,7 @@ impl MusicPlayer {
             // File menu
             .child({
                 let player = self.player.clone();
-                layout::menu_dropdown(tr.menu_file, IconName::Folder, move |menu, _w, _cx| {
+                layout::menu_dropdown(s_file, IconName::Folder, move |menu, _w, _cx| {
                     let p = player.clone();
                     menu.item(PopupMenuItem::new(s_open_file).on_click(move |_, _, _| {
                         if let Some(path) = rfd::FileDialog::new()
@@ -980,16 +988,7 @@ impl MusicPlayer {
                             }
                         }
                     }))
-                    .item(PopupMenuItem::new(s_open_url).on_click({
-                        let entity = _cx.entity().clone();
-                        move |_, _window, cx| {
-                            entity.update(cx, |this, cx| {
-                                this.url_dialog_open = true;
-                                cx.notify();
-                            });
-                        }
-                    }))
-                    .item(PopupMenuItem::new(tr.menu_save_as_new).on_click({
+                    .item(PopupMenuItem::new(s_save_as_new).on_click({
                         let p = player.clone();
                         move |_, _, _| {
                             if let Some(file) = rfd::FileDialog::new()
@@ -1012,7 +1011,7 @@ impl MusicPlayer {
             // Playback menu
             .child({
                 let player = self.player.clone();
-                layout::menu_dropdown(tr.menu_playback, IconName::ChevronRight, move |menu, _w, _cx| {
+                layout::menu_dropdown(s_playback, IconName::ChevronRight, move |menu, _w, _cx| {
                     let p1 = player.clone();
                     let p2 = player.clone();
                     let p3 = player.clone();
@@ -1060,7 +1059,7 @@ impl MusicPlayer {
             // Playlist menu
             .child({
                 let player = self.player.clone();
-                layout::menu_dropdown(tr.menu_playlist, IconName::SquareTerminal, move |menu, _, _| {
+                layout::menu_dropdown(s_playlist, IconName::SquareTerminal, move |menu, _, _| {
                     let p1 = player.clone();
                     let p2 = player.clone();
                     let p3 = player.clone();
