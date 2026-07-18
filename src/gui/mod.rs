@@ -178,6 +178,7 @@ enum MediaLibCategory {
     FileTypes,
     Bitrates,
     Recent,
+    Rating,
 }
 
 impl MusicPlayer {
@@ -656,6 +657,7 @@ impl Render for MusicPlayer {
             Panel::Search => dialogs::render_search_panel(c, &self.playlist_filter_text, window, cx).into_any_element(),
             Panel::Settings => dialogs::render_settings_panel(c, self.settings_tab, window, cx).into_any_element(),
             Panel::LyricDownload => self.render_lyric_download_panel(c, window, cx).into_any_element(),
+            Panel::FileBrowser => self.render_file_browser(c, window, cx).into_any_element(),
             _ => layout::content_area(c, tr).into_any_element(),
         });
 
@@ -959,7 +961,35 @@ impl Render for MusicPlayer {
             );
         }
 
-        main_layout.into_any_element()
+        div().child(main_layout)
+            .context_menu({
+                let p = self.player.clone();
+                move |menu, _w, _cx| {
+                    let p1 = p.clone();
+                    let p2 = p.clone();
+                    let p3 = p.clone();
+                    let p4 = p.clone();
+                    let p5 = p.clone();
+                    menu.item(PopupMenuItem::new("播放/暂停").on_click(move |_, _, _| { let _ = p1.toggle_pause(); }))
+                        .item(PopupMenuItem::new("停止").on_click(move |_, _, _| { let _ = p2.stop(); }))
+                        .item(PopupMenuItem::new("上一曲").on_click(move |_, _, _| { let _ = p3.prev(); }))
+                        .item(PopupMenuItem::new("下一曲").on_click(move |_, _, _| { let _ = p4.next(); }))
+                        .separator()
+                        .item(PopupMenuItem::new("循环模式").on_click(move |_, _, _| {
+                            use crate::core::playlist::RepeatMode;
+                            let next = match p5.repeat_mode() {
+                                RepeatMode::PlayOrder => RepeatMode::LoopPlaylist,
+                                RepeatMode::LoopPlaylist => RepeatMode::LoopTrack,
+                                RepeatMode::LoopTrack => RepeatMode::PlayShuffle,
+                                RepeatMode::PlayShuffle => RepeatMode::PlayRandom,
+                                RepeatMode::PlayRandom => RepeatMode::PlayTrack,
+                                RepeatMode::PlayTrack => RepeatMode::PlayOrder,
+                            };
+                            p5.set_repeat_mode(next);
+                        }))
+                }
+            })
+            .into_any_element()
     }
 }
 
@@ -1399,12 +1429,16 @@ impl MusicPlayer {
                     // In real implementation, would trigger UI reload/repaint
                 }))
                 .item(PopupMenuItem::new("切换主题颜色").on_click(|_, _, _| {
-                    // Cycle through theme colors: Default -> Ocean -> Forest -> Lavender -> Default
+                    // Cycle through all 8 theme colors
                     let mut cfg = crate::config::Config::load();
                     cfg.appearance.theme = match cfg.appearance.theme.as_str() {
                         "ocean" => "forest".to_string(),
                         "forest" => "lavender".to_string(),
-                        "lavender" => "default".to_string(),
+                        "lavender" => "sunset".to_string(),
+                        "sunset" => "midnight".to_string(),
+                        "midnight" => "autumn".to_string(),
+                        "autumn" => "spring".to_string(),
+                        "spring" => "default".to_string(),
                         _ => "ocean".to_string(),
                     };
                     let _ = cfg.save();
@@ -1478,7 +1512,9 @@ impl MusicPlayer {
                     }
                 }))
                 .item(PopupMenuItem::new("文件关联").on_click(|_, _, _| {
-                    tracing::info!("Open file association settings");
+                    crate::commands::system::cmd_file_assoc(&crate::cli::FileAssocArgs {
+                        action: crate::cli::FileAssocAction::Register,
+                    }).ok();
                 }))
                 .separator()
                 .item(PopupMenuItem::new(s_settings).on_click(|_, _, _| {
@@ -2739,8 +2775,30 @@ impl MusicPlayer {
                                         let dn2 = dn.clone();
                                         let fav2 = fav;
                                         move |_, _, _| {
+                                        let file_size = std::path::Path::new(&fp_loc2).metadata().ok()
+                                            .map(|m| {
+                                                let bytes = m.len();
+                                                if bytes > 1024 * 1024 {
+                                                    format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+                                                } else if bytes > 1024 {
+                                                    format!("{:.0} KB", bytes as f64 / 1024.0)
+                                                } else {
+                                                    format!("{} B", bytes)
+                                                }
+                                            }).unwrap_or_else(|| "--".to_string());
+                                        let mod_time = std::path::Path::new(&fp_loc2).metadata().ok()
+                                            .and_then(|m| m.modified().ok())
+                                            .map(|t| {
+                                                let secs = t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+                                                // Convert to a readable format (year-month-day)
+                                                let days = secs / 86400;
+                                                let year = 1970 + (days / 365) as u32;
+                                                let month = ((days % 365) / 30 + 1) as u32;
+                                                let day = ((days % 365) % 30 + 1) as u32;
+                                                format!("{}-{:02}-{:02}", year, month, day)
+                                            }).unwrap_or_else(|| "--".to_string());
                                         let info = format!(
-                                            "标题: {}\n艺术家: {}\n专辑: {}\n文件名: {}\n路径: {}\n时长: {}\n收藏: {}\n类型: {}\n比特率: {}\n采样率: {}",
+                                            "标题: {}\n艺术家: {}\n专辑: {}\n文件名: {}\n路径: {}\n时长: {}\n收藏: {}\n类型: {}\n比特率: {}\n采样率: {}\n\n--- 高级信息 ---\n文件大小: {}\n修改日期: {}",
                                             dn2, ctx_player2.playlist().get(idx2).map(|t| &t.artist).unwrap_or(&"".to_string()),
                                             ctx_player2.playlist().get(idx2).map(|t| &t.album).unwrap_or(&"".to_string()),
                                             ctx_player2.playlist().get(idx2).map(|t| &t.file_name).unwrap_or(&"--".to_string()),
@@ -2750,6 +2808,8 @@ impl MusicPlayer {
                                             ctx_player2.playlist().get(idx2).map(|t| &t.file_type).unwrap_or(&"--".to_string()),
                                             "--",
                                             "--",
+                                            file_size,
+                                            mod_time,
                                         );
                                         let _ = rfd::MessageDialog::new()
                                             .set_title("歌曲属性")
@@ -2759,6 +2819,48 @@ impl MusicPlayer {
                                     })
                             }))
                     )
+            )
+    }
+
+    /// Render the file browser panel for browsing the local filesystem.
+    fn render_file_browser(
+        &self,
+        c: &UiColors,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let player = self.player.clone();
+        v_flex()
+            .flex_grow()
+            .h_full()
+            .bg(c.bg)
+            .child(
+                h_flex().items_center().justify_between().w_full().px_4().py_2().bg(c.control_bar_bg)
+                    .child(layout::txt("文件浏览器", 14.0, c.text_title))
+                    .child(
+                        Button::new("fb_open_folder").label("打开文件夹").compact().ghost()
+                            .on_click(cx.listener(move |this, _, _w, _cx| {
+                                if let Some(folder) = rfd::FileDialog::new().pick_folder() {
+                                    let dir = folder.to_string_lossy().to_string();
+                                    if let Ok(entries) = crate::media::scan_directory(&dir, true, None) {
+                                        let mut pl = this.player.playlist_mut();
+                                        let first_idx = pl.len();
+                                        for e in &entries {
+                                            pl.add_track(crate::core::playlist::Track::new(&e.file_path));
+                                        }
+                                        if !entries.is_empty() {
+                                            let _ = this.player.play_at_index(first_idx);
+                                        }
+                                        tracing::info!("[FileBrowser] 打开文件夹: {} ({} 首)", dir, entries.len());
+                                    }
+                                }
+                            }))
+                    )
+            )
+            .child(
+                v_flex().flex_grow().w_full().p_4()
+                    .child(layout::txt("点击'打开文件夹'按钮浏览音乐文件", 12.0, c.text_dim))
+                    .child(layout::txt("支持格式: mp3, flac, wav, ogg, aac, m4a, wma, ape 等", 11.0, c.text_dim))
             )
     }
 
@@ -2836,6 +2938,14 @@ impl MusicPlayer {
                 let items: Vec<String> = recent.iter().map(|e| e.file_path.clone()).collect();
                 (items, Vec::new())
             }
+            MediaLibCategory::Rating => {
+                let ratings = lib.ratings();
+                let items = sel.as_ref()
+                    .and_then(|r| r.parse::<u32>().ok())
+                    .map(|r| lib.by_rating(r).iter().map(|e| ViewEntry::from(*e)).collect())
+                    .unwrap_or_default();
+                (ratings.iter().map(|r| format!("{} 星", r)).collect::<Vec<_>>(), items)
+            }
         };
 
         let mk_btn = |label: &'static str, id: &'static str, target: MediaLibCategory| {
@@ -2890,6 +3000,7 @@ impl MusicPlayer {
                     .child(mk_btn("文件类型", "ml_cat_ftype", MediaLibCategory::FileTypes))
                     .child(mk_btn("比特率", "ml_cat_bitrate", MediaLibCategory::Bitrates))
                     .child(mk_btn("最近播放", "ml_cat_recent", MediaLibCategory::Recent))
+                    .child(mk_btn("评级", "ml_cat_rating", MediaLibCategory::Rating))
                     .child(div().flex_grow())
                     .child(
                         Button::new("ml_refresh_btn").label("刷新").compact().ghost()

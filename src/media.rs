@@ -32,6 +32,8 @@ pub struct LibEntry {
     pub song_id_netease: i64,
     #[serde(default)]
     pub song_id_qq_music: String,
+    #[serde(default)]
+    pub rating: u32,
 }
 
 /// The media library database

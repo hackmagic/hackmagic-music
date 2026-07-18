@@ -6,6 +6,10 @@ pub enum ThemeName {
     Ocean,
     Forest,
     Lavender,
+    Sunset,
+    Midnight,
+    Autumn,
+    Spring,
 }
 
 impl ThemeName {
@@ -14,6 +18,10 @@ impl ThemeName {
             "ocean" => ThemeName::Ocean,
             "forest" => ThemeName::Forest,
             "lavender" => ThemeName::Lavender,
+            "sunset" => ThemeName::Sunset,
+            "midnight" => ThemeName::Midnight,
+            "autumn" => ThemeName::Autumn,
+            "spring" => ThemeName::Spring,
             _ => ThemeName::Default,
         }
     }
@@ -24,6 +32,10 @@ impl ThemeName {
             ThemeName::Ocean => "ocean",
             ThemeName::Forest => "forest",
             ThemeName::Lavender => "lavender",
+            ThemeName::Sunset => "sunset",
+            ThemeName::Midnight => "midnight",
+            ThemeName::Autumn => "autumn",
+            ThemeName::Spring => "spring",
         }
     }
 }
@@ -212,6 +224,10 @@ fn dark_accent(theme: &ThemeName) -> Hsla {
         ThemeName::Ocean   => rgba(0, 150, 170),
         ThemeName::Forest  => rgba(60, 160, 80),
         ThemeName::Lavender => rgba(150, 120, 220),
+        ThemeName::Sunset  => rgba(220, 100, 50),
+        ThemeName::Midnight => rgba(80, 80, 200),
+        ThemeName::Autumn  => rgba(200, 120, 40),
+        ThemeName::Spring  => rgba(80, 180, 100),
     }
 }
 
@@ -221,6 +237,10 @@ fn light_accent(theme: &ThemeName) -> Hsla {
         ThemeName::Ocean   => rgba(0, 130, 150),
         ThemeName::Forest  => rgba(50, 140, 70),
         ThemeName::Lavender => rgba(130, 100, 200),
+        ThemeName::Sunset  => rgba(200, 80, 30),
+        ThemeName::Midnight => rgba(60, 60, 180),
+        ThemeName::Autumn  => rgba(180, 100, 20),
+        ThemeName::Spring  => rgba(60, 160, 80),
     }
 }
 
