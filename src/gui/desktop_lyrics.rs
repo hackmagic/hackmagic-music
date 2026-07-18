@@ -3,6 +3,7 @@
 
 use gpui::*;
 use gpui_component::{h_flex, v_flex};
+use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::menu::{ContextMenuExt, PopupMenuItem};
 use crate::gui::theme::UiColors;
 use crate::lyric::{Lyrics, TranslateMode};
@@ -296,16 +297,16 @@ pub fn render_lyrics_overlay(
     c: &UiColors,
 ) -> impl IntoElement {
     if !state.visible {
-        return div().size_full();
+        return div().size_full().into_any_element();
     }
 
     let Some(ref lyrics) = state.lyrics else {
-        return div().size_full();
+        return div().size_full().into_any_element();
     };
 
     let current_idx = state.current_index.unwrap_or(0);
     if current_idx >= lyrics.len() {
-        return div().size_full();
+        return div().size_full().into_any_element();
     }
 
     let line = &lyrics.lines[current_idx];
@@ -314,28 +315,67 @@ pub fn render_lyrics_overlay(
 
     v_flex()
         .size_full()
-        .justify_center()
-        .items_center()
-        .gap_1()
         .bg(c.panel)
         .child(
-            div()
-                .w(DefiniteLength::Fraction(0.9))
-                .child(karaoke_line(&display_text, progress, 18.0, FontWeight::BOLD, c))
+            // Toolbar with playback controls
+            h_flex()
+                .w_full()
+                .h(px(36.0))
+                .px_4()
+                .items_center()
+                .justify_center()
+                .gap_3()
+                .bg(c.control_bar_bg)
+                .child(Button::new("dly_prev").label("⏮").ghost().compact().text_size(px(14.0)))
+                .child(Button::new("dly_play").label("▶").primary().compact().text_size(px(14.0)))
+                .child(Button::new("dly_next").label("⏭").ghost().compact().text_size(px(14.0)))
+                .child(div().flex_grow())
+                .child(Button::new("dly_close").label("✕").ghost().compact().text_size(px(14.0)))
         )
-        .child({
-            // Show translation below if separate mode and non-empty
-            if lyrics.translate_mode == TranslateMode::Separate && !line.translate.is_empty() {
-                div()
-                    .w_full()
-                    .text_center()
-                    .pb_2()
-                    .text_size(px(13.0))
-                    .text_color(c.text_dim)
-                    .child(line.translate.clone())
-            } else {
-                div()
-            }
+        .child(
+            v_flex()
+                .flex_grow()
+                .justify_center()
+                .items_center()
+                .gap_1()
+                .child(
+                    div()
+                        .w(DefiniteLength::Fraction(0.9))
+                        .child(karaoke_line(&display_text, progress, 18.0, FontWeight::BOLD, c))
+                )
+                .child({
+                    // Show translation below if separate mode and non-empty
+                    if lyrics.translate_mode == TranslateMode::Separate && !line.translate.is_empty() {
+                        div()
+                            .w_full()
+                            .text_center()
+                            .pb_2()
+                            .text_size(px(13.0))
+                            .text_color(c.text_dim)
+                            .child(line.translate.clone())
+                    } else {
+                        div()
+                    }
+                })
+        )
+        .context_menu(|menu, _w, _cx| {
+            menu.item(PopupMenuItem::new("重新加载歌词").on_click(|_, _, _| {
+                tracing::info!("[DesktopLyric] 重新加载歌词");
+            }))
+            .item(PopupMenuItem::new("编辑歌词").on_click(|_, _, _| {
+                tracing::info!("[DesktopLyric] 编辑歌词");
+            }))
+            .item(PopupMenuItem::new("下载歌词").on_click(|_, _, _| {
+                tracing::info!("[DesktopLyric] 下载歌词");
+            }))
+            .separator()
+            .item(PopupMenuItem::new("锁定位置").on_click(|_, _, _| {
+                tracing::info!("[DesktopLyric] 锁定/解锁位置");
+            }))
+            .item(PopupMenuItem::new("关闭桌面歌词").on_click(|_, _, _| {
+                tracing::info!("[DesktopLyric] 关闭桌面歌词");
+            }))
         })
+        .into_any_element()
 }
 

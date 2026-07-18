@@ -176,6 +176,8 @@ enum MediaLibCategory {
     Genres,
     Years,
     FileTypes,
+    Bitrates,
+    Recent,
 }
 
 impl MusicPlayer {
@@ -235,7 +237,9 @@ impl MusicPlayer {
         if cfg.media_lib.auto_scan && !cfg.media_lib.media_dirs.is_empty() {
             let dirs = cfg.media_lib.media_dirs.clone();
             std::thread::spawn(move || {
-                for dir in &dirs {
+                let total = dirs.len();
+                for (i, dir) in dirs.iter().enumerate() {
+                    tracing::info!("[MediaLib] 扫描进度: {}/{} 目录", i + 1, total);
                     match crate::media::scan_directory(dir, true, None) {
                         Ok(entries) => {
                             let mut lib = crate::media::MediaLib::load();
@@ -245,6 +249,7 @@ impl MusicPlayer {
                         Err(e) => tracing::warn!("Scan failed {}: {}", dir, e),
                     }
                 }
+                tracing::info!("[MediaLib] 初始化扫描完成");
             });
         }
 
@@ -1120,6 +1125,21 @@ impl MusicPlayer {
                             }
                         }
                     }))
+                    .item(PopupMenuItem::new("从媒体库添加").on_click({
+                        let p = player.clone();
+                        move |_, _, _| {
+                            let lib = crate::media::MediaLib::load();
+                            let count = lib.entries.len();
+                            let mut pl = p.playlist_mut();
+                            for e in &lib.entries {
+                                pl.add_track(crate::core::playlist::Track::new(&e.file_path));
+                            }
+                            tracing::info!("[Playlist] 从媒体库添加 {} 首", count);
+                        }
+                    }))
+                    .item(PopupMenuItem::new("添加URL").on_click(move |_, _, _| {
+                        tracing::info!("[Playlist] 添加URL - 打开URL对话框");
+                    }))
                     .item(PopupMenuItem::new("删除选中").on_click(move |_, _, _| {
                         // Placeholder: would need selection tracking
                         tracing::info!("Delete selected tracks");
@@ -1414,10 +1434,12 @@ impl MusicPlayer {
                 .item(PopupMenuItem::new("探索文件路径").on_click(|_, _, _| {
                     ACTIVE_PANEL.store(1, Ordering::Relaxed);
                 }))
-                .item(PopupMenuItem::new("歌曲信息").on_click(move |_, _, _| {
-                    if let Some(track) = player_eq.playlist().current_track() {
-                        tracing::info!("Track info: {} - {} ({})", track.title, track.artist, track.album);
-                        // Would show property dialog
+                .item(PopupMenuItem::new("歌曲信息").on_click({
+                    let p = player_eq.clone();
+                    move |_, _, _| {
+                        if let Some(track) = p.playlist().current_track() {
+                            tracing::info!("Track info: {} - {} ({})", track.title, track.artist, track.album);
+                        }
                     }
                 }))
                 .item(PopupMenuItem::new(s_equalizer).on_click(|_, _, _| {
@@ -1427,6 +1449,16 @@ impl MusicPlayer {
                 .item(PopupMenuItem::new("格式转换").on_click(|_, _, _| {
                     tracing::info!("Open format converter");
                     // Would show format conversion dialog
+                }))
+                .item(PopupMenuItem::new("繁简转换").on_click({
+                    let p = player_eq.clone();
+                    move |_, _, _| {
+                        if let Some(track) = p.playlist().current_track() {
+                            let simplified = crate::charset::to_simplified_chinese(&track.title);
+                            let traditional = crate::charset::to_traditional_chinese(&track.title);
+                            tracing::info!("[Convert] 简体: {}, 繁体: {}", simplified, traditional);
+                        }
+                    }
                 }))
                 .item(PopupMenuItem::new("定时停止").on_click(|_, _, _| {
                     if SLEEP_TIMER_ACTIVE.load(Ordering::Relaxed) {
@@ -2306,12 +2338,9 @@ impl MusicPlayer {
         let total_count = tracks.len();
         let filtered_count = filtered_indices.len();
 
-        // Adjust row height and font size based on layout mode
-        let row_height = match layout_mode {
-            LayoutMode::Big => 36.0,
-            LayoutMode::Narrow => 32.0,
-            LayoutMode::Small => 28.0,
-        };
+        // Adjust row height and font size based on layout mode and config
+        let cfg = crate::config::Config::load();
+        let row_height = cfg.appearance.playlist_row_height as f32;
         let font_size = match layout_mode {
             LayoutMode::Big => 12.0,
             LayoutMode::Narrow => 11.0,
@@ -2711,9 +2740,10 @@ impl MusicPlayer {
                                         let fav2 = fav;
                                         move |_, _, _| {
                                         let info = format!(
-                                            "标题: {}\n艺术家: {}\n专辑: {}\n路径: {}\n时长: {}\n收藏: {}\n类型: {}\n比特率: {}\n采样率: {}",
+                                            "标题: {}\n艺术家: {}\n专辑: {}\n文件名: {}\n路径: {}\n时长: {}\n收藏: {}\n类型: {}\n比特率: {}\n采样率: {}",
                                             dn2, ctx_player2.playlist().get(idx2).map(|t| &t.artist).unwrap_or(&"".to_string()),
                                             ctx_player2.playlist().get(idx2).map(|t| &t.album).unwrap_or(&"".to_string()),
+                                            ctx_player2.playlist().get(idx2).map(|t| &t.file_name).unwrap_or(&"--".to_string()),
                                             fp_loc2,
                                             ctx_player2.playlist().get(idx2).map(|t| { let d = t.duration; format!("{:02}:{:02}", d.as_secs()/60, d.as_secs()%60) }).unwrap_or_default(),
                                             if fav2 { "是" } else { "否" },
@@ -2793,6 +2823,19 @@ impl MusicPlayer {
                     .unwrap_or_default();
                 (types, items)
             }
+            MediaLibCategory::Bitrates => {
+                let bitrates = lib.bitrates();
+                let items = sel.as_ref()
+                    .and_then(|b| b.parse::<u32>().ok())
+                    .map(|b| lib.by_bitrate(b).iter().map(|e| ViewEntry::from(*e)).collect())
+                    .unwrap_or_default();
+                (bitrates.iter().map(|b| format!("{} kbps", b)).collect::<Vec<_>>(), items)
+            }
+            MediaLibCategory::Recent => {
+                let recent = lib.recent(50);
+                let items: Vec<String> = recent.iter().map(|e| e.file_path.clone()).collect();
+                (items, Vec::new())
+            }
         };
 
         let mk_btn = |label: &'static str, id: &'static str, target: MediaLibCategory| {
@@ -2845,6 +2888,8 @@ impl MusicPlayer {
                     .child(mk_btn("流派", "ml_cat_genre", MediaLibCategory::Genres))
                     .child(mk_btn("年份", "ml_cat_year", MediaLibCategory::Years))
                     .child(mk_btn("文件类型", "ml_cat_ftype", MediaLibCategory::FileTypes))
+                    .child(mk_btn("比特率", "ml_cat_bitrate", MediaLibCategory::Bitrates))
+                    .child(mk_btn("最近播放", "ml_cat_recent", MediaLibCategory::Recent))
                     .child(div().flex_grow())
                     .child(
                         Button::new("ml_refresh_btn").label("刷新").compact().ghost()
@@ -3027,6 +3072,22 @@ impl MusicPlayer {
             .bg(c.bg)
             .child(header)
             .child(presets_el)
+            // EQ curve visualization
+            .child(
+                div()
+                    .w_full()
+                    .h(px(60.0))
+                    .px_4().py_2()
+                    .bg(c.panel_alt)
+                    .child(
+                        h_flex().w_full().h_full().items_end().gap_1()
+                            .children(self.eq_sliders.iter().map(|slider| {
+                                let val = 0.0_f32; // placeholder - would read slider value
+                                let h = ((val + 12.0) / 24.0 * 50.0).max(2.0);
+                                div().w(px(20.0)).h(px(h)).bg(c.accent).rounded(px(1.0))
+                            }))
+                    )
+            )
             .child(sliders_row)
     }
 

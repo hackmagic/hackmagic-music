@@ -110,6 +110,7 @@ pub struct AppearanceConfig {
     pub fft_size: u32,                  // 256, 512, 1024, 2048
     pub spectrum_style: String,         // "log" or "linear"
     pub spectrum_height: u32,           // 20-200, 频谱高度像素
+    pub playlist_row_height: u32,       // 24-60, 播放列表行高
     pub theme: String,                  // theme name: "default", "ocean", "forest", etc.
 }
 
@@ -124,6 +125,7 @@ impl Default for AppearanceConfig {
             fft_size: 512,
             spectrum_style: "log".to_string(),
             spectrum_height: 36,
+            playlist_row_height: 36,
             theme: "default".to_string(),
         }
     }
