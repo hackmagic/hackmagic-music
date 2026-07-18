@@ -27,6 +27,11 @@ pub struct GeneralConfig {
     pub minimize_to_notify_icon: bool,
     pub language: String,
     pub portable_mode: bool,
+    pub window_x: i32,
+    pub window_y: i32,
+    pub window_width: u32,
+    pub window_height: u32,
+    pub window_maximized: bool,
 }
 
 impl Default for GeneralConfig {
@@ -39,6 +44,11 @@ impl Default for GeneralConfig {
             minimize_to_notify_icon: false,
             language: String::new(),
             portable_mode: false,
+            window_x: -1,
+            window_y: -1,
+            window_width: 1200,
+            window_height: 800,
+            window_maximized: false,
         }
     }
 }
@@ -240,6 +250,11 @@ impl Config {
             "general.minimize_to_notify_icon" => Some(cfg.general.minimize_to_notify_icon.to_string()),
             "general.language" => Some(cfg.general.language.clone()),
             "general.portable_mode" => Some(cfg.general.portable_mode.to_string()),
+            "general.window_x" => Some(cfg.general.window_x.to_string()),
+            "general.window_y" => Some(cfg.general.window_y.to_string()),
+            "general.window_width" => Some(cfg.general.window_width.to_string()),
+            "general.window_height" => Some(cfg.general.window_height.to_string()),
+            "general.window_maximized" => Some(cfg.general.window_maximized.to_string()),
             "play.engine" => Some(cfg.play.engine.clone()),
             "play.stop_when_error" => Some(cfg.play.stop_when_error.to_string()),
             "play.auto_play_when_start" => Some(cfg.play.auto_play_when_start.to_string()),
@@ -330,6 +345,11 @@ impl Config {
             "media_lib.media_dirs" => {
                 cfg.media_lib.media_dirs = value.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
             }
+            "general.window_x" => { if let Ok(v) = value.parse() { cfg.general.window_x = v; } }
+            "general.window_y" => { if let Ok(v) = value.parse() { cfg.general.window_y = v; } }
+            "general.window_width" => { if let Ok(v) = value.parse() { cfg.general.window_width = v; } }
+            "general.window_height" => { if let Ok(v) = value.parse() { cfg.general.window_height = v; } }
+            "general.window_maximized" => cfg.general.window_maximized = value == "true",
             _ => {}
         }
         cfg.save()

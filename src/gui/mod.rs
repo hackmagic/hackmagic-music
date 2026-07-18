@@ -1452,8 +1452,7 @@ impl MusicPlayer {
                     let _ = std::process::Command::new("xdg-open").arg("https://github.com/zhongyang219/MusicPlayer2").spawn();
                 }))
                 .item(PopupMenuItem::new("检查更新").on_click(|_, _, _| {
-                    tracing::info!("Check for updates from GitHub releases");
-                    // Would fetch latest release info from GitHub API
+                    crate::commands::system::check_update_background();
                 }))
                 .separator()
                 .item(PopupMenuItem::new("支持的格式").on_click(|_, _, _| {
@@ -2820,7 +2819,7 @@ impl MusicPlayer {
                     .child(mk_btn("文件类型", "ml_cat_ftype", MediaLibCategory::FileTypes))
                     .child(div().flex_grow())
                     .child(
-                        Button::new("ml_scan_btn").label("� 扫描").compact().ghost()
+                        Button::new("ml_refresh_btn").label("刷新").compact().ghost()
                             .on_click(cx.listener(move |_this, _, _w, _cx| {
                                 let _ = state_entity;
                                 std::thread::spawn(|| {

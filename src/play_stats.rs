@@ -33,6 +33,12 @@ pub struct StatEntry {
 pub struct StatsData {
     /// Map from file path / cue track key to statistics
     pub songs: HashMap<String, StatEntry>,
+    /// Recently opened folders (most recent first)
+    #[serde(default)]
+    pub recent_folders: Vec<String>,
+    /// Recently opened playlist files (most recent first)
+    #[serde(default)]
+    pub recent_playlists: Vec<String>,
 }
 
 
@@ -99,6 +105,26 @@ pub fn track_started(current_path: Option<&str>) {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
+}
+
+/// Record that a folder was opened (for recent folders list).
+pub fn record_folder(path: &str) {
+    let mut data = get_stats().lock().unwrap();
+    data.recent_folders.retain(|p| p != path);
+    data.recent_folders.insert(0, path.to_string());
+    if data.recent_folders.len() > 20 {
+        data.recent_folders.truncate(20);
+    }
+}
+
+/// Record that a playlist file was opened (for recent playlists list).
+pub fn record_playlist(path: &str) {
+    let mut data = get_stats().lock().unwrap();
+    data.recent_playlists.retain(|p| p != path);
+    data.recent_playlists.insert(0, path.to_string());
+    if data.recent_playlists.len() > 20 {
+        data.recent_playlists.truncate(20);
+    }
 }
 
 /// Get sorted stats list (by `listen_secs` descending)

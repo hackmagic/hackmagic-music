@@ -3,6 +3,7 @@
 
 use gpui::*;
 use gpui_component::{h_flex, v_flex};
+use gpui_component::menu::{ContextMenuExt, PopupMenuItem};
 use crate::gui::theme::UiColors;
 use crate::lyric::{Lyrics, TranslateMode};
 
@@ -67,7 +68,7 @@ pub fn render_lyrics_panel(
     c: &UiColors,
 ) -> impl IntoElement {
     if !state.visible {
-        return v_flex().size_full();
+        return v_flex().size_full().into_any_element();
     }
 
     let empty_text = "暂无歌词";
@@ -90,7 +91,8 @@ pub fn render_lyrics_panel(
                     .text_size(px(12.0))
                     .text_color(c.text_dim)
                     .child(hint_text.to_string())
-            );
+            )
+            .into_any_element();
     };
 
     if lyrics.is_empty() {
@@ -103,7 +105,8 @@ pub fn render_lyrics_panel(
                     .text_size(px(14.0))
                     .text_color(c.text_dim)
                     .child("歌词文件为空".to_string())
-            );
+            )
+            .into_any_element();
     }
 
     // Show track info at top
@@ -205,6 +208,25 @@ pub fn render_lyrics_panel(
         .p_4()
         .gap_1()
         .children(line_elements)
+        .context_menu(|menu, _w, _cx| {
+            menu.item(PopupMenuItem::new("重新加载歌词").on_click(|_, _, _| {
+                tracing::info!("[Lyric] 重新加载歌词");
+            }))
+            .item(PopupMenuItem::new("编辑歌词").on_click(|_, _, _| {
+                tracing::info!("[Lyric] 编辑歌词");
+            }))
+            .item(PopupMenuItem::new("下载歌词").on_click(|_, _, _| {
+                tracing::info!("[Lyric] 下载歌词");
+            }))
+            .separator()
+            .item(PopupMenuItem::new("歌词偏移 +0.5秒").on_click(|_, _, _| {
+                tracing::info!("[Lyric] 歌词前进0.5秒");
+            }))
+            .item(PopupMenuItem::new("歌词偏移 -0.5秒").on_click(|_, _, _| {
+                tracing::info!("[Lyric] 歌词后退0.5秒");
+            }))
+        })
+        .into_any_element()
 }
 
 /// Render a karaoke-highlighted text line where the first `progress/1000` fraction
