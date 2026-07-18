@@ -1514,6 +1514,34 @@ impl MusicPlayer {
                         }
                     }
                 }))
+                .item(PopupMenuItem::new("封面预览").on_click({
+                    let p = player_eq.clone();
+                    move |_, _, _| {
+                        if let Some(track) = p.playlist().current_track() {
+                            match crate::tag::writer::read_pictures(&track.file_path) {
+                                Ok(pics) => {
+                                    let count = pics.len();
+                                    let info = if count > 0 {
+                                        format!("该曲目包含 {} 张封面图片\n格式: {}\n大小: {} KB",
+                                            count, pics[0].0, pics[0].1.len() / 1024)
+                                    } else {
+                                        "该曲目没有内嵌封面".to_string()
+                                    };
+                                    let _ = rfd::MessageDialog::new()
+                                        .set_title("封面预览")
+                                        .set_description(&info)
+                                        .show();
+                                }
+                                Err(e) => {
+                                    let _ = rfd::MessageDialog::new()
+                                        .set_title("封面预览")
+                                        .set_description(&format!("读取封面失败: {}", e))
+                                        .show();
+                                }
+                            }
+                        }
+                    }
+                }))
                 .item(PopupMenuItem::new("定时停止").on_click(|_, _, _| {
                     if SLEEP_TIMER_ACTIVE.load(Ordering::Relaxed) {
                         SLEEP_TIMER_ACTIVE.store(false, Ordering::Relaxed);
