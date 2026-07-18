@@ -1494,6 +1494,26 @@ impl MusicPlayer {
                         }
                     }
                 }))
+                .item(PopupMenuItem::new("在线获取标签").on_click({
+                    let p = player_eq.clone();
+                    move |_, _, _| {
+                        if let Some(track) = p.playlist().current_track() {
+                            tracing::info!("[OnlineTag] 在线获取标签: {}", track.file_path);
+                            let path = track.file_path.clone();
+                            std::thread::spawn(move || {
+                                let args = crate::cli::TagOnlineArgs {
+                                    file: path,
+                                    service: "netease".to_string(),
+                                    auto: true,
+                                    cover: false,
+                                };
+                                let _ = crate::commands::track::cmd_tag(&crate::cli::TagArgs {
+                                    action: crate::cli::TagAction::Online(args),
+                                });
+                            });
+                        }
+                    }
+                }))
                 .item(PopupMenuItem::new("定时停止").on_click(|_, _, _| {
                     if SLEEP_TIMER_ACTIVE.load(Ordering::Relaxed) {
                         SLEEP_TIMER_ACTIVE.store(false, Ordering::Relaxed);

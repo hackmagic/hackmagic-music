@@ -16,6 +16,7 @@ pub struct FfmpegEngine {
     volume: Mutex<f32>,
     speed: Mutex<f32>,
     pitch: Mutex<i32>,
+    eq_gains: Mutex<[i32; 10]>,
     output_stream: Mutex<Option<cpal::Stream>>,
     paused_flag: AtomicBool,
 }
@@ -35,6 +36,7 @@ impl FfmpegEngine {
             volume: Mutex::new(0.8),
             speed: Mutex::new(1.0),
             pitch: Mutex::new(0),
+            eq_gains: Mutex::new([0; 10]),
             output_stream: Mutex::new(None),
             paused_flag: AtomicBool::new(false),
         }
@@ -370,19 +372,26 @@ impl PlayerEngine for FfmpegEngine {
         *self.pitch.lock().unwrap()
     }
 
-    fn set_equalizer(&self, _band: usize, _gain: i32) -> Result<()> {
+    fn set_equalizer(&self, band: usize, gain: i32) -> Result<()> {
+        let mut eq = self.eq_gains.lock().unwrap();
+        if band < 10 {
+            eq[band] = gain;
+            tracing::debug!("[FFmpegEQ] Band {} gain set to {}", band, gain);
+        }
         Ok(())
     }
 
     fn equalizer(&self) -> [i32; 10] {
-        [0; 10]
+        *self.eq_gains.lock().unwrap()
     }
 
-    fn set_reverb(&self, _mix: u32, _time: u32) -> Result<()> {
+    fn set_reverb(&self, mix: u32, time: u32) -> Result<()> {
+        tracing::debug!("[FFmpegReverb] Mix {} Time {}ms", mix, time);
         Ok(())
     }
 
     fn clear_reverb(&self) -> Result<()> {
+        tracing::debug!("[FFmpegReverb] Cleared");
         Ok(())
     }
 

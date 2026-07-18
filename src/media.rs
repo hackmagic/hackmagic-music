@@ -196,6 +196,19 @@ impl MediaLib {
         self.entries.iter().filter(|e| e.bitrate == bitrate).collect()
     }
 
+    /// Get unique ratings (sorted)
+    pub fn ratings(&self) -> Vec<u32> {
+        let mut set: Vec<u32> = self.entries.iter().map(|e| e.rating).filter(|r| *r > 0).collect();
+        set.sort_unstable();
+        set.dedup();
+        set
+    }
+
+    /// Get entries by rating
+    pub fn by_rating(&self, rating: u32) -> Vec<&LibEntry> {
+        self.entries.iter().filter(|e| e.rating == rating).collect()
+    }
+
     /// Get recently played entries (sorted by `last_played` desc)
     pub fn recent(&self, limit: usize) -> Vec<&LibEntry> {
         let mut recent: Vec<&LibEntry> = self.entries.iter()
@@ -300,6 +313,7 @@ fn scan_dir_recursive(dir: &Path, recursive: bool, entries: &mut Vec<LibEntry>, 
             last_played: String::new(),
             song_id_netease: track.song_id_netease,
             song_id_qq_music: track.song_id_qq_music,
+            rating: 0,
         });
     }
 

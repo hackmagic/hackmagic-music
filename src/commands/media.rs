@@ -53,6 +53,7 @@ pub fn cmd_media(args: &MediaArgs) -> Result<()> {
                             last_played: String::new(),
                             song_id_netease: track.song_id_netease,
                             song_id_qq_music: track.song_id_qq_music,
+                            rating: 0,
                         };
                         lib.upsert(entry);
                         refreshed += 1;

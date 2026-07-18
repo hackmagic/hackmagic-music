@@ -21,6 +21,7 @@ pub struct Config {
 #[serde(default)]
 pub struct GeneralConfig {
     pub id3v2_first: bool,
+    pub id3v2_version: String,         // "v2.3" or "v2.4"
     pub auto_download_lyric: bool,
     pub auto_download_album_cover: bool,
     pub check_update_when_start: bool,
@@ -38,6 +39,7 @@ impl Default for GeneralConfig {
     fn default() -> Self {
         Self {
             id3v2_first: false,
+            id3v2_version: "v2.4".to_string(),
             auto_download_lyric: false,
             auto_download_album_cover: true,
             check_update_when_start: true,
@@ -71,6 +73,7 @@ pub struct PlayConfig {
     pub output_mode: String,          // "directsound", "wasapi", "wasapi_exclusive"
     pub wasapi_device: i32,           // -1 = default
     pub use_ffmpeg: bool,
+    pub ffmpeg_cache_len: u32,        // FFmpeg 缓存长度（秒），默认 5 秒
     pub merge_song_different_versions: bool,  // 合并同一歌曲的多版本（文件夹/媒体库模式）
     pub speed: f64,  // 播放速度 0.5 ~ 2.0
 }
@@ -93,6 +96,7 @@ impl Default for PlayConfig {
             output_mode: "directsound".to_string(),
             wasapi_device: -1,
             use_ffmpeg: false,
+            ffmpeg_cache_len: 5,
             merge_song_different_versions: true,
             speed: 1.0,
         }
