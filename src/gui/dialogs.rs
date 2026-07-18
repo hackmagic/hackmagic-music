@@ -152,12 +152,36 @@ fn render_appearance_settings(c: &UiColors) -> Vec<AnyElement> {
 }
 
 fn render_playback_settings(c: &UiColors) -> Vec<AnyElement> {
+    let cfg = crate::config::Config::load();
+    let device_count = crate::bass::sys::BASS_GetDeviceCount();
+    let current_device = cfg.play.wasapi_device;
+    let device_str = if current_device >= 0 && (current_device as u32) < device_count {
+        let mut info = crate::bass::sys::BASS_DEVICEINFO {
+            name: std::ptr::null(),
+            driver: std::ptr::null(),
+            flags: 0,
+        };
+        if crate::bass::sys::BASS_GetDeviceInfo(current_device as u32, &raw mut info) && !info.name.is_null() {
+            unsafe {
+                let len = (0..).find(|&i| *info.name.offset(i) == 0).unwrap_or(0);
+                String::from_utf16_lossy(std::slice::from_raw_parts(info.name, len as usize))
+            }
+        } else {
+            "默认".to_string()
+        }
+    } else {
+        "默认".to_string()
+    };
     vec![
         section_title(c, "播放设置"),
-        setting_row(c, "音频引擎", toggle_control(c, "play_engine", true)),
-        setting_row(c, "自动播放", toggle_control(c, "play_auto", false)),
-        setting_row(c, "淡入淡出", toggle_control(c, "play_fade", true)),
+        setting_row(c, "音频引擎", txt(&cfg.play.engine, 12.0, c.accent).into_any_element()),
+        setting_row(c, "输出设备", txt(&device_str, 12.0, c.accent).into_any_element()),
+        setting_row(c, "自动播放", toggle_control(c, "play_auto", cfg.play.auto_play_when_start)),
+        setting_row(c, "淡入淡出", toggle_control(c, "play_fade", cfg.play.fade_effect)),
         setting_row(c, "记住播放位置", toggle_control(c, "play_remember", true)),
+        section_title(c, "MIDI设置"),
+        setting_row(c, "启用MIDI", toggle_control(c, "midi_enabled", cfg.midi.enabled)),
+        setting_row(c, "SF2音色库", txt(&cfg.midi.soundfont, 12.0, c.accent).into_any_element()),
     ]
 }
 

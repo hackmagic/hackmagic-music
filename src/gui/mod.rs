@@ -1142,6 +1142,31 @@ impl MusicPlayer {
                             tracing::info!("Removed {} missing tracks", removed);
                         }
                     }))
+                    .item(PopupMenuItem::new("修复路径错误").on_click({
+                        let p = player.clone();
+                        move |_, _, _| {
+                            let pl = p.playlist();
+                            let mut fixed = 0;
+                            for i in 0..pl.len() {
+                                if let Some(track) = pl.get(i) {
+                                    let name = if !track.title.is_empty() { &track.title } else { &track.file_name };
+                                    if !std::path::Path::new(&track.file_path).exists() {
+                                        if let Some(new_path) = rfd::FileDialog::new()
+                                            .set_title(&format!("修复: {}", name))
+                                            .pick_file()
+                                        {
+                                            let new_path_str = new_path.to_string_lossy().to_string();
+                                            if let Some(t) = p.playlist_mut().get_mut(i) {
+                                                t.file_path = new_path_str;
+                                            }
+                                            fixed += 1;
+                                        }
+                                    }
+                                }
+                            }
+                            tracing::info!("Fixed {} paths", fixed);
+                        }
+                    }))
                     .separator()
                     .item(PopupMenuItem::new("保存播放列表").on_click({
                         let p = player.clone();
@@ -2686,12 +2711,15 @@ impl MusicPlayer {
                                         let fav2 = fav;
                                         move |_, _, _| {
                                         let info = format!(
-                                            "标题: {}\n艺术家: {}\n专辑: {}\n路径: {}\n时长: {}\n收藏: {}",
+                                            "标题: {}\n艺术家: {}\n专辑: {}\n路径: {}\n时长: {}\n收藏: {}\n类型: {}\n比特率: {}\n采样率: {}",
                                             dn2, ctx_player2.playlist().get(idx2).map(|t| &t.artist).unwrap_or(&"".to_string()),
                                             ctx_player2.playlist().get(idx2).map(|t| &t.album).unwrap_or(&"".to_string()),
                                             fp_loc2,
                                             ctx_player2.playlist().get(idx2).map(|t| { let d = t.duration; format!("{:02}:{:02}", d.as_secs()/60, d.as_secs()%60) }).unwrap_or_default(),
                                             if fav2 { "是" } else { "否" },
+                                            ctx_player2.playlist().get(idx2).map(|t| &t.file_type).unwrap_or(&"--".to_string()),
+                                            "--",
+                                            "--",
                                         );
                                         let _ = rfd::MessageDialog::new()
                                             .set_title("歌曲属性")
