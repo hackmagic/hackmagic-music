@@ -753,46 +753,103 @@ impl Render for MusicPlayer {
         self.responsive.update(window_width, window_height);
         let layout_mode = self.responsive.mode;
 
-        // Mini mode: compact player window
+        // Mini mode: compact player window — mirrors original
+        // skins/miniMode/miniMode01.xml (334×54):
+        //   [cover 46] [prev/play/next/repeat/play_time/showPlaylist] [fav/mini]
+        //   <progressBar height="2"/>
         if MINI_MODE.load(Ordering::Relaxed) {
             let play_label = if self.is_playing { "⏸" } else { "▶" };
             let player_p = self.player.clone();
             let player_n = self.player.clone();
-            let player_rw = self.player.clone();
-            let player_ff = self.player.clone();
             let player_s = self.player.clone();
+            let player_rew = self.player.clone();
+            let player_ff = self.player.clone();
+            let player_repeat = self.player.clone();
+            let player_mute_m = self.player.clone();
             let vol = self.volume;
-            let pos_str_mini = format!("{:02}:{:02} / {:02}:{:02}",
+            let pos_str_mini = format!(
+                "{:02}:{:02} / {:02}:{:02}",
                 (self.position as u32) / 60, (self.position as u32) % 60,
-                (self.duration as u32) / 60, (self.duration as u32) % 60);
-            let seek_pct = if self.duration > 0.0 { (self.position / self.duration * 100.0) as f32 } else { 0.0 };
+                (self.duration as u32) / 60, (self.duration as u32) % 60
+            );
+            let seek_pct = if self.duration > 0.0 {
+                (self.position / self.duration * 100.0) as f32
+            } else { 0.0 };
+            let repeat_label_m = match self.player.repeat_mode() {
+                crate::core::playlist::RepeatMode::LoopPlaylist => "🔁",
+                crate::core::playlist::RepeatMode::LoopTrack => "🔂",
+                crate::core::playlist::RepeatMode::PlayShuffle => "🔀",
+                _ => "➡️",
+            };
+            let dur_m = self.duration;
+            let player_seek_m = self.player.clone();
 
-            return v_flex().size_full().bg(c.bg).gap_4()
-                .child(v_flex().flex_grow().items_center().justify_center().gap_2()
-                    .child(self.album_art_element(px(200.0), c))
-                    .child(layout::txt(&self.title, 16.0, c.text_title))
-                    .child(layout::txt(&self.artist, 12.0, c.text_dim))
+            return v_flex()
+                .size_full()
+                .bg(c.bg)
+                .child(
+                    // Top row: cover | controls | fav/mini
+                    h_flex().w_full().flex_grow().items_center().px_2().gap_2()
+                        // Left: small album cover (46px in original)
+                        .child(self.album_art_element(px(56.0), c))
+                        // Center: prev/play/next + repeat + play_time + showPlaylist
+                        .child(
+                            h_flex().flex_1().items_center().justify_center().gap_1()
+                                .child(Button::new("mini_prev").label("◀").ghost().compact().on_click(move |_, _, _| { let _ = player_p.prev(); }))
+                                .child(Button::new("mini_play").label(play_label).primary().compact().on_click(move |_, _, _| {
+                                    let _ = if player_n.is_playing() { player_n.toggle_pause() }
+                                        else { player_n.play_at_index(player_n.playlist().current_index().unwrap_or(0)) };
+                                }))
+                                .child(Button::new("mini_next").label("▶").ghost().compact().on_click(move |_, _, _| { let _ = player_s.next(); }))
+                                .child(Button::new("mini_repeat").label(repeat_label_m).ghost().compact().on_click(move |_, _, _| {
+                                    use crate::core::playlist::RepeatMode;
+                                    let modes = [RepeatMode::PlayOrder, RepeatMode::LoopPlaylist, RepeatMode::LoopTrack, RepeatMode::PlayShuffle, RepeatMode::PlayRandom];
+                                    let cur = player_repeat.repeat_mode();
+                                    let idx = modes.iter().position(|m| *m == cur).unwrap_or(0);
+                                    player_repeat.set_repeat_mode(modes[(idx + 1) % modes.len()]);
+                                }))
+                                .child(layout::txt(&pos_str_mini, 10.0, c.text_dim))
+                                .child(Button::new("mini_rew").label("«").ghost().compact().on_click(move |_, _, _| {
+                                    let pos = player_rew.position();
+                                    let _ = player_rew.seek(pos.saturating_sub(std::time::Duration::from_secs(5)));
+                                }))
+                                .child(Button::new("mini_ff").label("»").ghost().compact().on_click(move |_, _, _| {
+                                    let dur = player_ff.duration();
+                                    let pos = player_ff.position();
+                                    let _ = player_ff.seek((pos + std::time::Duration::from_secs(5)).min(dur));
+                                }))
+                                .child(Button::new("mini_list").label("☰").ghost().compact().on_click(|_, _, _| {
+                                    ACTIVE_PANEL.store(0, Ordering::Relaxed);
+                                }))
+                        )
+                        // Right: favorite + exit-mini button
+                        .child(
+                            h_flex().items_center().gap_1()
+                                .child(Button::new("mini_fav").label(if self.is_favourite { "♥" } else { "♡" }).ghost().compact())
+                                .child(Button::new("mini_mute").label(if self.is_muted { "🔇" } else { "🔊" }).ghost().compact().on_click(move |_, _, _| {
+                                    let v = player_mute_m.volume();
+                                    let _ = if v > 0 { player_mute_m.set_volume(0) } else { player_mute_m.set_volume(80) };
+                                }))
+                                .child(Button::new("mini_exit").label("⤢").ghost().compact().on_click(|_, _, _| {
+                                    MINI_MODE.store(false, Ordering::Relaxed);
+                                }))
+                        )
                 )
-                .child(v_flex().w_full().px_4().gap_2()
-                    .child(h_flex().w_full().h(px(4.0)).bg(c.progress_track)
+                .child(
+                    // Bottom: 2px progress bar (miniMode01.xml: <progressBar height="2"/>)
+                    h_flex()
+                        .id("mini-progress")
+                        .w_full()
+                        .h(px(3.0))
+                        .cursor(gpui::CursorStyle::PointingHand)
+                        .bg(c.progress_track)
                         .child(div().h_full().w(DefiniteLength::Fraction(seek_pct / 100.0)).bg(c.accent))
-                    )
-                    .child(layout::txt(&pos_str_mini, 9.0, c.text_dim))
-                )
-                .child(h_flex().items_center().justify_center().gap_4().pb_4()
-                    .child(Button::new("mini_rw").label("«").ghost().on_click(move |_, _, _| {
-                        let pos = player_rw.position();
-                        let _ = player_rw.seek(pos.saturating_sub(std::time::Duration::from_secs(5)));
-                    }))
-                    .child(Button::new("mini_prev").label("◀").ghost().on_click(move |_, _, _| { let _ = player_p.prev(); }))
-                    .child(Button::new("mini_play").label(play_label).primary().on_click(move |_, _, _| { let _ = if player_n.is_playing() { player_n.toggle_pause() } else { player_n.play_at_index(player_n.playlist().current_index().unwrap_or(0)) }; }))
-                    .child(Button::new("mini_next").label("▶").ghost().on_click(move |_, _, _| { let _ = player_s.next(); }))
-                    .child(Button::new("mini_ff").label("»").ghost().on_click(move |_, _, _| {
-                        let dur = player_ff.duration();
-                        let pos = player_ff.position();
-                        let _ = player_ff.seek((pos + std::time::Duration::from_secs(5)).min(dur));
-                    }))
-                    .child(layout::txt(&format!("{:02}%", vol), 9.0, c.text_dim))
+                        .on_mouse_down(gpui::MouseButton::Left, move |e, window, _cx| {
+                            let win_w: f32 = window.bounds().size.width.into();
+                            let mouse_x: f32 = e.position.x.into();
+                            let ratio = (mouse_x / win_w).clamp(0.0, 1.0);
+                            let _ = player_seek_m.seek(std::time::Duration::from_secs_f64(dur_m * ratio as f64));
+                        })
                 )
                 .into_any_element();
         }
@@ -875,31 +932,61 @@ impl Render for MusicPlayer {
             main_layout = main_layout.child(self.render_menu_bar(c, tr, window, cx));
         }
 
-        // Main content area — original MusicPlayer2 3-column layout:
-        //   [left playlist panel] [center main view] [right lyric panel]
+        // ── Main content area ────────────────────────────────────────────
+        // Original GrooveMusic skin layout (matches the screenshots in
+        // 原播放器界面截图/): a horizontalLayout with a left navigation bar
+        // and a stackElement that switches between the "now playing" view
+        // and the playlist/medialib views. The bottom 88px rectangle holds
+        // the playback controls + progress + volume.
+        //
+        // We mirror that with a 3-column body:
+        //   [left nav rail] [main view (now playing / playlist / medialib)]
+        //   [right playlist (Big mode only)]
+        // followed by a bottom control bar (rendered separately below).
         let show_columns = matches!(layout_mode, LayoutMode::Big);
+
         let mut content_flex = h_flex().w_full().flex_grow();
+
+        // Left navigation rail — vertical icon bar that swaps the main view.
+        // Matches the original `navigationBar orientation="vertical"`.
+        content_flex = content_flex.child(self.render_nav_rail(c, window, cx));
+
+        // Main view column — switches between "now playing" (cover+info+
+        // spectrum+lyrics) and the panel the user picked (playlist / medialib
+        // / lyrics / eq / settings / etc).
+        content_flex = content_flex.child(
+            v_flex()
+                .flex_grow()
+                .h_full()
+                .bg(c.bg)
+                .child(self.render_main_view(&playlist_tracks, current_idx, layout_mode, &raw_spec, &raw_peaks, c, window, cx))
+        );
+
+        // Right playlist column — only in Big mode. Original placed the
+        // playlist inside the stack element, but the screenshots show it
+        // docked to the right of the main view, which is more natural for
+        // a desktop player.
         if show_columns {
-            content_flex = content_flex.child(self.render_playlist_panel(&playlist_tracks, layout_mode, cx));
             content_flex = content_flex.child(div().w(px(1.0)).h_full().bg(c.border));
-        }
-        content_flex = content_flex.child(content_area);
-        if show_columns && self.lyric_visible {
-            content_flex = content_flex.child(div().w(px(1.0)).h_full().bg(c.border));
-            content_flex = content_flex.child(
-                v_flex()
-                    .w(px(RIGHT_PANEL_WIDTH))
-                    .h_full()
-                    .bg(c.panel)
-                    .child(desktop_lyrics::render_lyrics_panel(&self.lyric_state, c))
-            );
+            content_flex = content_flex.child(self.render_playlist_dock(&playlist_tracks, current_idx, layout_mode, c, window, cx));
         }
         main_layout = main_layout.child(content_flex);
 
         // Prepare button states
         let player_mute = self.player.clone();
 
-        // Control bar at bottom
+        // Control bar at bottom — mirrors original 01_simple.xml:
+        //   <horizontalLayout height="42">
+        //     <button key="previous"/><button key="playPause"/><button key="next"/>
+        //     <progressBar show_play_time="true"/>
+        //     <button key="repeatMode"/><button key="mediaLib"/>
+        //     <volume show_text="false"/><button key="showPlaylist"/>
+        //   </horizontalLayout>
+        //
+        // We keep rew/ff/stop as compact icon buttons between next and the
+        // progress bar (they exist in the Playback menu but are convenient
+        // here); speed/mute/EQ/fullscreen move to the now-playing screen and
+        // View menu to keep the bar clean like the original.
         main_layout = main_layout.child(
             v_flex()
                 .w_full()
@@ -938,14 +1025,16 @@ impl Render for MusicPlayer {
                     self.render_spectrum_strip(&raw_spec, &raw_peaks, SPECTRUM_BARS, c)
                 )
                 .child(
+                    // Original 01_simple.xml control row (height=42):
+                    //   prev / play / next / progressBar / repeatMode / mediaLib / volume / showPlaylist
                     h_flex()
                         .items_center()
                         .w_full()
                         .px_4().gap_4()
                         .h(px(control_bar_h))
-                        // Left: playback controls
+                        // Left: playback controls (prev / play / next + compact rew/ff/stop)
                         .child(
-                            h_flex().items_center().gap_3()
+                            h_flex().items_center().gap_2()
                                 .child(Button::new("prev").icon(IconName::ChevronLeft).ghost().compact().on_click(move |_, _, _| { let _ = player_prev.prev(); }))
                                 .child(Button::new("rew").label("⏪").ghost().compact().on_click(move |_, _, _| {
                                     let pos = player_rew.position();
@@ -974,6 +1063,21 @@ impl Render for MusicPlayer {
                                     let _ = player_ff.seek(new_pos);
                                 }))
                                 .child(Button::new("next").icon(IconName::ChevronRight).ghost().compact().on_click(move |_, _, _| { let _ = player_next.next(); }))
+                                .child(Button::new("stop").label("⏹").ghost().compact().on_click(move |_, _, _| { let _ = player_stop.stop(); })),
+                        )
+                        // Center: progress time + track info (mirrors progressBar show_play_time)
+                        .child(
+                            h_flex().flex_grow().gap_3().items_center()
+                                .child(layout::txt(&pos_str, artist_size, c.text_dim))
+                                .child(self.album_art_element(px(48.0), c))
+                                .child(v_flex().flex_grow().gap_1()
+                                    .child(crate::gui::layout::txt(&self.title, title_size, c.text_title))
+                                    .child(crate::gui::layout::txt(&self.artist, artist_size, c.text_dim)))
+                        )
+                        // Right: repeatMode / mediaLib / volume / showPlaylist (original order)
+                        .child(
+                            h_flex().items_center().gap_2()
+                                // repeatMode (cycles: order → loop playlist → loop track → shuffle → random)
                                 .child(Button::new("repeat").label(repeat_label).ghost().compact().on_click(move |_, _, _| {
                                     use crate::core::playlist::RepeatMode;
                                     let modes = [RepeatMode::PlayOrder, RepeatMode::LoopPlaylist, RepeatMode::LoopTrack, RepeatMode::PlayShuffle, RepeatMode::PlayRandom];
@@ -982,25 +1086,11 @@ impl Render for MusicPlayer {
                                     let next = modes[(idx + 1) % modes.len()];
                                     player_repeat.set_repeat_mode(next);
                                 }))
-                                .child(Button::new("stop").label("⏹").ghost().compact().on_click(move |_, _, _| { let _ = player_stop.stop(); })),
-                        )
-                        // Center: track info
-                        .child(
-                            h_flex().flex_grow().gap_3().items_center()
-                                .child(self.album_art_element(px(48.0), c))
-                                .child(v_flex().flex_grow().gap_1()
-                                    .child(crate::gui::layout::txt(&self.title, title_size, c.text_title))
-                                    .child(crate::gui::layout::txt(&self.artist, artist_size, c.text_dim)))
-                        )
-                        // Right: extra buttons and controls
-                        .child(
-                            h_flex().items_center().gap_2()
-                                .child(layout::txt(&pos_str, artist_size, c.text_dim))
-                                // Speed slider (fine-grained speed control)
-                                .child(h_flex().items_center().gap_1().child(
-                                    layout::txt(&format!("{:.2}x", self.player.speed()), 9.0, c.accent)
-                                ).child(Slider::new(&self.speed_slider).horizontal().w(px(60.0))))
-                                // Mute button
+                                // mediaLib — toggle the media library panel
+                                .child(Button::new("media_lib").icon(IconName::Folder).ghost().compact().on_click(|_, _, _| {
+                                    ACTIVE_PANEL.store(2, Ordering::Relaxed);
+                                }))
+                                // volume: mute toggle + slider (original <volume show_text="false">)
                                 .child(Button::new("mute").label(if self.is_muted { "🔇" } else { "🔊" }).ghost().compact().on_click(move |_, _, _| {
                                     let vol = player_mute.volume();
                                     if vol > 0 {
@@ -1009,17 +1099,12 @@ impl Render for MusicPlayer {
                                         let _ = player_mute.set_volume(80);
                                     }
                                 }))
-                                // Volume slider
                                 .child(Slider::new(&self.volume_slider).horizontal().w(px(vol_width)))
-                                // Favourite button
-                                .child(Button::new("favourite").label(if self.is_favourite { "♥" } else { "♡" }).ghost().compact())
-                                // Lyrics toggle button
-                                .child(Button::new("lyric_btn").icon(IconName::BookOpen).ghost().compact())
-                                // Settings button
-                                .child(Button::new("settings_btn").icon(IconName::Settings).ghost().compact())
-                                // Equalizer button
-                                .child(Button::new("eq_btn").label("EQ").ghost().compact())
-                                // Fullscreen button
+                                // showPlaylist — toggle the right-docked playlist (Big mode only)
+                                .child(Button::new("show_playlist").label("☰").ghost().compact().on_click(|_, _, _| {
+                                    ACTIVE_PANEL.store(0, Ordering::Relaxed);
+                                }))
+                                // Fullscreen button (kept from View menu for convenience)
                                 .child(Button::new("fullscreen").label("⛶").ghost().compact().on_click(|_, window, _| {
                                     window.toggle_fullscreen();
                                 })),
@@ -1216,6 +1301,302 @@ impl Render for MusicPlayer {
 }
 
 impl MusicPlayer {
+    /// Left navigation rail — vertical icon+text bar that swaps the main view.
+    /// Mirrors the original `navigationBar orientation="vertical" icon_and_text`
+    /// with item_list="now_playing,play_queue,recently_played,folder,playlist,
+    /// my_favourite,media_lib" plus a settings button at the bottom.
+    fn render_nav_rail(
+        &self,
+        c: &UiColors,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let weak = cx.entity().downgrade();
+        let active = Panel::from_u8(ACTIVE_PANEL.load(Ordering::Relaxed));
+
+        // (id, label, target_panel) — use text labels since the gpui-component
+        // IconName enum doesn't expose Music/List/History/Library/ListMusic/
+        // SlidersHorizontal in this version.
+        let items: [(&'static str, &'static str, Panel); 7] = [
+            ("nav_now_playing", "正在播放",   Panel::Lyrics),
+            ("nav_play_queue",  "播放队列",   Panel::Playlist),
+            ("nav_recent",      "最近播放",   Panel::Playlist),
+            ("nav_folder",      "文件夹",     Panel::FileBrowser),
+            ("nav_playlist",    "播放列表",   Panel::Playlist),
+            ("nav_favourite",   "我喜欢的",   Panel::Playlist),
+            ("nav_media_lib",   "媒体库",     Panel::MediaLib),
+        ];
+
+        v_flex()
+            .w(px(theme::NAV_RAIL_WIDTH))
+            .h_full()
+            .bg(c.panel_alt)
+            .border_r_1()
+            .border_color(c.border)
+            .child(v_flex().w_full().px_2().py_2().gap_1()
+                .children(items.map(|(id, label, target)| {
+                    let selected = active == target;
+                    let bg = if selected { c.accent.opacity(0.18) }
+                             else { Hsla { h: 0.0, s: 0.0, l: 0.0, a: 0.0 } };
+                    let tc = if selected { c.accent } else { c.text };
+                    let w = weak.clone();
+                    let t = target.to_u8();
+                    Button::new(id)
+                        .label(label)
+                        .w_full().justify_start()
+                        .px_3().h(px(36.0))
+                        .ghost()
+                        .bg(bg)
+                        .text_color(tc)
+                        .on_click(move |_, _, cx| {
+                            let _ = w.update(cx, |_, cx| {
+                                ACTIVE_PANEL.store(t, Ordering::Relaxed);
+                                cx.notify();
+                            });
+                        })
+                }))
+            )
+            .child(div().flex_grow())
+            .child(
+                v_flex().w_full().px_2().py_2().gap_1()
+                    .child({
+                        let w = weak.clone();
+                        Button::new("nav_search")
+                            .label("查找")
+                            .w_full().justify_start()
+                            .px_3().h(px(36.0))
+                            .ghost().text_color(if active == Panel::Search { c.accent } else { c.text })
+                            .on_click(move |_, _, cx| {
+                                let _ = w.update(cx, |_, cx| {
+                                    ACTIVE_PANEL.store(3, Ordering::Relaxed);
+                                    cx.notify();
+                                });
+                            })
+                    })
+                    .child({
+                        let w = weak.clone();
+                        Button::new("nav_eq")
+                            .label("均衡器")
+                            .w_full().justify_start()
+                            .px_3().h(px(36.0))
+                            .ghost().text_color(if active == Panel::Equalizer { c.accent } else { c.text })
+                            .on_click(move |_, _, cx| {
+                                let _ = w.update(cx, |_, cx| {
+                                    ACTIVE_PANEL.store(7, Ordering::Relaxed);
+                                    cx.notify();
+                                });
+                            })
+                    })
+                    .child({
+                        let w = weak.clone();
+                        Button::new("nav_settings")
+                            .icon(IconName::Settings).label("设置")
+                            .w_full().justify_start().items_center()
+                            .px_3().h(px(36.0)).gap_2()
+                            .ghost().text_color(if active == Panel::Settings { c.accent } else { c.text })
+                            .on_click(move |_, _, cx| {
+                                let _ = w.update(cx, |_, cx| {
+                                    ACTIVE_PANEL.store(8, Ordering::Relaxed);
+                                    cx.notify();
+                                });
+                            })
+                    })
+            )
+    }
+
+    /// The center "main view" column. Mirrors the original GrooveMusic
+    /// stackElement: when the active panel is Lyrics/Playlist we show the
+    /// "now playing" screen (big cover + title/artist/album + spectrum +
+    /// synced lyrics); for other panels we render that panel directly.
+    fn render_main_view(
+        &self,
+        tracks: &[Track],
+        current_idx: Option<usize>,
+        layout_mode: LayoutMode,
+        raw_spec: &[f32],
+        raw_peaks: &[f32],
+        c: &UiColors,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let panel = Panel::from_u8(ACTIVE_PANEL.load(Ordering::Relaxed));
+
+        // The "now playing" screen is shown when the user picks the Lyrics
+        // panel (nav: 正在播放) OR when they pick the Playlist panel from
+        // the nav rail (we treat that as "now playing" and dock the actual
+        // playlist on the right in Big mode).
+        let show_now_playing = matches!(panel, Panel::Lyrics)
+            || (matches!(panel, Panel::Playlist)
+                && !matches!(layout_mode, LayoutMode::Big));
+
+        if show_now_playing {
+            return self.render_now_playing(raw_spec, raw_peaks, c, window, cx).into_any_element();
+        }
+
+        match panel {
+            Panel::MediaLib => self.render_media_lib_panel(c, window, cx).into_any_element(),
+            Panel::Search => dialogs::render_search_panel(c, &self.playlist_filter_text, &self.search_input, window, cx).into_any_element(),
+            Panel::Equalizer => self.render_equalizer_panel(c, window, cx).into_any_element(),
+            Panel::Settings => dialogs::render_settings_panel(c, self.settings_tab, window, cx).into_any_element(),
+            Panel::LyricEditor => self.render_lyric_editor_panel(c, window, cx).into_any_element(),
+            Panel::LyricDownload => self.render_lyric_download_panel(c, window, cx).into_any_element(),
+            Panel::FileBrowser => self.render_file_browser(c, window, cx).into_any_element(),
+            // Panel::Playlist in Big mode is docked on the right; the center
+            // shows the now-playing screen.
+            Panel::Playlist => self.render_now_playing(raw_spec, raw_peaks, c, window, cx).into_any_element(),
+            _ => self.render_now_playing(raw_spec, raw_peaks, c, window, cx).into_any_element(),
+        }
+    }
+
+    /// "Now Playing" screen — the heart of the original MusicPlayer2 main
+    /// view. Layout (matches 02_grooveMusic.xml "正在播放"):
+    ///   ┌────────────────────────────────────────────┐
+    ///   │  ┌──────────┐  title (scroll)              │
+    ///   │  │          │  artist_album (scroll)       │
+    ///   │  │  cover   │  spectrum (reflex, fixed)    │
+    ///   │  │  110px   │  format                       │
+    ///   │  └──────────┘                              │
+    ///   │  lyrics (flex_grow, karaoke highlight)     │
+    ///   └────────────────────────────────────────────┘
+    fn render_now_playing(
+        &self,
+        raw_spec: &[f32],
+        raw_peaks: &[f32],
+        c: &UiColors,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let has_track = !self.title.is_empty() || self.duration > 0.0;
+
+        v_flex()
+            .flex_grow()
+            .h_full()
+            .bg(c.bg)
+            .p_4()
+            .gap_3()
+            .child(
+                // Top: cover (left) + title/artist/album/spectrum (right)
+                h_flex().w_full().gap_4().items_start()
+                    .child(
+                        v_flex().items_center().gap_3()
+                            .child(self.album_art_element(px(180.0), c))
+                            .child(
+                                h_flex().gap_2()
+                                    .child(Button::new("np_fav").label(if self.is_favourite { "♥" } else { "♡" }).ghost().compact())
+                                    .child(Button::new("np_info").icon(IconName::Info).ghost().compact())
+                                    .child(Button::new("np_add").icon(IconName::Plus).ghost().compact())
+                            )
+                    )
+                    .child(
+                        v_flex().flex_grow().gap_2()
+                            .child(layout::txt(&self.title, 18.0, c.text_title))
+                            .child(layout::txt(&self.artist, 13.0, c.text_dim))
+                            .child(layout::txt(&self.album, 12.0, c.text_dim))
+                            .child(self.render_spectrum_strip(raw_spec, raw_peaks, 48, c))
+                            .child(
+                                // Format / file info line
+                                h_flex().gap_3().child(layout::txt(
+                                    &self.format_line(),
+                                    11.0,
+                                    c.text_dim,
+                                ))
+                            )
+                    )
+            )
+            .child(
+                // Bottom: synced lyrics (flex_grow fills remaining space)
+                v_flex().flex_grow().h_full().child(
+                    if has_track {
+                        desktop_lyrics::render_lyrics_panel(&self.lyric_state, c).into_any_element()
+                    } else {
+                        v_flex().size_full().justify_center().items_center().gap_2()
+                            .child(div().text_size(px(16.0)).text_color(c.text_dim).child("未打开音乐文件"))
+                            .child(div().text_size(px(12.0)).text_color(c.text_dim).child("点击 文件 > 打开文件 开始播放"))
+                            .into_any_element()
+                    }
+                )
+            )
+    }
+
+    /// One-line format/file info string shown on the now-playing screen.
+    fn format_line(&self) -> String {
+        if let Some(track) = self.player.playlist().current_track() {
+            let ft = if !track.file_type.is_empty() { track.file_type.clone() } else { "--".into() };
+            let bit = if track.bitrate > 0 { format!("{} kbps", track.bitrate) } else { "--".into() };
+            let sr = if track.sample_rate > 0 { format!("{} Hz", track.sample_rate) } else { "--".into() };
+            format!("{}  ·  {}  ·  {}", ft, bit, sr)
+        } else {
+            String::new()
+        }
+    }
+
+    /// Right-docked playlist column for Big mode. Re-uses the existing
+    /// `render_playlist` (the full track list) but wraps it with a header
+    /// (title + search + add button) and a fixed dock width.
+    fn render_playlist_dock(
+        &self,
+        tracks: &[Track],
+        current_idx: Option<usize>,
+        layout_mode: LayoutMode,
+        c: &UiColors,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let weak = cx.entity().downgrade();
+
+        v_flex()
+            .w(px(theme::PLAYLIST_DOCK_WIDTH))
+            .h_full()
+            .bg(c.panel)
+            .child(
+                // Header: "播放队列" + search box + add button
+                h_flex().items_center().justify_between()
+                    .w_full().px_3().h(px(36.0))
+                    .bg(c.panel_alt)
+                    .child(layout::txt("播放队列", 13.0, c.text_title))
+                    .child(
+                        h_flex().gap_1()
+                            .child(Button::new("dock_search").icon(IconName::Search).ghost().compact())
+                            .child(Button::new("dock_add").icon(IconName::Plus).ghost().compact())
+                    )
+            )
+            .child(
+                // Filter chips: 默认列表 / 我喜欢的音乐 / 最近播放
+                h_flex().w_full().px_2().py_1().gap_1()
+                    .children({
+                        let total = tracks.len();
+                        let fav_count = tracks.iter().filter(|t| t.is_favourite).count();
+                        let recent_count = self.recent_tracks.len();
+                        let cur = self.playlist_filter_mode;
+                        let w = weak.clone();
+                        [
+                            ("chip_all", PlaylistFilterMode::All,       format!("全部 ({})", total),       cur == PlaylistFilterMode::All),
+                            ("chip_fav", PlaylistFilterMode::Favorites, format!("喜欢 ({})", fav_count),    cur == PlaylistFilterMode::Favorites),
+                            ("chip_rec", PlaylistFilterMode::Recent,    format!("最近 ({})", recent_count), cur == PlaylistFilterMode::Recent),
+                        ].into_iter().map(move |(id, m, label, selected)| {
+                            let w = w.clone();
+                            Button::new(id)
+                                .label(label)
+                                .compact().ghost()
+                                .text_color(if selected { c.accent } else { c.text_dim })
+                                .bg(if selected { c.accent.opacity(0.18) } else { Hsla { h: 0.0, s: 0.0, l: 0.0, a: 0.0 } })
+                                .on_click(move |_, _, cx| {
+                                    let _ = w.update(cx, |this, cx| {
+                                        this.playlist_filter_mode = m;
+                                        cx.notify();
+                                    });
+                                })
+                        })
+                    })
+            )
+            .child(
+                // The actual playlist (flex_grow fills the rest)
+                v_flex().flex_grow().h_full().child(
+                    self.render_playlist(tracks, current_idx, layout_mode, window, cx)
+                )
+            )
+    }
+
     fn render_menu_bar(
         &self,
         c: &UiColors,

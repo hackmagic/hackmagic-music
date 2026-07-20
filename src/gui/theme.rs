@@ -256,6 +256,14 @@ pub const LEFT_PANEL_WIDTH: f32 = 230.0;
 /// Right lyric/info panel width (matches original MusicPlayer2 ~300px)
 pub const RIGHT_PANEL_WIDTH: f32 = 300.0;
 
+/// Left navigation rail width (icon + text). Matches the original
+/// GrooveMusic skin's 134px verticalLayout navigationBar, narrowed to
+/// 140px to fit Chinese labels comfortably.
+pub const NAV_RAIL_WIDTH: f32 = 140.0;
+
+/// Right-docked playlist column width in Big mode.
+pub const PLAYLIST_DOCK_WIDTH: f32 = 320.0;
+
 pub const WINDOW_MIN_WIDTH: f32 = 480.0;
 pub const WINDOW_MIN_HEIGHT: f32 = 360.0;
 pub const NARROW_MODE_THRESHOLD: f32 = 600.0;
