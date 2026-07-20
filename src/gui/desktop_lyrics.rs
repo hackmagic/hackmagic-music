@@ -232,7 +232,7 @@ pub fn render_lyrics_panel(
 
 /// Render a karaoke-highlighted text line where the first `progress/1000` fraction
 /// is highlighted with the accent color and the rest uses the normal text color.
-fn karaoke_line(
+pub fn karaoke_line(
     text: &str,
     progress: u32,
     font_size: f32,

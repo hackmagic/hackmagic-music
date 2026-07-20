@@ -138,6 +138,35 @@ fn copy_text_to_clipboard(text: &str) {
     }
 }
 
+/// Render a `Lyrics` object back into an LRC string so it can be saved
+/// to disk or embedded into a tag. Mirrors the `[mm:ss.xx]text` format.
+fn lyrics_to_lrc_string(lyrics: &crate::lyric::parser::Lyrics) -> String {
+    use std::fmt::Write;
+    let mut out = String::new();
+    if !lyrics.title.is_empty() {
+        let _ = writeln!(out, "[ti:{}]", lyrics.title);
+    }
+    if !lyrics.artist.is_empty() {
+        let _ = writeln!(out, "[ar:{}]", lyrics.artist);
+    }
+    if !lyrics.album.is_empty() {
+        let _ = writeln!(out, "[al:{}]", lyrics.album);
+    }
+    if lyrics.offset_ms != 0 {
+        let _ = writeln!(out, "[offset:{}]", lyrics.offset_ms);
+    }
+    for line in &lyrics.lines {
+        let total_ms = line.time_ms;
+        let mins = total_ms / 60_000;
+        let secs = (total_ms % 60_000) / 1_000;
+        let cs = (total_ms % 1_000) / 10;
+        let _ = write!(out, "[{:02}:{:02}.{:02}]", mins, secs, cs);
+        out.push_str(&line.text);
+        out.push('\n');
+    }
+    out
+}
+
 pub struct MusicPlayer {
     player: Arc<Player>,
     colours: UiColors,
@@ -177,6 +206,9 @@ pub struct MusicPlayer {
     playlist_drag_from: Option<usize>,
     playlist_drag_to: Option<usize>,
     playlist_drag_active: bool,
+    /// Multi-selection for playlist delete-from-list / delete-from-disk.
+    /// Empty = no selection. Maintained by render_playlist click handlers.
+    playlist_selected: std::collections::HashSet<usize>,
     /// Recently played track file paths (most recent first), capped
     recent_tracks: VecDeque<String>,
     /// Media library panel state
@@ -469,6 +501,7 @@ impl MusicPlayer {
             playlist_drag_from: None,
             playlist_drag_to: None,
             playlist_drag_active: false,
+            playlist_selected: std::collections::HashSet::new(),
             recent_tracks: VecDeque::new(),
             media_lib_category: MediaLibCategory::AllTracks,
             media_lib_selected: None,
@@ -765,6 +798,10 @@ impl Render for MusicPlayer {
         // Modal dialogs take over the whole window when open.
         if let Some(kind) = self.modal {
             return self.render_modal(kind, c, window, cx).into_any_element();
+        }
+        // Open URL dialog overlay
+        if self.url_dialog_open {
+            return self.render_url_dialog(c, window, cx).into_any_element();
         }
         // Desktop lyrics are now rendered in a separate floating window.
         // The window is opened by the menu toggle handler, not here.
@@ -1305,17 +1342,25 @@ impl Render for MusicPlayer {
                         .item(PopupMenuItem::new("上一曲").on_click(move |_, _, _| { let _ = p3.prev(); }))
                         .item(PopupMenuItem::new("下一曲").on_click(move |_, _, _| { let _ = p4.next(); }))
                         .separator()
-                        .item(PopupMenuItem::new("循环模式").on_click(move |_, _, _| {
-                            use crate::core::playlist::RepeatMode;
-                            let next = match p5.repeat_mode() {
-                                RepeatMode::PlayOrder => RepeatMode::LoopPlaylist,
-                                RepeatMode::LoopPlaylist => RepeatMode::LoopTrack,
-                                RepeatMode::LoopTrack => RepeatMode::PlayShuffle,
-                                RepeatMode::PlayShuffle => RepeatMode::PlayRandom,
-                                RepeatMode::PlayRandom => RepeatMode::PlayTrack,
-                                RepeatMode::PlayTrack => RepeatMode::PlayOrder,
-                            };
-                            p5.set_repeat_mode(next);
+                        .item(PopupMenuItem::new("顺序播放").on_click({
+                            let p = p5.clone();
+                            move |_, _, _| { p.set_repeat_mode(crate::core::playlist::RepeatMode::PlayOrder); }
+                        }))
+                        .item(PopupMenuItem::new("随机播放").on_click({
+                            let p = p5.clone();
+                            move |_, _, _| { p.set_repeat_mode(crate::core::playlist::RepeatMode::PlayRandom); }
+                        }))
+                        .item(PopupMenuItem::new("列表循环").on_click({
+                            let p = p5.clone();
+                            move |_, _, _| { p.set_repeat_mode(crate::core::playlist::RepeatMode::LoopPlaylist); }
+                        }))
+                        .item(PopupMenuItem::new("单曲循环").on_click({
+                            let p = p5.clone();
+                            move |_, _, _| { p.set_repeat_mode(crate::core::playlist::RepeatMode::LoopTrack); }
+                        }))
+                        .item(PopupMenuItem::new("单曲播放一次").on_click({
+                            let p = p5.clone();
+                            move |_, _, _| { p.set_repeat_mode(crate::core::playlist::RepeatMode::PlayTrack); }
                         }))
                 }
             })
@@ -1704,8 +1749,14 @@ impl MusicPlayer {
                                 });
                         }
                     }))
-                    .item(PopupMenuItem::new(s_open_url).on_click(move |_, _, _| {
-                        tracing::info!("[Menu] Open URL");
+                    .item(PopupMenuItem::new(s_open_url).on_click({
+                        let weak = weak.clone();
+                        move |_, _, cx| {
+                            weak.update(cx, |this, cx| {
+                                this.url_dialog_open = true;
+                                cx.notify();
+                            }).ok();
+                        }
                     }))
                     .item(PopupMenuItem::new(s_open_playlist).on_click({
                         let weak = weak.clone();
@@ -1814,6 +1865,10 @@ impl MusicPlayer {
                         .separator()
                         .item(PopupMenuItem::new("设置 A 点").on_click(move |_, _, _| { let _ = p11.ab_set_a(); }))
                         .item(PopupMenuItem::new("设置 B 点").on_click(move |_, _, _| { let _ = p12.ab_set_b(); }))
+                        .item(PopupMenuItem::new("AB复读继续").on_click({
+                            let p = p13.clone();
+                            move |_, _, _| { let _ = p.ab_continue(); }
+                        }))
                         .item(PopupMenuItem::new("清除 AB 循环").on_click(move |_, _, _| { p13.ab_reset(); }))
                 })
             })
@@ -1873,9 +1928,68 @@ impl MusicPlayer {
                     .item(PopupMenuItem::new("添加URL").on_click(move |_, _, _| {
                         tracing::info!("[Playlist] 添加URL - 打开URL对话框");
                     }))
-                    .item(PopupMenuItem::new("删除选中").on_click(move |_, _, _| {
-                        // Placeholder: would need selection tracking
-                        tracing::info!("Delete selected tracks");
+                    .item(PopupMenuItem::new("删除选中").on_click({
+                        let weak = weak.clone();
+                        move |_, _, cx| {
+                            weak.update(cx, |this, cx| {
+                                if this.playlist_selected.is_empty() {
+                                    tracing::info!("[Playlist] 删除选中: 无选中项");
+                                    return;
+                                }
+                                // Collect selected indices descending so removal
+                                // doesn't shift the indices still to remove.
+                                let mut indices: Vec<usize> = this.playlist_selected.iter().copied().collect();
+                                indices.sort_unstable_by(|a, b| b.cmp(a));
+                                let mut pl = this.player.playlist_mut();
+                                for idx in &indices {
+                                    pl.remove(*idx);
+                                }
+                                let removed = indices.len();
+                                this.playlist_selected.clear();
+                                tracing::info!("[Playlist] 删除选中 {} 首", removed);
+                                cx.notify();
+                            }).ok();
+                        }
+                    }))
+                    .item(PopupMenuItem::new("从磁盘删除").on_click({
+                        let weak = weak.clone();
+                        move |_, _, cx| {
+                            weak.update(cx, |this, cx| {
+                                if this.playlist_selected.is_empty() {
+                                    tracing::info!("[Playlist] 从磁盘删除: 无选中项");
+                                    return;
+                                }
+                                let indices: Vec<usize> = {
+                                    let mut v: Vec<usize> = this.playlist_selected.iter().copied().collect();
+                                    v.sort_unstable_by(|a, b| b.cmp(a));
+                                    v
+                                };
+                                let mut pl = this.player.playlist_mut();
+                                let mut deleted = 0usize;
+                                let mut failed = 0usize;
+                                for idx in &indices {
+                                    if let Some(track) = pl.get(*idx) {
+                                        let path = track.file_path.clone();
+                                        match std::fs::remove_file(&path) {
+                                            Ok(()) => {
+                                                pl.remove(*idx);
+                                                deleted += 1;
+                                            }
+                                            Err(e) => {
+                                                tracing::warn!("[Playlist] 从磁盘删除失败 {}: {}", path, e);
+                                                failed += 1;
+                                            }
+                                        }
+                                    }
+                                }
+                                this.playlist_selected.clear();
+                                tracing::info!(
+                                    "[Playlist] 从磁盘删除: {} 成功, {} 失败",
+                                    deleted, failed
+                                );
+                                cx.notify();
+                            }).ok();
+                        }
                     }))
                     .item(PopupMenuItem::new("清空播放列表").on_click({
                         let p = player.clone();
@@ -2174,7 +2288,7 @@ impl MusicPlayer {
                                         let stem = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
                                         let parent = path.parent().unwrap_or(std::path::Path::new("."));
                                         let lrc_path = parent.join(format!("{}.lrc", stem));
-                                        let lrc_text = lyrics.to_lrc_string();
+                                        let lrc_text = lyrics_to_lrc_string(lyrics);
                                         match std::fs::write(&lrc_path, lrc_text.as_bytes()) {
                                             Ok(()) => tracing::info!("[Lyric] 保存到: {}", lrc_path.display()),
                                             Err(e) => tracing::warn!("[Lyric] 保存失败: {}", e),
@@ -2215,8 +2329,8 @@ impl MusicPlayer {
                                     this.player.playlist().current_track(),
                                     this.lyric_state.lyrics.clone(),
                                 ) {
-                                    let lrc_text = lyrics.to_lrc_string();
-                                    match crate::tag::writer::embed_lyrics(&track.file_path, &lrc_text) {
+                                    let lrc_text = lyrics_to_lrc_string(&lyrics);
+                                    match crate::tag::writer::set_tag_field(&track.file_path, "lyrics", &lrc_text) {
                                         Ok(()) => tracing::info!("[Lyric] 内嵌歌词成功: {}", track.file_path),
                                         Err(e) => tracing::warn!("[Lyric] 内嵌歌词失败: {}", e),
                                     }
@@ -2373,12 +2487,41 @@ impl MusicPlayer {
                     }
                 }))
                 .item(PopupMenuItem::new("繁简转换").on_click({
+                    let weak = weak.clone();
                     let p = player_eq.clone();
-                    move |_, _, _| {
+                    move |_, _, cx| {
                         if let Some(track) = p.playlist().current_track() {
-                            let simplified = crate::charset::to_simplified_chinese(&track.title);
-                            let traditional = crate::charset::to_traditional_chinese(&track.title);
-                            tracing::info!("[Convert] 简体: {}, 繁体: {}", simplified, traditional);
+                            let path = track.file_path.clone();
+                            weak.update(cx, |this, cx| {
+                                // Convert title/artist/album in tag
+                                let simplified = crate::charset::to_simplified_chinese(&track.title);
+                                let traditional = crate::charset::to_traditional_chinese(&track.title);
+                                tracing::info!("[Convert] 简体: {}, 繁体: {}", simplified, traditional);
+                                // Also convert lyrics in memory
+                                if let Some(lyrics) = &this.lyric_state.lyrics {
+                                    if !lyrics.is_empty() {
+                                        let mut converted = lyrics.clone();
+                                        let s = crate::charset::to_simplified_chinese(
+                                            &lyrics.lines.iter().map(|l| lyrics.display_text(l)).collect::<Vec<_>>().join("\n")
+                                        );
+                                        if !s.is_empty() {
+                                            // Update all lines with simplified text
+                                            for (i, line) in converted.lines.iter_mut().enumerate() {
+                                                if i < lyrics.lines.len() {
+                                                    line.text = crate::charset::to_simplified_chinese(&line.text);
+                                                }
+                                            }
+                                            this.lyric_state.update(Some(converted), (this.position * 1000.0) as u64);
+                                            tracing::info!("[Convert] 歌词已转换");
+                                        }
+                                    }
+                                }
+                                // Write converted tags back to file
+                                let _ = crate::tag::writer::set_tag_field(&path, "title", &crate::charset::to_simplified_chinese(&track.title));
+                                let _ = crate::tag::writer::set_tag_field(&path, "artist", &crate::charset::to_simplified_chinese(&track.artist));
+                                let _ = crate::tag::writer::set_tag_field(&path, "album", &crate::charset::to_simplified_chinese(&track.album));
+                                cx.notify();
+                            }).ok();
                         }
                     }
                 }))
@@ -2451,6 +2594,77 @@ impl MusicPlayer {
                     crate::commands::system::cmd_file_assoc(&crate::cli::FileAssocArgs {
                         action: crate::cli::FileAssocAction::Register,
                     }).ok();
+                }))
+                .item(PopupMenuItem::new("收听统计").on_click({
+                    let weak = weak.clone();
+                    move |_, _, cx| {
+                        let stats = crate::play_stats::top_stats(20);
+                        let total_secs = crate::play_stats::total_listen_secs();
+                        let total_plays = crate::play_stats::total_play_count();
+                        let total_tracks = crate::play_stats::total_track_count();
+                        let hours = total_secs / 3600;
+                        let mins = (total_secs % 3600) / 60;
+                        tracing::info!(
+                            "=== 收听统计 === 总曲目: {}, 总播放: {}, 总时长: {}h{}m",
+                            total_tracks, total_plays, hours, mins
+                        );
+                        for (i, (path, entry)) in stats.iter().enumerate() {
+                            if i >= 10 { break; }
+                            let h = entry.listen_secs / 3600;
+                            let m = (entry.listen_secs % 3600) / 60;
+                            tracing::info!("  #{:2} {:>4}h{:02}m  {:>4}次  {}", i+1, h, m, entry.play_count, path);
+                        }
+                    }
+                }))
+                .item(PopupMenuItem::new("开发进度").on_click(|_, _, _| {
+                    #[cfg(windows)]
+                    let _ = std::process::Command::new("cmd").args(&["/c", "start", "docs\\缺陷分析与改进计划.md"]).spawn();
+                    #[cfg(not(windows))]
+                    let _ = std::process::Command::new("xdg-open").arg("docs/缺陷分析与改进计划.md").spawn();
+                    tracing::info!("[Dev] 打开开发进度文档");
+                }))
+                .item(PopupMenuItem::new("创建快捷方式").on_click(|_, _, _| {
+                    #[cfg(windows)]
+                    {
+                        use std::process::Command;
+                        let exe = std::env::current_exe().ok().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
+                        let desktop = std::env::var("USERPROFILE").unwrap_or_default() + "\\Desktop";
+                        let lnk = format!("{}\\HackMagic Music Player.lnk", desktop);
+                        let _ = Command::new("powershell")
+                            .args(&["-Command", &format!("$ws = New-Object -ComObject WScript.Shell; $sc = $ws.CreateShortcut('{}'); $sc.TargetPath = '{}'; $sc.Save()", lnk, exe)])
+                            .status();
+                        tracing::info!("[Shortcut] 创建快捷方式: {}", lnk);
+                    }
+                    #[cfg(not(windows))]
+                    {
+                        tracing::info!("[Shortcut] 创建快捷方式 - 仅在 Windows 支持");
+                    }
+                }))
+                .item(PopupMenuItem::new("重新初始化播放器").on_click({
+                    let weak = weak.clone();
+                    let p = player_eq.clone();
+                    move |_, _, cx| {
+                        // Reset player state: stop, clear playlist, reset EQ, reset speed/pitch
+                        let _ = p.stop();
+                        p.playlist_mut().clear();
+                        p.eq_reset().ok();
+                        let _ = p.set_speed(1.0);
+                        let _ = p.set_pitch(0);
+                        p.eq_enable(false);
+                        weak.update(cx, |this, cx| {
+                            this.title.clear();
+                            this.artist.clear();
+                            this.album.clear();
+                            this.position = 0.0;
+                            this.duration = 0.0;
+                            this.is_playing = false;
+                            this.lyric_state.clear();
+                            this.lyric_offset_ms = 0;
+                            this.playlist_selected.clear();
+                            cx.notify();
+                        }).ok();
+                        tracing::info!("[Player] 播放器已重新初始化");
+                    }
                 }))
                 .separator()
                 .item(PopupMenuItem::new(s_settings).on_click(|_, _, _| {
@@ -2661,6 +2875,69 @@ impl MusicPlayer {
                     .children(fmt_btns)
             )
             .child(h_flex().w_full().justify_end().child(close_btn))
+            .into_any_element()
+    }
+
+    /// Render the "Open URL" dialog overlay. Shows a text input where the
+    /// user can paste a URL (e.g. an http stream or podcast), then opens it
+    /// via the player's `play_file` method (which delegates to the engine).
+    fn render_url_dialog(
+        &self,
+        c: &UiColors,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let close_btn = Button::new("url_close")
+            .label("关闭")
+            .ghost()
+            .on_click(cx.listener(|this, _, _window, _cx| {
+                this.url_dialog_open = false;
+            }));
+
+        v_flex()
+            .size_full()
+            .justify_center()
+            .items_center()
+            .bg(gpui::Hsla { h: 0.0, s: 0.0, l: 0.0, a: 0.4 })
+            .child(
+                v_flex()
+                    .w(px(440.0))
+                    .rounded(px(12.0))
+                    .bg(c.bg)
+                    .p_6()
+                    .gap_4()
+                    .child(layout::txt("打开网络音频流", 16.0, c.text_title))
+                    .child(layout::txt("输入音频流 URL（支持常见流媒体协议如 http、https、mms）：", 11.0, c.text_dim))
+                    .child(
+                        div()
+                            .w_full()
+                            .h(px(32.0))
+                            .rounded(px(6.0))
+                            .border_1()
+                            .border_color(c.border)
+                            .bg(c.panel)
+                            .px_3()
+                            .child(
+                                gpui_component::input::Input::new(&self.url_state)
+                                    .w_full()
+                            )
+                    )
+                    .child(
+                        h_flex().w_full().justify_end().gap_2()
+                            .child(close_btn)
+                            .child(Button::new("url_play")
+                                .label("播放")
+                                .primary()
+                                .on_click(cx.listener(|this, _, _window, _cx| {
+                                    let url = this.url_state.read(_cx).value().to_string();
+                                    if !url.is_empty() {
+                                        let _ = this.player.play_file(&url);
+                                        tracing::info!("[URL] 播放网络流: {}", url);
+                                    }
+                                    this.url_dialog_open = false;
+                                })))
+                    )
+            )
             .into_any_element()
     }
 
@@ -3929,11 +4206,29 @@ impl MusicPlayer {
                                     .child(if is_fav { layout::txt("♥", font_size, c.accent) } else { layout::txt("", font_size, c.text_dim) })
                                     .child(layout::txt(&dur_str, font_size - 1.0, c.text_dim))
                                     .on_click({
-                                        let p = player.clone();
+                                        let v = view.clone();
                                         let idx = i;
-                                        move |_, _, _| {
-                                            // Play track at index (don't duplicate)
-                                            let _ = p.play_at_index(idx);
+                                        let p = player.clone();
+                                        move |e, _, _cx| {
+                                            // Ctrl+click toggles selection without playing.
+                                            // Plain click: single-select and play.
+                                            if e.modifiers().control {
+                                                // Toggle selection
+                                                let _ = v.update(_cx, |this, _| {
+                                                    if this.playlist_selected.contains(&idx) {
+                                                        this.playlist_selected.remove(&idx);
+                                                    } else {
+                                                        this.playlist_selected.insert(idx);
+                                                    }
+                                                });
+                                            } else {
+                                                // Single-select and play
+                                                let _ = v.update(_cx, |this, _| {
+                                                    this.playlist_selected.clear();
+                                                    this.playlist_selected.insert(idx);
+                                                });
+                                                let _ = p.play_at_index(idx);
+                                            }
                                         }
                                     })
                                     .on_mouse_move({
@@ -4793,6 +5088,8 @@ struct DesktopLyricsView {
     player: Arc<Player>,
     state: desktop_lyrics::LyricsState,
     last_track_path: String,
+    locked: bool,
+    double_line: bool,
 }
 
 impl DesktopLyricsView {
@@ -4811,6 +5108,8 @@ impl DesktopLyricsView {
             player,
             state: desktop_lyrics::LyricsState::new(),
             last_track_path: String::new(),
+            locked: false,
+            double_line: true,
         }
     }
 
@@ -4847,6 +5146,32 @@ impl DesktopLyricsView {
             self.state.recompute(lyric_ms);
         }
     }
+
+    /// Render a single lyric line (used in locked mode).
+    fn render_lyric_line(&self, c: &UiColors) -> impl IntoElement {
+        if !self.state.visible || self.state.lyrics.is_none() {
+            return div().into_any_element();
+        }
+        let lyrics = self.state.lyrics.as_ref().unwrap();
+        let current_idx = self.state.current_index.unwrap_or(0);
+        if current_idx >= lyrics.len() {
+            return div().into_any_element();
+        }
+        let line = &lyrics.lines[current_idx];
+        let progress = self.state.progress;
+        let display_text = lyrics.display_text(line);
+
+        v_flex().items_center().gap_1()
+            .child(
+                desktop_lyrics::karaoke_line(&display_text, progress, 18.0, FontWeight::BOLD, c)
+            )
+            .child(if self.double_line && lyrics.translate_mode == crate::lyric::TranslateMode::Separate && !line.translate.is_empty() {
+                div().text_center().text_size(px(13.0)).text_color(c.text_dim).child(line.translate.clone())
+            } else {
+                div()
+            })
+            .into_any_element()
+    }
 }
 
 impl Render for DesktopLyricsView {
@@ -4856,6 +5181,23 @@ impl Render for DesktopLyricsView {
 
         let cfg = Config::load();
         let c = UiColors::build(cfg.appearance.dark_mode, &theme::ThemeName::from_config(&cfg.appearance.theme));
-        desktop_lyrics::render_lyrics_overlay(&self.state, &c)
+
+        // When locked, use a transparent background and render only the lyrics text
+        if self.locked {
+            return v_flex()
+                .size_full()
+                .bg(gpui::Hsla { h: 0.0, s: 0.0, l: 0.0, a: 0.0 })
+                .child(
+                    v_flex()
+                        .flex_grow()
+                        .justify_center()
+                        .items_center()
+                        .gap_1()
+                        .child(self.render_lyric_line(&c))
+                )
+                .into_any_element();
+        }
+
+        desktop_lyrics::render_lyrics_overlay(&self.state, &c).into_any_element()
     }
 }
