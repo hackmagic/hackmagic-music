@@ -84,6 +84,7 @@ base64 = "0.22"
 
 # Native GUI
 rfd = "0.15"
+async-channel = "2"
 gpui = "0.2.2"
 gpui-component = "0.5.1"
 

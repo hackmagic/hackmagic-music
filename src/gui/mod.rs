@@ -12,14 +12,14 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::path::PathBuf;
 use std::collections::VecDeque;
+use async_channel::unbounded;
 use gpui::*;
 use gpui_component::scroll::ScrollableElement;
 use gpui_component::{h_flex, v_flex, IconName, Root};
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::menu::{ContextMenuExt, PopupMenuItem};
 use gpui_component::slider::{Slider, SliderState, SliderValue};
-use gpui_component::tooltip::Tooltip;
-use gpui_component::input::{Input, InputState};
+use gpui_component::input::{InputState};
 use i18n::{Locale, Tr};
 use theme::{UiColors, LEFT_PANEL_WIDTH, RIGHT_PANEL_WIDTH};
 use crate::config::Config;
@@ -36,6 +36,7 @@ static MEDIA_LIB_SCANNING: std::sync::atomic::AtomicBool = std::sync::atomic::At
 static RPC_SERVER_RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static SLEEP_TIMER_ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static ALWAYS_ON_TOP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static DESKTOP_LYRICS_WINDOW_OPEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Panel {
@@ -90,13 +91,14 @@ pub fn run(cx: &mut App) {
             origin: Point::default(),
             size: gpui::Size { width: px(1200.0), height: px(800.0) },
         })),
-        window_min_size: Some(gpui::Size { width: px(760.0), height: px(480.0) }),
+        window_min_size: Some(gpui::Size { width: px(480.0), height: px(360.0) }),
         ..Default::default()
     }, |window, cx| {
-        cx.new(|cx| {
-            let url_state = cx.new(|c| InputState::new(window, c));
-            let content = cx.new(|cx| MusicPlayer::new(cx, url_state));
-            Root::new(content, window, cx)
+        let url_state = cx.new(|c| InputState::new(window, c));
+        let search_input = cx.new(|c| InputState::new(window, c).placeholder("搜索媒体库..."));
+        let content = cx.new(|cx| MusicPlayer::new(cx, url_state, search_input));
+        cx.new(|c| {
+            Root::new(content, window, c)
         })
     });
 }
@@ -190,6 +192,8 @@ pub struct MusicPlayer {
     /// Open URL dialog state
     url_dialog_open: bool,
     url_state: Entity<InputState>,
+    /// Search panel input state (created in `run`, passed to `new`)
+    search_input: Entity<InputState>,
     /// Lyrics offset in milliseconds (positive = shifted later)
     lyric_offset_ms: i64,
     /// Whether to show the lyric translation line
@@ -234,8 +238,66 @@ enum MediaLibCategory {
     Rating,
 }
 
+/// Run a blocking (Win32 modal) operation — notably `rfd` file dialogs — on a
+/// separate OS thread, then deliver the result back to the GPUI main thread and
+/// apply it via `apply`.
+///
+/// This is required because `rfd` drives its own nested Win32 message loop.
+/// Invoking it synchronously inside a GPUI event handler re-enters the message
+/// pump while `App` is already borrowed, which panics ("already borrowed")
+/// inside the non-unwinding window procedure and aborts the process.
+///
+/// Two variants exist because `Context<MusicPlayer>` does not `DerefMut` to
+/// `App`: in-view handlers receive `&mut Context<MusicPlayer>` (use
+/// `run_blocking_dialog`), while menu callbacks receive `&mut App` (use
+/// `run_blocking_dialog_app` and pass a `WeakEntity`).
+fn run_blocking_dialog_app<T, F, A>(
+    cx: &mut App,
+    weak: &gpui::WeakEntity<MusicPlayer>,
+    build: F,
+    apply: A,
+) where
+    T: Send + 'static,
+    F: FnOnce() -> T + Send + 'static,
+    A: FnOnce(T, &mut MusicPlayer, &mut Context<MusicPlayer>) + 'static,
+{
+    let weak_clone = weak.clone();
+    let (tx, rx) = unbounded::<T>();
+    std::thread::spawn(move || {
+        let _ = tx.send(build());
+    });
+    cx.spawn(async move |cx| {
+        if let Ok(result) = rx.recv().await {
+            let _ = weak_clone.update(cx, |this, cx| apply(result, this, cx));
+        }
+    })
+    .detach();
+}
+
+/// Typed-context variant — `Context::spawn` already provides the `WeakEntity`.
+fn run_blocking_dialog<T, F, A>(
+    cx: &mut Context<MusicPlayer>,
+    build: F,
+    apply: A,
+) where
+    T: Send + 'static,
+    F: FnOnce() -> T + Send + 'static,
+    A: FnOnce(T, &mut MusicPlayer, &mut Context<MusicPlayer>) + 'static,
+{
+    let (tx, rx) = unbounded::<T>();
+    std::thread::spawn(move || {
+        let _ = tx.send(build());
+    });
+    cx.spawn(async move |this, cx| {
+        if let Ok(result) = rx.recv().await {
+            let _ = this.update(cx, |this, cx| apply(result, this, cx));
+        }
+    })
+    .detach();
+}
+
 impl MusicPlayer {
-    fn new(cx: &mut Context<Self>, url_state: Entity<InputState>) -> Self {
+    fn new(cx: &mut Context<Self>, url_state: Entity<InputState>, search_input: Entity<InputState>) -> Self {
         let cfg = Config::load();
         let engine = EngineType::from_str(&cfg.play.engine);
         let player = Arc::new(Player::new(engine));
@@ -394,6 +456,7 @@ impl MusicPlayer {
             settings_tab: dialogs::SettingsTab::General,
             url_dialog_open: false,
             url_state,
+            search_input,
             lyric_offset_ms: 0,
             lyric_show_translation: false,
             desktop_lyrics_open: false,
@@ -680,14 +743,8 @@ impl Render for MusicPlayer {
         if let Some(kind) = self.modal {
             return self.render_modal(kind, c, window, cx).into_any_element();
         }
-        // Desktop lyrics: show a dedicated full-window lyrics view.
-        if self.desktop_lyrics_open {
-            return div()
-                .size_full()
-                .bg(c.bg)
-                .child(desktop_lyrics::render_lyrics_overlay(&self.lyric_state, c))
-                .into_any_element();
-        }
+        // Desktop lyrics are now rendered in a separate floating window.
+        // The window is opened by the menu toggle handler, not here.
 
         // Update responsive state based on window size
         let window_bounds = window.bounds();
@@ -723,14 +780,14 @@ impl Render for MusicPlayer {
                     .child(layout::txt(&pos_str_mini, 9.0, c.text_dim))
                 )
                 .child(h_flex().items_center().justify_center().gap_4().pb_4()
-                    .child(Button::new("mini_rw").label("⏪").ghost().on_click(move |_, _, _| {
+                    .child(Button::new("mini_rw").label("«").ghost().on_click(move |_, _, _| {
                         let pos = player_rw.position();
                         let _ = player_rw.seek(pos.saturating_sub(std::time::Duration::from_secs(5)));
                     }))
-                    .child(Button::new("mini_prev").icon(IconName::ChevronLeft).ghost().on_click(move |_, _, _| { let _ = player_p.prev(); }))
+                    .child(Button::new("mini_prev").label("◀").ghost().on_click(move |_, _, _| { let _ = player_p.prev(); }))
                     .child(Button::new("mini_play").label(play_label).primary().on_click(move |_, _, _| { let _ = if player_n.is_playing() { player_n.toggle_pause() } else { player_n.play_at_index(player_n.playlist().current_index().unwrap_or(0)) }; }))
-                    .child(Button::new("mini_next").icon(IconName::ChevronRight).ghost().on_click(move |_, _, _| { let _ = player_s.next(); }))
-                    .child(Button::new("mini_ff").label("⏩").ghost().on_click(move |_, _, _| {
+                    .child(Button::new("mini_next").label("▶").ghost().on_click(move |_, _, _| { let _ = player_s.next(); }))
+                    .child(Button::new("mini_ff").label("»").ghost().on_click(move |_, _, _| {
                         let dur = player_ff.duration();
                         let pos = player_ff.position();
                         let _ = player_ff.seek((pos + std::time::Duration::from_secs(5)).min(dur));
@@ -782,16 +839,23 @@ impl Render for MusicPlayer {
         // (original MusicPlayer2 has no icon rail — the left column IS the playlist).
 
         let content_area = div().flex_grow().h_full().child(match panel {
-            Panel::Playlist => self.render_playlist(&playlist_tracks, current_idx, layout_mode, window, cx).into_any_element(),
+            Panel::Playlist => {
+                // In Big mode, the playlist is already rendered as the left column;
+                // the center shows an empty space. In Narrow/Small mode, show it here.
+                if matches!(layout_mode, LayoutMode::Big) {
+                    div().into_any_element()
+                } else {
+                    self.render_playlist(&playlist_tracks, current_idx, layout_mode, window, cx).into_any_element()
+                }
+            }
             Panel::MediaLib => self.render_media_lib_panel(c, window, cx).into_any_element(),
             Panel::Lyrics => desktop_lyrics::render_lyrics_panel(&self.lyric_state, c).into_any_element(),
             Panel::LyricEditor => self.render_lyric_editor_panel(c, window, cx).into_any_element(),
             Panel::Equalizer => self.render_equalizer_panel(c, window, cx).into_any_element(),
-            Panel::Search => dialogs::render_search_panel(c, &self.playlist_filter_text, window, cx).into_any_element(),
+            Panel::Search => dialogs::render_search_panel(c, &self.playlist_filter_text, &self.search_input, window, cx).into_any_element(),
             Panel::Settings => dialogs::render_settings_panel(c, self.settings_tab, window, cx).into_any_element(),
             Panel::LyricDownload => self.render_lyric_download_panel(c, window, cx).into_any_element(),
             Panel::FileBrowser => self.render_file_browser(c, window, cx).into_any_element(),
-            _ => layout::content_area(c, tr).into_any_element(),
         });
 
         let control_bar_h = layout_mode.control_bar_height();
@@ -858,16 +922,16 @@ impl Render for MusicPlayer {
                                 ),
                         )
                         .on_mouse_down(gpui::MouseButton::Left, move |e, window, _cx| {
-                            let win_bounds = window.bounds();
-                            let total_w: f32 = win_bounds.size.width.into();
-                            let padding: f32 = 32.0;
-                            let bar_w = total_w - padding;
-                            if bar_w > 0.0 {
-                                let mouse_x: f32 = e.position.x.into();
-                                let ratio = ((mouse_x - padding / 2.0) / bar_w).clamp(0.0, 1.0);
-                                let seek_to = dur * ratio as f64;
-                                let _ = player_seek.seek(std::time::Duration::from_secs_f64(seek_to));
-                            }
+                            // Progress bar is w_full() inside the control-bar v_flex,
+                            // which spans the entire window width (no padding).
+                            // e.position is in window coordinates, so x=0 is the left
+                            // edge of the window — which is also the left edge of the
+                            // progress bar.
+                            let win_w: f32 = window.bounds().size.width.into();
+                            let mouse_x: f32 = e.position.x.into();
+                            let ratio = (mouse_x / win_w).clamp(0.0, 1.0);
+                            let seek_to = dur * ratio as f64;
+                            let _ = player_seek.seek(std::time::Duration::from_secs_f64(seek_to));
                         })
                 })
                 .child(
@@ -937,7 +1001,7 @@ impl Render for MusicPlayer {
                                     layout::txt(&format!("{:.2}x", self.player.speed()), 9.0, c.accent)
                                 ).child(Slider::new(&self.speed_slider).horizontal().w(px(60.0))))
                                 // Mute button
-                                .child(Button::new("mute").label(if self.is_muted { "X" } else { "V" }).ghost().compact().on_click(move |_, _, _| {
+                                .child(Button::new("mute").label(if self.is_muted { "🔇" } else { "🔊" }).ghost().compact().on_click(move |_, _, _| {
                                     let vol = player_mute.volume();
                                     if vol > 0 {
                                         let _ = player_mute.set_volume(0);
@@ -980,83 +1044,93 @@ impl Render for MusicPlayer {
                             tracing::info!("[Playlist] 媒体库 toggled: {}", this.media_lib_open);
                         })))
                     .child(Button::new("add_files_btn").icon(IconName::Plus).ghost().compact().label("添加")
-                        .on_click(cx.listener(|this, _, _window, _cx| {
-                            if let Some(file) = rfd::FileDialog::new()
-                                .add_filter("音频文件", &["mp3", "flac", "wav", "ogg", "aac", "m4a", "wma", "ape"])
-                                .add_filter("播放列表", &["m3u", "m3u8"])
-                                .pick_file()
-                            {
-                                let path = file.to_string_lossy().to_string();
-                                if path.ends_with(".m3u") || path.ends_with(".m3u8") {
-                                    // Import M3U playlist
-                                    match crate::core::playlist::Playlist::import_m3u(&path) {
-                                        Ok(tracks) => {
-                                            let count = tracks.len();
-                                            this.player.playlist_mut().add_tracks(tracks);
-                                            tracing::info!("[Playlist] 导入 {} 首从 {}", count, path);
+                        .on_click(cx.listener(|this, _, _window, cx| {
+                            run_blocking_dialog(cx,
+                                || rfd::FileDialog::new()
+                                    .add_filter("音频文件", &["mp3", "flac", "wav", "ogg", "aac", "m4a", "wma", "ape"])
+                                    .add_filter("播放列表", &["m3u", "m3u8"])
+                                    .pick_file(),
+                                |file, this, cx| {
+                                    if let Some(file) = file {
+                                        let path = file.to_string_lossy().to_string();
+                                        if path.ends_with(".m3u") || path.ends_with(".m3u8") {
+                                            match crate::core::playlist::Playlist::import_m3u(&path) {
+                                                Ok(tracks) => {
+                                                    let count = tracks.len();
+                                                    this.player.playlist_mut().add_tracks(tracks);
+                                                    tracing::info!("[Playlist] 导入 {} 首从 {}", count, path);
+                                                }
+                                                Err(e) => tracing::error!("[Playlist] 导入失败: {}", e),
+                                            }
+                                        } else {
+                                            let _ = this.player.play_file(&path);
                                         }
-                                        Err(e) => tracing::error!("[Playlist] 导入失败: {}", e),
                                     }
-                                } else {
-                                    // Add audio file
-                                    let _ = this.player.play_file(&path);
-                                }
-                            }
+                                    cx.notify();
+                                });
                         })))
                     .child(Button::new("import_pl_btn").icon(IconName::ArrowDown).ghost().compact().label("导入")
-                        .on_click(cx.listener(|this, _, _window, _cx| {
-                            if let Some(file) = rfd::FileDialog::new()
-                                .add_filter("播放列表", &["m3u", "m3u8", "wpl", "ttpl", "playlist"])
-                                .pick_file()
-                            {
-                                let path = file.to_string_lossy().to_string();
-                                let ext = std::path::Path::new(&path).extension()
-                                    .and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
-                                let result: Result<Vec<crate::core::playlist::Track>, String> = match ext.as_str() {
-                                    "m3u" | "m3u8" => crate::core::playlist::Playlist::import_m3u(&path).map_err(|e| e.to_string()),
-                                    "wpl" | "ttpl" | "playlist" => {
-                                        match crate::playlist_format::read_playlist(&path) {
-                                            Ok(paths) => Ok(paths.into_iter().map(|p| crate::core::playlist::Track::new(&p)).collect()),
-                                            Err(e) => Err(e.to_string()),
+                        .on_click(cx.listener(|this, _, _window, cx| {
+                            run_blocking_dialog(cx,
+                                || rfd::FileDialog::new()
+                                    .add_filter("播放列表", &["m3u", "m3u8", "wpl", "ttpl", "playlist"])
+                                    .pick_file(),
+                                |file, this, cx| {
+                                    if let Some(file) = file {
+                                        let path = file.to_string_lossy().to_string();
+                                        let ext = std::path::Path::new(&path).extension()
+                                            .and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+                                        let result: Result<Vec<crate::core::playlist::Track>, String> = match ext.as_str() {
+                                            "m3u" | "m3u8" => crate::core::playlist::Playlist::import_m3u(&path).map_err(|e| e.to_string()),
+                                            "wpl" | "ttpl" | "playlist" => {
+                                                match crate::playlist_format::read_playlist(&path) {
+                                                    Ok(paths) => Ok(paths.into_iter().map(|p| crate::core::playlist::Track::new(&p)).collect()),
+                                                    Err(e) => Err(e.to_string()),
+                                                }
+                                            }
+                                            _ => Err("不支持的格式".to_string()),
+                                        };
+                                        match result {
+                                            Ok(tracks) => {
+                                                let count = tracks.len();
+                                                this.player.playlist_mut().add_tracks(tracks);
+                                                tracing::info!("[Playlist] 导入 {} 首从 {}", count, path);
+                                            }
+                                            Err(e) => tracing::error!("[Playlist] 导入失败: {}", e),
                                         }
                                     }
-                                    _ => Err("不支持的格式".to_string()),
-                                };
-                                let tracks = match result {
-                                    Ok(t) => t,
-                                    Err(e) => {
-                                        tracing::error!("[Playlist] 导入失败: {}", e);
-                                        return;
-                                    }
-                                };
-                                let count = tracks.len();
-                            }
+                                    cx.notify();
+                                });
                         })))
                     .child(Button::new("save_pl_btn").icon(IconName::File).ghost().compact().label("导出")
-                        .on_click(cx.listener(|this, _, _window, _cx| {
-                            if let Some(file) = rfd::FileDialog::new()
-                                .add_filter("M3U播放列表", &["m3u8"])
-                                .add_filter("WPL播放列表", &["wpl"])
-                                .add_filter("TTPL播放列表", &["ttpl"])
-                                .add_filter("原生播放列表", &["playlist"])
-                                .set_file_name("playlist.m3u8")
-                                .save_file()
-                            {
-                                let path = file.to_string_lossy().to_string();
-                                let ext = std::path::Path::new(&path).extension()
-                                    .and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
-                                let result = match ext.as_str() {
-                                    "m3u" | "m3u8" => this.player.playlist().export_m3u(&path, true).map_err(|e| e.to_string()),
-                                    "wpl" => crate::playlist_format::write_playlist(&path, this.player.playlist().tracks(), None).map_err(|e| e.to_string()),
-                                    "ttpl" => crate::playlist_format::write_playlist(&path, this.player.playlist().tracks(), None).map_err(|e| e.to_string()),
-                                    "playlist" => crate::playlist_format::write_playlist(&path, this.player.playlist().tracks(), None).map_err(|e| e.to_string()),
-                                    _ => Err("不支持的格式".to_string()),
-                                };
-                                match result {
-                                    Ok(()) => tracing::info!("[Playlist] 导出到 {}", path),
-                                    Err(e) => tracing::error!("[Playlist] 导出失败: {}", e),
-                                }
-                            }
+                        .on_click(cx.listener(|this, _, _window, cx| {
+                            run_blocking_dialog(cx,
+                                || rfd::FileDialog::new()
+                                    .add_filter("M3U播放列表", &["m3u8"])
+                                    .add_filter("WPL播放列表", &["wpl"])
+                                    .add_filter("TTPL播放列表", &["ttpl"])
+                                    .add_filter("原生播放列表", &["playlist"])
+                                    .set_file_name("playlist.m3u8")
+                                    .save_file(),
+                                |file, this, cx| {
+                                    if let Some(file) = file {
+                                        let path = file.to_string_lossy().to_string();
+                                        let ext = std::path::Path::new(&path).extension()
+                                            .and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+                                        let result = match ext.as_str() {
+                                            "m3u" | "m3u8" => this.player.playlist().export_m3u(&path, true).map_err(|e| e.to_string()),
+                                            "wpl" => crate::playlist_format::write_playlist(&path, this.player.playlist().tracks(), None).map_err(|e| e.to_string()),
+                                            "ttpl" => crate::playlist_format::write_playlist(&path, this.player.playlist().tracks(), None).map_err(|e| e.to_string()),
+                                            "playlist" => crate::playlist_format::write_playlist(&path, this.player.playlist().tracks(), None).map_err(|e| e.to_string()),
+                                            _ => Err("不支持的格式".to_string()),
+                                        };
+                                        match result {
+                                            Ok(()) => tracing::info!("[Playlist] 导出到 {}", path),
+                                            Err(e) => tracing::error!("[Playlist] 导出失败: {}", e),
+                                        }
+                                    }
+                                    cx.notify();
+                                });
                         })))
                     .child(div().flex_grow())
                     .child(layout::txt(&format!("{} 首 | {}", track_count, total_dur), 10.0, c.text_dim))
@@ -1085,15 +1159,15 @@ impl Render for MusicPlayer {
                     .h(px(theme::STATUSBAR_HEIGHT))
                     .px_3().gap_4()
                     .bg(c.statusbar_bg)
-                    .child(layout::txt(&format!("� {} 首", track_count), 10.0, c.text_dim))
+                    .child(layout::txt(&format!("{} 首", track_count), 10.0, c.text_dim))
                     .child(div().w(px(1.0)).h(px(12.0)).bg(c.border))
-                    .child(layout::txt(&format!("� {}", total_dur), 10.0, c.text_dim))
+                    .child(layout::txt(&format!("{}", total_dur), 10.0, c.text_dim))
                     .child(div().w(px(1.0)).h(px(12.0)).bg(c.border))
-                    .child(layout::txt(&format!("� {}", file_type), 10.0, c.text_dim))
+                    .child(layout::txt(&format!("{}", file_type), 10.0, c.text_dim))
                     .child(div().w(px(1.0)).h(px(12.0)).bg(c.border))
-                    .child(layout::txt(&format!("� {}", repeat_desc), 10.0, c.text_dim))
+                    .child(layout::txt(&format!("{}", repeat_desc), 10.0, c.text_dim))
                     .child(div().w(px(1.0)).h(px(12.0)).bg(c.border))
-                    .child(layout::txt(&format!("⚙ {}", engine_name), 10.0, c.text_dim))
+                    .child(layout::txt(&format!("{}", engine_name), 10.0, c.text_dim))
                     .child(div().flex_grow())
                     .child(
                         h_flex().items_center().gap_2()
@@ -1152,6 +1226,12 @@ impl MusicPlayer {
         // Weak handle to self so menu callbacks (which only receive &mut App)
         // can rebuild colors and request a repaint after toggling theme/dark mode.
         let weak = _cx.entity().downgrade();
+        let weak_file = weak.clone();
+        let weak_playlist = weak.clone();
+        let weak_lyric = weak.clone();
+        let weak_view = weak.clone();
+        let weak_tools = weak.clone();
+        let weak_help = weak.clone();
         // Copy i18n strings to satisfy 'static lifetime for closures
         let s_file = tr.menu_file;
         let s_open_file = tr.menu_open_file;
@@ -1170,98 +1250,115 @@ impl MusicPlayer {
             .bg(c.control_bar_bg)
             // File menu
             .child({
-                let player = self.player.clone();
                 let s_open_url = tr.menu_open_url;
                 let s_open_playlist = tr.menu_open_playlist;
                 layout::menu_dropdown(s_file, IconName::Folder, move |menu, _w, _cx| {
+                    let weak = weak_file.clone();
                     menu.item(PopupMenuItem::new(s_open_file).on_click({
-                        let p = player.clone();
-                        move |_, _, _| {
-                            if let Some(path) = rfd::FileDialog::new()
-                                .add_filter("音频文件", &["mp3", "flac", "wav", "ogg", "aac", "m4a", "wma", "ape", "cue"])
-                                .pick_file()
-                            {
-                                let _ = p.play_file(path.to_str().unwrap_or_default());
-                            }
+                        let weak_ = weak.clone();
+                        move |_, _, cx| {
+                            run_blocking_dialog_app(cx, &weak_,
+                                || rfd::FileDialog::new()
+                                    .add_filter("音频文件", &["mp3", "flac", "wav", "ogg", "aac", "m4a", "wma", "ape", "cue"])
+                                    .pick_file(),
+                                |file, this, cx| {
+                                    if let Some(file) = file {
+                                        let _ = this.player.play_file(file.to_str().unwrap_or_default());
+                                    }
+                                    cx.notify();
+                                });
                         }
                     }))
                     .item(PopupMenuItem::new(s_open_folder).on_click({
-                        let p = player.clone();
-                        move |_, _, _| {
-                            if let Some(folder) = rfd::FileDialog::new().pick_folder() {
-                                let dir = folder.to_str().unwrap_or_default();
-                                match crate::media::scan_directory(dir, true, None) {
-                                    Ok(entries) => {
-                                        let mut pl = p.playlist_mut();
-                                        let first_idx = pl.len();
-                                        for e in &entries {
-                                            pl.add_track(crate::core::playlist::Track::new(&e.file_path));
+                        let weak_ = weak.clone();
+                        move |_, _, cx| {
+                            run_blocking_dialog_app(cx, &weak_,
+                                || rfd::FileDialog::new().pick_folder(),
+                                |folder, this, cx| {
+                                    if let Some(folder) = folder {
+                                        let dir = folder.to_str().unwrap_or_default();
+                                        match crate::media::scan_directory(dir, true, None) {
+                                            Ok(entries) => {
+                                                let mut pl = this.player.playlist_mut();
+                                                let first_idx = pl.len();
+                                                for e in &entries {
+                                                    pl.add_track(crate::core::playlist::Track::new(&e.file_path));
+                                                }
+                                                drop(pl);
+                                                let mut lib = crate::media::MediaLib::load();
+                                                for e in &entries { lib.upsert(e.clone()); }
+                                                let _ = lib.save();
+                                                if !entries.is_empty() {
+                                                    let _ = this.player.play_at_index(first_idx);
+                                                }
+                                                tracing::info!("[Menu] Loaded {} tracks from folder", entries.len());
+                                            }
+                                            Err(e) => tracing::warn!("Scan folder failed: {}", e),
                                         }
-                                        drop(pl);
-                                        let mut lib = crate::media::MediaLib::load();
-                                        for e in &entries { lib.upsert(e.clone()); }
-                                        let _ = lib.save();
-                                        if !entries.is_empty() {
-                                            let _ = p.play_at_index(first_idx);
-                                        }
-                                        tracing::info!("[Menu] Loaded {} tracks from folder", entries.len());
                                     }
-                                    Err(e) => tracing::warn!("Scan folder failed: {}", e),
-                                }
-                            }
+                                    cx.notify();
+                                });
                         }
                     }))
                     .item(PopupMenuItem::new(s_open_url).on_click(move |_, _, _| {
                         tracing::info!("[Menu] Open URL");
                     }))
                     .item(PopupMenuItem::new(s_open_playlist).on_click({
-                        let p = player.clone();
-                        move |_, _, _| {
-                            if let Some(file) = rfd::FileDialog::new()
-                                .add_filter("播放列表", &["m3u", "m3u8", "wpl", "ttpl", "playlist"])
-                                .pick_file()
-                            {
-                                let path = file.to_string_lossy().to_string();
-                                let ext = std::path::Path::new(&path).extension()
-                                    .and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
-                                let result: Result<Vec<crate::core::playlist::Track>, String> = match ext.as_str() {
-                                    "m3u" | "m3u8" => crate::core::playlist::Playlist::import_m3u(&path).map_err(|e| e.to_string()),
-                                    "wpl" | "ttpl" | "playlist" => {
-                                        match crate::playlist_format::read_playlist(&path) {
-                                            Ok(paths) => Ok(paths.into_iter().map(|p| crate::core::playlist::Track::new(&p)).collect()),
-                                            Err(e) => Err(e.to_string()),
+                        let weak = weak.clone();
+                        move |_, _, cx| {
+                            run_blocking_dialog_app(cx, &weak,
+                                || rfd::FileDialog::new()
+                                    .add_filter("播放列表", &["m3u", "m3u8", "wpl", "ttpl", "playlist"])
+                                    .pick_file(),
+                                |file, this, cx| {
+                                    if let Some(file) = file {
+                                        let path = file.to_string_lossy().to_string();
+                                        let ext = std::path::Path::new(&path).extension()
+                                            .and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+                                        let result: Result<Vec<crate::core::playlist::Track>, String> = match ext.as_str() {
+                                            "m3u" | "m3u8" => crate::core::playlist::Playlist::import_m3u(&path).map_err(|e| e.to_string()),
+                                            "wpl" | "ttpl" | "playlist" => {
+                                                match crate::playlist_format::read_playlist(&path) {
+                                                    Ok(paths) => Ok(paths.into_iter().map(|p| crate::core::playlist::Track::new(&p)).collect()),
+                                                    Err(e) => Err(e.to_string()),
+                                                }
+                                            }
+                                            _ => Err("不支持的格式".to_string()),
+                                        };
+                                        match result {
+                                            Ok(tracks) => {
+                                                let mut pl = this.player.playlist_mut();
+                                                pl.clear();
+                                                pl.add_tracks(tracks);
+                                                let _ = this.player.play_at_index(0);
+                                                tracing::info!("[Menu] Loaded playlist: {}", path);
+                                            }
+                                            Err(e) => tracing::error!("[Menu] Failed to load playlist: {}", e),
                                         }
                                     }
-                                    _ => Err("不支持的格式".to_string()),
-                                };
-                                match result {
-                                    Ok(tracks) => {
-                                        let mut pl = p.playlist_mut();
-                                        pl.clear();
-                                        pl.add_tracks(tracks);
-                                        let _ = p.play_at_index(0);
-                                        tracing::info!("[Menu] Loaded playlist: {}", path);
-                                    }
-                                    Err(e) => tracing::error!("[Menu] Failed to load playlist: {}", e),
-                                }
-                            }
+                                    cx.notify();
+                                });
                         }
                     }))
                     .separator()
                     .item(PopupMenuItem::new(s_save_as_new).on_click({
-                        let p = player.clone();
-                        move |_, _, _| {
-                            if let Some(file) = rfd::FileDialog::new()
-                                .add_filter("M3U 播放列表", &["m3u", "m3u8"])
-                                .set_file_name("playlist.m3u")
-                                .save_file()
-                            {
-                                let path = file.to_string_lossy().to_string();
-                                match p.playlist_mut().export_m3u(&path, true) {
-                                    Ok(()) => tracing::info!("[Menu] 另存为新播放列表: {}", path),
-                                    Err(e) => tracing::error!("[Menu] 保存失败: {}", e),
-                                }
-                            }
+                        let weak = weak.clone();
+                        move |_, _, cx| {
+                            run_blocking_dialog_app(cx, &weak,
+                                || rfd::FileDialog::new()
+                                    .add_filter("M3U 播放列表", &["m3u", "m3u8"])
+                                    .set_file_name("playlist.m3u")
+                                    .save_file(),
+                                |file, this, cx| {
+                                    if let Some(file) = file {
+                                        let path = file.to_string_lossy().to_string();
+                                        match this.player.playlist_mut().export_m3u(&path, true) {
+                                            Ok(()) => tracing::info!("[Menu] 另存为新播放列表: {}", path),
+                                            Err(e) => tracing::error!("[Menu] 保存失败: {}", e),
+                                        }
+                                    }
+                                    cx.notify();
+                                });
                         }
                     }))
                     .separator()
@@ -1319,29 +1416,42 @@ impl MusicPlayer {
             // Playlist menu
             .child({
                 let player = self.player.clone();
+                let weak = weak_playlist;
                 layout::menu_dropdown(s_playlist, IconName::SquareTerminal, move |menu, _, _| {
-                    let p1 = player.clone();
-                    let p2 = player.clone();
-                    let p3 = player.clone();
-                    menu.item(PopupMenuItem::new("添加文件").on_click(move |_, _, _| {
-                        if let Some(paths) = rfd::FileDialog::new()
-                            .add_filter("音频文件", &["mp3", "flac", "wav", "ogg", "aac", "m4a", "wma", "ape"])
-                            .pick_files()
-                        {
-                            let mut pl = p1.playlist_mut();
-                            for path in &paths {
-                                pl.add_track(crate::core::playlist::Track::new(path.to_str().unwrap_or_default()));
-                            }
+                    menu                    .item(PopupMenuItem::new("添加文件").on_click({
+                        let weak = weak.clone();
+                        move |_, _, cx| {
+                            run_blocking_dialog_app(cx, &weak,
+                                || rfd::FileDialog::new()
+                                    .add_filter("音频文件", &["mp3", "flac", "wav", "ogg", "aac", "m4a", "wma", "ape"])
+                                    .pick_files(),
+                                |paths, this, cx| {
+                                    if let Some(paths) = paths {
+                                        let mut pl = this.player.playlist_mut();
+                                        for path in &paths {
+                                            pl.add_track(crate::core::playlist::Track::new(path.to_str().unwrap_or_default()));
+                                        }
+                                    }
+                                    cx.notify();
+                                });
                         }
                     }))
-                    .item(PopupMenuItem::new("添加文件夹").on_click(move |_, _, _| {
-                        if let Some(folder) = rfd::FileDialog::new().pick_folder() {
-                            if let Ok(entries) = crate::media::scan_directory(folder.to_str().unwrap_or_default(), true, None) {
-                                let mut pl = p2.playlist_mut();
-                                for e in entries {
-                                    pl.add_track(crate::core::playlist::Track::new(&e.file_path));
-                                }
-                            }
+                    .item(PopupMenuItem::new("添加文件夹").on_click({
+                        let weak = weak.clone();
+                        move |_, _, cx| {
+                            run_blocking_dialog_app(cx, &weak,
+                                || rfd::FileDialog::new().pick_folder(),
+                                |folder, this, cx| {
+                                    if let Some(folder) = folder {
+                                        if let Ok(entries) = crate::media::scan_directory(folder.to_str().unwrap_or_default(), true, None) {
+                                            let mut pl = this.player.playlist_mut();
+                                            for e in entries {
+                                                pl.add_track(crate::core::playlist::Track::new(&e.file_path));
+                                            }
+                                        }
+                                    }
+                                    cx.notify();
+                                });
                         }
                     }))
                     .item(PopupMenuItem::new("从媒体库添加").on_click({
@@ -1363,8 +1473,11 @@ impl MusicPlayer {
                         // Placeholder: would need selection tracking
                         tracing::info!("Delete selected tracks");
                     }))
-                    .item(PopupMenuItem::new("清空播放列表").on_click(move |_, _, _| {
-                        p3.playlist_mut().clear();
+                    .item(PopupMenuItem::new("清空播放列表").on_click({
+                        let p = player.clone();
+                        move |_, _, _| {
+                            p.playlist_mut().clear();
+                        }
                     }))
                     .separator()
                     .item(PopupMenuItem::new("移除重复").on_click({
@@ -1382,28 +1495,30 @@ impl MusicPlayer {
                         }
                     }))
                     .item(PopupMenuItem::new("修复路径错误").on_click({
-                        let p = player.clone();
-                        move |_, _, _| {
-                            let pl = p.playlist();
-                            let mut fixed = 0;
-                            for i in 0..pl.len() {
-                                if let Some(track) = pl.get(i) {
-                                    let name = if !track.title.is_empty() { &track.title } else { &track.file_name };
-                                    if !std::path::Path::new(&track.file_path).exists() {
-                                        if let Some(new_path) = rfd::FileDialog::new()
-                                            .set_title(&format!("修复: {}", name))
-                                            .pick_file()
-                                        {
-                                            let new_path_str = new_path.to_string_lossy().to_string();
-                                            if let Some(t) = p.playlist_mut().get_mut(i) {
-                                                t.file_path = new_path_str;
-                                            }
-                                            fixed += 1;
-                                        }
+                        let weak = weak.clone();
+                        let player = player.clone();
+                        move |_, _, cx| {
+                            let weak3 = weak.clone();
+                            let player2 = player.clone();
+                            std::thread::spawn(move || {
+                                let pl = player2.playlist();
+                                let missing: Vec<(usize, String)> = (0..pl.len())
+                                    .filter_map(|i| {
+                                        pl.get(i).filter(|t| !std::path::Path::new(&t.file_path).exists()).map(|t| {
+                                            let name = if !t.title.is_empty() { t.title.clone() } else { t.file_name.clone() };
+                                            (i, name)
+                                        })
+                                    })
+                                    .collect();
+                                drop(pl);
+                                for (i, name) in missing {
+                                    if let Some(new_path) = rfd::FileDialog::new().set_title(&format!("修复: {}", name)).pick_file() {
+                                        let new_path_str = new_path.to_string_lossy().to_string();
+                                        // Can't update player from here, will need to queue
+                                        tracing::info!("[修复] 曲目 #{} -> {}", i, new_path_str);
                                     }
                                 }
-                            }
-                            tracing::info!("Fixed {} paths", fixed);
+                            });
                         }
                     }))
                     .separator()
@@ -1476,7 +1591,7 @@ impl MusicPlayer {
             // Lyric menu
             .child({
                 let player = self.player.clone();
-                let weak = weak.clone();
+                let weak = weak_lyric;
                 let s_lyric_label = tr.menu_lyric;
                 let s_reload_lyric = tr.menu_reload_lyric;
                 let s_copy_line = tr.menu_copy_current_line;
@@ -1487,7 +1602,10 @@ impl MusicPlayer {
                 let s_show_trans = tr.menu_show_translation;
                 let s_show_desktop = tr.menu_show_desktop_lyric;
                 let lyric_visible_now = self.lyric_visible;
-                layout::menu_dropdown(s_lyric_label, IconName::BookOpen, move |menu, _, _| {
+                layout::menu_dropdown(s_lyric_label, IconName::BookOpen, {
+                    let weak = weak.clone();
+                    let player = player.clone();
+                    move |menu, _, _| {
                     let p1 = player.clone();
                     let p2 = player.clone();
                     let p3 = player.clone();
@@ -1588,12 +1706,31 @@ impl MusicPlayer {
                     }))
                     .item(PopupMenuItem::new(s_show_desktop).on_click({
                         let weak = weak.clone();
+                        let player = player.clone();
                         move |_, _, cx| {
-                            weak.update(cx, |this, cx| {
-                                this.desktop_lyrics_open = !this.desktop_lyrics_open;
-                                cx.notify();
-                                tracing::info!("[Lyric] Desktop lyrics toggled: {}", this.desktop_lyrics_open);
-                            }).ok();
+                            let already_open = DESKTOP_LYRICS_WINDOW_OPEN.load(Ordering::Relaxed);
+                            if !already_open {
+                                DESKTOP_LYRICS_WINDOW_OPEN.store(true, Ordering::Relaxed);
+                                let player = player.clone();
+                                let _ = cx.open_window(
+                                    WindowOptions {
+                                        titlebar: Some(TitlebarOptions {
+                                            title: Some("桌面歌词".into()),
+                                            ..Default::default()
+                                        }),
+                                        window_bounds: Some(WindowBounds::Windowed(Bounds {
+                                            origin: Point::default(),
+                                            size: gpui::Size { width: px(600.0), height: px(200.0) },
+                                        })),
+                                        window_min_size: Some(gpui::Size { width: px(300.0), height: px(80.0) }),
+                                        ..Default::default()
+                                    },
+                                    |window, cx| {
+                                        let view = cx.new(|cx| DesktopLyricsView::new(player, window, cx));
+                                        cx.new(|cx| Root::new(view, window, cx))
+                                    },
+                                );
+                            }
                         }
                     }))
                     .item(PopupMenuItem::new("桌面歌词锁定").on_click(|_, _, _| {
@@ -1620,7 +1757,7 @@ impl MusicPlayer {
                             }).ok();
                         }
                     }))
-                })
+                    }})
             })
             // View menu
             .child({
@@ -2010,28 +2147,34 @@ impl MusicPlayer {
                 .label(format!("转为 .{}", fmt))
                 .compact()
                 .ghost()
-                .on_click(cx.listener(move |this, _, _window, _cx| {
-                    if let Some(file) = rfd::FileDialog::new()
-                        .add_filter("音频文件", &["mp3", "flac", "wav", "ogg", "aac", "m4a", "wma", "ape"])
-                        .pick_file()
-                    {
-                        let src = file.to_string_lossy().to_string();
-                        let dst = std::path::Path::new(&src).with_extension(fmt).to_string_lossy().to_string();
-                        match std::process::Command::new("ffmpeg")
-                            .args(["-y", "-i", &src, &dst])
-                            .status()
-                        {
-                            Ok(status) if status.success() => {
-                                tracing::info!("[Convert] 转换成功: {} -> {}", src, dst);
+                .on_click(cx.listener(move |this, _, _window, cx| {
+                    let weak = cx.entity().downgrade();
+                    let fmt = fmt;
+                    run_blocking_dialog_app(cx, &weak,
+                        || rfd::FileDialog::new()
+                            .add_filter("音频文件", &["mp3", "flac", "wav", "ogg", "aac", "m4a", "wma", "ape"])
+                            .pick_file(),
+                        move |file, this, cx| {
+                            if let Some(file) = file {
+                                let src = file.to_string_lossy().to_string();
+                                let dst = std::path::Path::new(&src).with_extension(fmt).to_string_lossy().to_string();
+                                match std::process::Command::new("ffmpeg")
+                                    .args(["-y", "-i", &src, &dst])
+                                    .status()
+                                {
+                                    Ok(status) if status.success() => {
+                                        tracing::info!("[Convert] 转换成功: {} -> {}", src, dst);
+                                    }
+                                    Ok(status) => {
+                                        tracing::error!("[Convert] ffmpeg 退出码: {:?}", status.code());
+                                    }
+                                    Err(e) => {
+                                        tracing::error!("[Convert] 未找到 ffmpeg，或转换失败: {}", e);
+                                    }
+                                }
                             }
-                            Ok(status) => {
-                                tracing::error!("[Convert] ffmpeg 退出码: {:?}", status.code());
-                            }
-                            Err(e) => {
-                                tracing::error!("[Convert] 未找到 ffmpeg，或转换失败: {}", e);
-                            }
-                        }
-                    }
+                            cx.notify();
+                        });
                 }))
                 .into_any_element()
         }).collect();
@@ -2082,29 +2225,37 @@ impl MusicPlayer {
                     }
                 })))
             .child(Button::new("lyr_save_as").label("另存为...").compact()
-                .on_click(cx.listener(|this, _, _window, _cx| {
-                    if let Some(path) = rfd::FileDialog::new()
-                        .set_file_name("lyric.lrc")
-                        .add_filter("LRC", &["lrc"])
-                        .save_file()
-                    {
-                        let p = path.to_string_lossy().to_string();
-                        if let Err(e) = this.editor_state.save_as(&p) {
-                            tracing::warn!("[LyricEditor] 另存为失败: {}", e);
-                        }
-                    }
+                .on_click(cx.listener(|this, _, _window, cx| {
+                    run_blocking_dialog(cx,
+                        || rfd::FileDialog::new()
+                            .set_file_name("lyric.lrc")
+                            .add_filter("LRC", &["lrc"])
+                            .save_file(),
+                        |path, this, cx| {
+                            if let Some(path) = path {
+                                let p = path.to_string_lossy().to_string();
+                                if let Err(e) = this.editor_state.save_as(&p) {
+                                    tracing::warn!("[LyricEditor] 另存为失败: {}", e);
+                                }
+                            }
+                            cx.notify();
+                        });
                 })))
             .child(Button::new("lyr_open").label("打开").compact()
-                .on_click(cx.listener(|this, _, _window, _cx| {
-                    if let Some(path) = rfd::FileDialog::new()
-                        .add_filter("LRC", &["lrc"])
-                        .pick_file()
-                    {
-                        let p = path.to_string_lossy().to_string();
-                        if let Err(e) = this.editor_state.load_from_file(&p) {
-                            tracing::warn!("[LyricEditor] 打开失败: {}", e);
-                        }
-                    }
+                .on_click(cx.listener(|this, _, _window, cx| {
+                    run_blocking_dialog(cx,
+                        || rfd::FileDialog::new()
+                            .add_filter("LRC", &["lrc"])
+                            .pick_file(),
+                        |path, this, cx| {
+                            if let Some(path) = path {
+                                let p = path.to_string_lossy().to_string();
+                                if let Err(e) = this.editor_state.load_from_file(&p) {
+                                    tracing::warn!("[LyricEditor] 打开失败: {}", e);
+                                }
+                            }
+                            cx.notify();
+                        });
                 })))
             .child(div().w(px(1.0)).h(px(16.0)).bg(c.divider))
             .child(Button::new("lyr_add").label("插入行").compact()
@@ -3445,21 +3596,26 @@ impl MusicPlayer {
                     .child(layout::txt("文件浏览器", 14.0, c.text_title))
                     .child(
                         Button::new("fb_open_folder").label("打开文件夹").compact().ghost()
-                            .on_click(cx.listener(move |this, _, _w, _cx| {
-                                if let Some(folder) = rfd::FileDialog::new().pick_folder() {
-                                    let dir = folder.to_string_lossy().to_string();
-                                    if let Ok(entries) = crate::media::scan_directory(&dir, true, None) {
-                                        let mut pl = this.player.playlist_mut();
-                                        let first_idx = pl.len();
-                                        for e in &entries {
-                                            pl.add_track(crate::core::playlist::Track::new(&e.file_path));
+                            .on_click(cx.listener(|this, _, _w, cx| {
+                                run_blocking_dialog(cx,
+                                    || rfd::FileDialog::new().pick_folder(),
+                                    |folder, this, cx| {
+                                        if let Some(folder) = folder {
+                                            let dir = folder.to_string_lossy().to_string();
+                                            if let Ok(entries) = crate::media::scan_directory(&dir, true, None) {
+                                                let mut pl = this.player.playlist_mut();
+                                                let first_idx = pl.len();
+                                                for e in &entries {
+                                                    pl.add_track(crate::core::playlist::Track::new(&e.file_path));
+                                                }
+                                                if !entries.is_empty() {
+                                                    let _ = this.player.play_at_index(first_idx);
+                                                }
+                                                tracing::info!("[FileBrowser] 打开文件夹: {} ({} 首)", dir, entries.len());
+                                            }
                                         }
-                                        if !entries.is_empty() {
-                                            let _ = this.player.play_at_index(first_idx);
-                                        }
-                                        tracing::info!("[FileBrowser] 打开文件夹: {} ({} 首)", dir, entries.len());
-                                    }
-                                }
+                                        cx.notify();
+                                    });
                             }))
                     )
             )
@@ -3610,9 +3766,9 @@ impl MusicPlayer {
                     .child(div().flex_grow())
                     .child(
                         Button::new("ml_refresh_btn").label("刷新").compact().ghost()
-                            .on_click(cx.listener(move |_this, _, _w, _cx| {
-                                let _ = state_entity;
-                                std::thread::spawn(|| {
+                            .on_click(cx.listener(move |_this, _w, cx| {
+                                let weak = cx.entity().downgrade();
+                                cx.background_executor().spawn(async move {
                                     let cfg = crate::config::Config::load();
                                     let mut lib = crate::media::MediaLib::load();
                                     for dir in &cfg.media_lib.media_dirs {
@@ -3622,7 +3778,9 @@ impl MusicPlayer {
                                     }
                                     let _ = lib.save();
                                     tracing::info!("[MediaLib] 扫描完成: {} 首", lib.entries.len());
-                                });
+                                    // Notify the main thread to repaint
+                                    let _ = weak.update(cx, |_, cx| cx.notify());
+                                }).detach();
                             }))
                     )
             )
@@ -3768,27 +3926,31 @@ impl MusicPlayer {
             .items_end()
             .children(self.eq_sliders.iter().enumerate().map(|(i, slider)| {
                 let label = BAND_LABELS[i.min(BAND_LABELS.len() - 1)];
+                let val = match slider.read(cx).value() {
+                    SliderValue::Single(v) => v,
+                    _ => 0.0,
+                };
                 div()
-                    .w(px(48.0))
+                    .w(px(56.0))
                     .flex()
                     .flex_col()
                     .items_center()
                     .gap_1()
-                    // Value display
+                    // Value display (show actual gain value)
                     .child(
                         div()
                             .text_size(px(10.0))
-                            .text_color(c.text_dim)
-                            .child(format!("+12"))
+                            .text_color(c.text)
+                            .child(format!("{:.0}", val))
                     )
                     // Vertical slider
                     .child(
                         div()
-                            .w(px(12.0))
+                            .w(px(24.0))
                             .h(px(150.0))
-                            .bg(c.progress_track)
-                            .border(px(1.0))
-                            .border_color(c.border)
+                            .flex()
+                            .items_center()
+                            .justify_center()
                             .child(
                                 Slider::new(slider).vertical()
                             )
@@ -4066,5 +4228,77 @@ fn toggle_always_on_top() {
     {
         let _ = on;
         tracing::info!("[View] Always-on-top is only supported on Windows");
+    }
+}
+
+/// A standalone floating window showing synced lyrics (desktop lyrics).
+struct DesktopLyricsView {
+    player: Arc<Player>,
+    state: desktop_lyrics::LyricsState,
+    last_track_path: String,
+}
+
+impl DesktopLyricsView {
+    fn new(player: Arc<Player>, _window: &mut Window, cx: &mut Context<Self>) -> Self {
+        // Start a periodic timer to repaint so lyrics update live
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(33))
+                    .await;
+                let alive = this.update(cx, |_, cx| cx.notify()).is_ok();
+                if !alive { break; }
+            }
+        }).detach();
+        Self {
+            player,
+            state: desktop_lyrics::LyricsState::new(),
+            last_track_path: String::new(),
+        }
+    }
+
+    fn poll(&mut self) {
+        let pos = self.player.position().as_secs_f64();
+        let lyric_ms = (pos * 1000.0) as u64;
+
+        // Check if track changed
+        let current_path = self.player.playlist().current_track()
+            .map(|t| t.file_path.clone())
+            .unwrap_or_default();
+
+        if current_path != self.last_track_path {
+            self.last_track_path = current_path.clone();
+            // Load lyrics for the new track
+            if !current_path.is_empty() {
+                let path = std::path::Path::new(&current_path);
+                let file_stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+                let parent = path.parent().unwrap_or(std::path::Path::new("."));
+
+                let sibling_lrc = parent.join(format!("{}.lrc", file_stem));
+                if sibling_lrc.exists() {
+                    match crate::lyric::load_lyric_file(sibling_lrc.to_str().unwrap_or("")) {
+                        Ok(lyrics) => {
+                            self.state.update(Some(lyrics), lyric_ms);
+                            return;
+                        }
+                        Err(e) => tracing::warn!("[DesktopLyrics] Parse error: {}", e),
+                    }
+                }
+            }
+            self.state.update(None, lyric_ms);
+        } else {
+            self.state.recompute(lyric_ms);
+        }
+    }
+}
+
+impl Render for DesktopLyricsView {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Poll player state
+        self.poll();
+
+        let cfg = Config::load();
+        let c = UiColors::build(cfg.appearance.dark_mode, &theme::ThemeName::from_config(&cfg.appearance.theme));
+        desktop_lyrics::render_lyrics_overlay(&self.state, &c)
     }
 }

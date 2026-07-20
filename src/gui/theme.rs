@@ -256,8 +256,8 @@ pub const LEFT_PANEL_WIDTH: f32 = 230.0;
 /// Right lyric/info panel width (matches original MusicPlayer2 ~300px)
 pub const RIGHT_PANEL_WIDTH: f32 = 300.0;
 
-pub const WINDOW_MIN_WIDTH: f32 = 760.0;
-pub const WINDOW_MIN_HEIGHT: f32 = 480.0;
+pub const WINDOW_MIN_WIDTH: f32 = 480.0;
+pub const WINDOW_MIN_HEIGHT: f32 = 360.0;
 pub const NARROW_MODE_THRESHOLD: f32 = 600.0;
 
 pub const BUTTON_SIZE: f32 = 32.0;

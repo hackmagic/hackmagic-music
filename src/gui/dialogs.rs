@@ -5,7 +5,7 @@ use gpui::*;
 use gpui_component::{h_flex, v_flex};
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::menu::{ContextMenuExt, PopupMenuItem};
-use gpui_component::switch::Switch;
+use gpui_component::input::{Input, InputState};
 
 use crate::gui::theme::UiColors;
 use crate::gui::layout::txt;
@@ -28,22 +28,27 @@ pub fn render_settings_panel(
     _window: &mut Window,
     cx: &mut Context<super::MusicPlayer>,
 ) -> impl IntoElement {
-    let tab_btn = |label: &'static str, id: &'static str, tab: SettingsTab| {
+    let entity = cx.entity().downgrade();
+
+    let build_tab_btn = |label: &'static str, id: &'static str, tab: SettingsTab| {
         let is_active = active_tab == tab;
         let bg = if is_active { c.accent } else { Hsla { h: 0.0, s: 0.0, l: 0.0, a: 0.0 } };
+        let entity_clone = entity.clone();
         Button::new(id).label(label).compact().ghost().bg(bg)
-            .on_click(cx.listener(move |this, _, _w, _cx| {
-                this.settings_tab = tab;
-            }))
+            .on_click(move |_, _, cx| {
+                let _ = entity_clone.update(cx, |this, _cx| {
+                    this.settings_tab = tab;
+                });
+            })
     };
 
     let content: Vec<AnyElement> = match active_tab {
-        SettingsTab::General => render_general_settings(c),
-        SettingsTab::Appearance => render_appearance_settings(c),
-        SettingsTab::Playback => render_playback_settings(c),
-        SettingsTab::Hotkeys => render_hotkeys_settings(c, &cx.entity().clone()),
-        SettingsTab::MediaLib => render_media_lib_settings(c),
-        SettingsTab::Lyrics => render_lyrics_settings(c),
+        SettingsTab::General => render_general_settings(c, cx),
+        SettingsTab::Appearance => render_appearance_settings(c, cx),
+        SettingsTab::Playback => render_playback_settings(c, cx),
+        SettingsTab::Hotkeys => render_hotkeys_settings(c, cx),
+        SettingsTab::MediaLib => render_media_lib_settings(c, cx),
+        SettingsTab::Lyrics => render_lyrics_settings(c, cx),
     };
 
     v_flex()
@@ -70,12 +75,12 @@ pub fn render_settings_panel(
                 .border_b(px(1.0))
                 .border_color(c.border)
                 .items_center()
-                .child(tab_btn("常规", "set_tab_general", SettingsTab::General))
-                .child(tab_btn("外观", "set_tab_appearance", SettingsTab::Appearance))
-                .child(tab_btn("播放", "set_tab_playback", SettingsTab::Playback))
-                .child(tab_btn("歌词", "set_tab_lyrics", SettingsTab::Lyrics))
-                .child(tab_btn("热键", "set_tab_hotkeys", SettingsTab::Hotkeys))
-                .child(tab_btn("媒体库", "set_tab_medialib", SettingsTab::MediaLib))
+                .child(build_tab_btn("常规", "set_tab_general", SettingsTab::General))
+                .child(build_tab_btn("外观", "set_tab_appearance", SettingsTab::Appearance))
+                .child(build_tab_btn("播放", "set_tab_playback", SettingsTab::Playback))
+                .child(build_tab_btn("歌词", "set_tab_lyrics", SettingsTab::Lyrics))
+                .child(build_tab_btn("热键", "set_tab_hotkeys", SettingsTab::Hotkeys))
+                .child(build_tab_btn("媒体库", "set_tab_medialib", SettingsTab::MediaLib))
         )
         // Content
         .child(
@@ -116,42 +121,115 @@ fn setting_row(c: &UiColors, label: &str, control: AnyElement) -> AnyElement {
         .into_any_element()
 }
 
-fn toggle_control(c: &UiColors, id: &'static str, enabled: bool) -> AnyElement {
+/// Create a toggle button that reads/writes a boolean config key.
+fn toggle_config(
+    c: &UiColors,
+    id: &'static str,
+    enabled: bool,
+    config_key: &'static str,
+    on_toggled: Option<Box<dyn Fn(bool, &mut super::MusicPlayer, &mut Window, &mut Context<super::MusicPlayer>) + 'static>>,
+    cx: &mut Context<super::MusicPlayer>,
+) -> AnyElement {
     let label = if enabled { "已启用" } else { "已禁用" };
     let bg = if enabled { c.accent } else { Hsla { h: 0.0, s: 0.0, l: 0.0, a: 0.0 } };
-    Button::new(id).label(label).compact().ghost().bg(bg)
+    let entity = cx.entity().downgrade();
+    Button::new(id)
+        .label(label)
+        .compact()
+        .ghost()
+        .bg(bg)
+        .on_click(move |_, _window, cx| {
+            let new_val = !enabled;
+            let _ = crate::config::Config::set(config_key, if new_val { "true" } else { "false" });
+            if let Some(ref callback) = on_toggled {
+                let _ = entity.update(cx, |this, cx| {
+                    (callback)(new_val, this, _window, cx);
+                });
+            } else {
+                let _ = entity.update(cx, |_, _cx| {});
+            }
+        })
         .into_any_element()
 }
 
-fn render_general_settings(c: &UiColors) -> Vec<AnyElement> {
+// ---------------------------------------------------------------------------
+// General settings
+// ---------------------------------------------------------------------------
+fn render_general_settings(
+    c: &UiColors,
+    cx: &mut Context<super::MusicPlayer>,
+) -> Vec<AnyElement> {
+    let cfg = crate::config::Config::load();
     vec![
         section_title(c, "常规设置"),
-        setting_row(c, "语言", toggle_control(c, "gen_lang", true)),
-        setting_row(c, "自动下载歌词", toggle_control(c, "gen_auto_lyric", false)),
-        setting_row(c, "启动时检查更新", toggle_control(c, "gen_check_update", true)),
-        setting_row(c, "最小化到托盘", toggle_control(c, "gen_min_tray", false)),
-        setting_row(c, "开机自启动", toggle_control(c, "gen_autostart", false)),
+        setting_row(c, "语言", txt(
+            match cfg.general.language.as_str() {
+                "zh-CN" | "zh" => "简体中文",
+                _ => "English",
+            },
+            12.0, c.accent,
+        ).into_any_element()),
+        setting_row(c, "自动下载歌词", toggle_config(c, "gen_auto_lyric",
+            cfg.general.auto_download_lyric, "general.auto_download_lyric", None, cx)),
+        setting_row(c, "自动下载封面", toggle_config(c, "gen_auto_cover",
+            cfg.general.auto_download_album_cover, "general.auto_download_album_cover", None, cx)),
+        setting_row(c, "ID3v2优先", toggle_config(c, "gen_id3v2",
+            cfg.general.id3v2_first, "general.id3v2_first", None, cx)),
+        setting_row(c, "启动时检查更新", toggle_config(c, "gen_check_update",
+            cfg.general.check_update_when_start, "general.check_update_when_start", None, cx)),
+        setting_row(c, "最小化到托盘", toggle_config(c, "gen_min_tray",
+            cfg.general.minimize_to_notify_icon, "general.minimize_to_notify_icon", None, cx)),
     ]
 }
 
-fn render_appearance_settings(c: &UiColors) -> Vec<AnyElement> {
+// ---------------------------------------------------------------------------
+// Appearance settings
+// ---------------------------------------------------------------------------
+fn render_appearance_settings(
+    c: &UiColors,
+    cx: &mut Context<super::MusicPlayer>,
+) -> Vec<AnyElement> {
     let cfg = crate::config::Config::load();
-    let opacity = cfg.appearance.window_transparency;
-    let opacity_label = if opacity == 0 { "不透明".to_string() } else { format!("{}%", 100 - opacity) };
-    let height_label = format!("{}px", cfg.appearance.spectrum_height);
+    let opacity_val = cfg.appearance.window_transparency;
+    let opacity_label = if opacity_val >= 100 {
+        "不透明".to_string()
+    } else {
+        format!("{:.0}%", opacity_val as f32)
+    };
+    let spectrum_height_label = format!("{}px", cfg.appearance.spectrum_height);
+
     vec![
         section_title(c, "外观设置"),
-        setting_row(c, "深色模式", toggle_control(c, "app_dark", cfg.appearance.dark_mode)),
-        setting_row(c, "显示频谱分析", toggle_control(c, "app_spectrum", cfg.appearance.show_spectrum)),
-        setting_row(c, "频谱高度", txt(&height_label, 12.0, c.accent).into_any_element()),
-        setting_row(c, "显示专辑封面", toggle_control(c, "app_cover", true)),
-        setting_row(c, "背景高斯模糊", toggle_control(c, "app_blur", false)),
+        setting_row(c, "深色模式", toggle_config(c, "app_dark",
+            cfg.appearance.dark_mode, "appearance.dark_mode",
+            Some(Box::new(move |new_val, this, _window, cx| {
+                let mut new_cfg = crate::config::Config::load();
+                new_cfg.appearance.dark_mode = new_val;
+                let theme_name = crate::gui::theme::ThemeName::from_config(&new_cfg.appearance.theme);
+                this.colours = crate::gui::theme::UiColors::build(new_val, &theme_name);
+                // Force repaint of everything
+                cx.notify();
+            })),
+            cx)),
+        setting_row(c, "显示频谱分析", toggle_config(c, "app_spectrum",
+            cfg.appearance.show_spectrum, "appearance.show_spectrum", None, cx)),
+        setting_row(c, "频谱高度", txt(&spectrum_height_label, 12.0, c.accent).into_any_element()),
+        setting_row(c, "显示专辑封面", txt("是", 12.0, c.accent).into_any_element()),
+        setting_row(c, "背景高斯模糊", toggle_config(c, "app_blur", false, "appearance.blur", None, cx)),
         setting_row(c, "窗口透明度", txt(&opacity_label, 12.0, c.accent).into_any_element()),
-        setting_row(c, "显示状态栏", toggle_control(c, "app_statusbar", true)),
+        setting_row(c, "显示状态栏",
+            if cfg.appearance.dark_mode { txt("已启用", 12.0, c.accent).into_any_element() }
+            else { txt("已启用", 12.0, c.accent).into_any_element() }),
     ]
 }
 
-fn render_playback_settings(c: &UiColors) -> Vec<AnyElement> {
+// ---------------------------------------------------------------------------
+// Playback settings
+// ---------------------------------------------------------------------------
+fn render_playback_settings(
+    c: &UiColors,
+    _cx: &mut Context<super::MusicPlayer>,
+) -> Vec<AnyElement> {
     let cfg = crate::config::Config::load();
     let device_count = crate::bass::sys::BASS_GetDeviceCount();
     let current_device = cfg.play.wasapi_device;
@@ -164,7 +242,11 @@ fn render_playback_settings(c: &UiColors) -> Vec<AnyElement> {
         if crate::bass::sys::BASS_GetDeviceInfo(current_device as u32, &raw mut info) && !info.name.is_null() {
             unsafe {
                 let len = (0..).find(|&i| *info.name.offset(i) == 0).unwrap_or(0);
-                String::from_utf16_lossy(std::slice::from_raw_parts(info.name, len as usize))
+                if len > 0 {
+                    String::from_utf16_lossy(std::slice::from_raw_parts(info.name, len as usize))
+                } else {
+                    "默认".to_string()
+                }
             }
         } else {
             "默认".to_string()
@@ -172,35 +254,71 @@ fn render_playback_settings(c: &UiColors) -> Vec<AnyElement> {
     } else {
         "默认".to_string()
     };
+
     vec![
         section_title(c, "播放设置"),
         setting_row(c, "音频引擎", txt(&cfg.play.engine, 12.0, c.accent).into_any_element()),
         setting_row(c, "输出设备", txt(&device_str, 12.0, c.accent).into_any_element()),
-        setting_row(c, "自动播放", toggle_control(c, "play_auto", cfg.play.auto_play_when_start)),
-        setting_row(c, "淡入淡出", toggle_control(c, "play_fade", cfg.play.fade_effect)),
-        setting_row(c, "记住播放位置", toggle_control(c, "play_remember", true)),
+        setting_row(c, "自动播放", txt(
+            if cfg.play.auto_play_when_start { "已启用" } else { "已禁用" },
+            12.0, c.accent,
+        ).into_any_element()),
+        setting_row(c, "淡入淡出", txt(
+            if cfg.play.fade_effect { "已启用" } else { "已禁用" },
+            12.0, c.accent,
+        ).into_any_element()),
+        setting_row(c, "淡入淡出时间", txt(&format!("{} ms", cfg.play.fade_time), 12.0, c.accent).into_any_element()),
+        setting_row(c, "默认音量", txt(&format!("{}%", cfg.play.default_volume), 12.0, c.accent).into_any_element()),
+        setting_row(c, "音量步进", txt(&cfg.play.volume_step.to_string(), 12.0, c.accent).into_any_element()),
+        setting_row(c, "ReplayGain", txt(&cfg.play.replaygain, 12.0, c.accent).into_any_element()),
+        setting_row(c, "记忆播放位置", txt("已启用", 12.0, c.accent).into_any_element()),
+        setting_row(c, "合并多版本", toggle_config(c, "play_merge",
+            cfg.play.merge_song_different_versions, "play.merge_song_different_versions", None, _cx)),
         setting_row(c, "FFmpeg缓存", txt(&format!("{}秒", cfg.play.ffmpeg_cache_len), 12.0, c.accent).into_any_element()),
         section_title(c, "MIDI设置"),
-        setting_row(c, "启用MIDI", toggle_control(c, "midi_enabled", cfg.midi.enabled)),
-        setting_row(c, "SF2音色库", txt(&cfg.midi.soundfont, 12.0, c.accent).into_any_element()),
+        setting_row(c, "启用MIDI", txt(
+            if cfg.midi.enabled { "已启用" } else { "已禁用" },
+            12.0, c.accent,
+        ).into_any_element()),
+        setting_row(c, "SF2音色库", txt(
+            if cfg.midi.soundfont.is_empty() { "未设置" } else { &cfg.midi.soundfont },
+            12.0, c.accent,
+        ).into_any_element()),
     ]
 }
 
-fn render_hotkeys_settings(c: &UiColors, _entity: &Entity<super::MusicPlayer>) -> Vec<AnyElement> {
+// ---------------------------------------------------------------------------
+// Hotkey settings
+// ---------------------------------------------------------------------------
+fn render_hotkeys_settings(
+    c: &UiColors,
+    _cx: &mut Context<super::MusicPlayer>,
+) -> Vec<AnyElement> {
     vec![
         section_title(c, "全局热键"),
-        setting_row(c, "启用全局热键", toggle_control(c, "hk_enable", true)),
+        setting_row(c, "启用全局热键", txt("已启用", 12.0, c.accent).into_any_element()),
         setting_row(c, "播放/暂停", txt("Space", 12.0, c.accent).into_any_element()),
-        setting_row(c, "下一曲", txt("Ctrl+Right", 12.0, c.accent).into_any_element()),
-        setting_row(c, "上一曲", txt("Ctrl+Left", 12.0, c.accent).into_any_element()),
-        setting_row(c, "音量+", txt("Ctrl+Up", 12.0, c.accent).into_any_element()),
-        setting_row(c, "音量-", txt("Ctrl+Down", 12.0, c.accent).into_any_element()),
+        setting_row(c, "停止", txt("Ctrl+S", 12.0, c.accent).into_any_element()),
+        setting_row(c, "下一曲", txt("Ctrl+Right / Media Next", 12.0, c.accent).into_any_element()),
+        setting_row(c, "上一曲", txt("Ctrl+Left / Media Prev", 12.0, c.accent).into_any_element()),
+        setting_row(c, "快进5秒", txt("Ctrl+Shift+Right", 12.0, c.accent).into_any_element()),
+        setting_row(c, "快退5秒", txt("Ctrl+Shift+Left", 12.0, c.accent).into_any_element()),
+        setting_row(c, "音量+", txt("Ctrl+Up / Media Up", 12.0, c.accent).into_any_element()),
+        setting_row(c, "音量-", txt("Ctrl+Down / Media Down", 12.0, c.accent).into_any_element()),
         setting_row(c, "静音", txt("M", 12.0, c.accent).into_any_element()),
         setting_row(c, "显示/隐藏", txt("Ctrl+H", 12.0, c.accent).into_any_element()),
+        setting_row(c, "显示桌面歌词", txt("Ctrl+L", 12.0, c.accent).into_any_element()),
     ]
 }
 
-fn render_media_lib_settings(c: &UiColors) -> Vec<AnyElement> {
+// ---------------------------------------------------------------------------
+// Media library settings
+// ---------------------------------------------------------------------------
+fn render_media_lib_settings(
+    c: &UiColors,
+    _cx: &mut Context<super::MusicPlayer>,
+) -> Vec<AnyElement> {
+    let cfg = crate::config::Config::load();
     let lib = crate::media::MediaLib::load();
     let data_path = crate::config::get_config_dir().join("media_lib.json");
     let data_size = if data_path.exists() {
@@ -215,39 +333,73 @@ fn render_media_lib_settings(c: &UiColors) -> Vec<AnyElement> {
     } else {
         "无数据".to_string()
     };
-    vec![
+
+    let mut children = vec![
         section_title(c, "媒体库设置"),
-        setting_row(c, "媒体库文件夹", toggle_control(c, "ml_folders", true)),
-        setting_row(c, "启动时自动扫描", toggle_control(c, "ml_autoscan", true)),
-        setting_row(c, "忽略短曲目", toggle_control(c, "ml_ignore_short", true)),
-        setting_row(c, "最短时长(秒)", txt("5", 12.0, c.accent).into_any_element()),
-        setting_row(c, "ID3v2版本", txt("v2.4", 12.0, c.accent).into_any_element()),
+        setting_row(c, "启动时自动扫描", txt(
+            if cfg.media_lib.auto_scan { "已启用" } else { "已禁用" },
+            12.0, c.accent,
+        ).into_any_element()),
+        setting_row(c, "忽略短曲目", txt(
+            &(if cfg.media_lib.min_duration_secs > 0 { format!("{}秒", cfg.media_lib.min_duration_secs) } else { "不过滤".to_string() }),
+            12.0, c.accent,
+        ).into_any_element()),
+        setting_row(c, "显示格式", txt(&cfg.media_lib.display_format, 12.0, c.accent).into_any_element()),
+        setting_row(c, "播放列表行高", txt(&format!("{}px", cfg.appearance.playlist_row_height), 12.0, c.accent).into_any_element()),
+        section_title(c, "扫描文件夹"),
+    ];
+
+    // List media directories
+    for (i, dir) in cfg.media_lib.media_dirs.iter().enumerate() {
+        children.push(
+            setting_row(c, &format!("  目录 {}", i + 1), txt(dir, 11.0, c.text_dim).into_any_element())
+        );
+    }
+
+    children.extend(vec![
         section_title(c, "数据管理"),
+        setting_row(c, "媒体库条目数", txt(&format!("{} 首", lib.entries.len()), 12.0, c.accent).into_any_element()),
         setting_row(c, "数据文件大小", txt(&data_size, 12.0, c.accent).into_any_element()),
-        setting_row(c, "清理数据文件", toggle_control(c, "ml_clean", false)),
-    ]
+    ].into_iter());
+
+    children
 }
 
-fn render_lyrics_settings(c: &UiColors) -> Vec<AnyElement> {
+// ---------------------------------------------------------------------------
+// Lyrics settings
+// ---------------------------------------------------------------------------
+fn render_lyrics_settings(
+    c: &UiColors,
+    _cx: &mut Context<super::MusicPlayer>,
+) -> Vec<AnyElement> {
+    let cfg = crate::config::Config::load();
     vec![
         section_title(c, "歌词显示"),
-        setting_row(c, "卡拉OK风格", toggle_control(c, "lyr_karaoke", true)),
-        setting_row(c, "双行显示", toggle_control(c, "lyr_two_line", true)),
-        setting_row(c, "内嵌歌词优先", toggle_control(c, "lyr_embedded", true)),
-        setting_row(c, "歌词模糊匹配", toggle_control(c, "lyr_fuzzy", true)),
-        setting_row(c, "色彩方案", txt("默认", 12.0, c.accent).into_any_element()),
+        setting_row(c, "卡拉OK风格", txt("已启用", 12.0, c.accent).into_any_element()),
+        setting_row(c, "双行显示", txt("已启用", 12.0, c.accent).into_any_element()),
+        setting_row(c, "内嵌歌词优先", txt(
+            if cfg.lyric.use_inner_lyric_first { "已启用" } else { "已禁用" },
+            12.0, c.accent,
+        ).into_any_element()),
+        setting_row(c, "歌词模糊匹配", txt(
+            if cfg.lyric.fuzzy_match { "已启用" } else { "已禁用" },
+            12.0, c.accent,
+        ).into_any_element()),
+        setting_row(c, "显示翻译", txt(
+            if cfg.lyric.show_translate { "已启用" } else { "已禁用" },
+            12.0, c.accent,
+        ).into_any_element()),
         setting_row(c, "歌词对齐", txt("居中", 12.0, c.accent).into_any_element()),
         setting_row(c, "行间距", txt("正常", 12.0, c.accent).into_any_element()),
-        setting_row(c, "阴影效果", toggle_control(c, "lyr_shadow", false)),
         setting_row(c, "字体大小", txt("13px", 12.0, c.accent).into_any_element()),
+        section_title(c, "桌面歌词"),
+        setting_row(c, "字体颜色", txt("默认", 12.0, c.accent).into_any_element()),
+        setting_row(c, "高亮颜色", txt("默认", 12.0, c.accent).into_any_element()),
+        setting_row(c, "背景透明度", txt("80%", 12.0, c.accent).into_any_element()),
         section_title(c, "自动歌词处理"),
-        setting_row(c, "自动保存歌词", toggle_control(c, "lyr_auto_save", true)),
-        setting_row(c, "无歌词时隐藏", toggle_control(c, "lyr_hide_empty", false)),
-        setting_row(c, "暂停时隐藏", toggle_control(c, "lyr_hide_paused", false)),
-        section_title(c, "歌词下载"),
-        setting_row(c, "自动下载歌词", toggle_control(c, "lyr_auto_download", true)),
-        setting_row(c, "下载翻译", toggle_control(c, "lyr_download_trans", false)),
-        setting_row(c, "下载编码", txt("UTF-8", 12.0, c.accent).into_any_element()),
+        setting_row(c, "自动保存歌词", txt("已启用", 12.0, c.accent).into_any_element()),
+        setting_row(c, "无歌词时隐藏", txt("已禁用", 12.0, c.accent).into_any_element()),
+        setting_row(c, "暂停时隐藏", txt("已禁用", 12.0, c.accent).into_any_element()),
     ]
 }
 
@@ -295,10 +447,11 @@ pub fn render_about_dialog(c: &UiColors) -> impl IntoElement {
         )
 }
 
-/// Render the search panel.
+/// Render the search panel with an editable search input field.
 pub fn render_search_panel(
     c: &UiColors,
     query: &str,
+    search_input: &Entity<InputState>,
     _window: &mut Window,
     _cx: &mut Context<super::MusicPlayer>,
 ) -> impl IntoElement {
@@ -318,6 +471,7 @@ pub fn render_search_panel(
         .flex_grow()
         .h_full()
         .bg(c.bg)
+        // Header with search input
         .child(
             h_flex()
                 .items_center()
@@ -326,7 +480,15 @@ pub fn render_search_panel(
                 .bg(c.control_bar_bg)
                 .gap_2()
                 .child(txt("搜索", 14.0, c.text_title))
-                .child(div().flex_grow())
+                .child(
+                    h_flex().flex_grow().h(px(24.0))
+                        .bg(c.panel).rounded(px(4.0)).px_2()
+                        .child(
+                        Input::new(&search_input)
+
+                                .w_full()
+                        )
+                )
                 .child(txt(&format!("{} 条结果", results.len()), 11.0, c.text_dim))
         )
         .child(
