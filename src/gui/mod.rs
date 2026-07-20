@@ -3154,8 +3154,61 @@ impl MusicPlayer {
                             .w_full()
                             .px_4().py_2()
                             .child(layout::txt(&header_text, header_size, c.text_title))
+                            .child(
+                                h_flex().gap_1()
+                                    .child(Button::new("pl_add").icon(IconName::Plus).compact().ghost()
+                                        .on_click(cx.listener(|this, _, _window, cx| {
+                                            run_blocking_dialog(cx,
+                                                || -> Option<std::path::PathBuf> {
+                                                    rfd::FileDialog::new()
+                                                        .add_filter("音频文件", &["mp3", "flac", "wav", "ogg", "aac", "m4a", "wma", "ape"])
+                                                        .pick_file()
+                                                },
+                                                |file, this, cx| {
+                                                    if let Some(file) = file {
+                                                        let _ = this.player.play_file(file.to_str().unwrap_or_default());
+                                                    }
+                                                    cx.notify();
+                                                });
+                                        })))
+                                    .child(Button::new("pl_import").icon(IconName::ArrowDown).compact().ghost()
+                                        .on_click(cx.listener(|this, _, _window, cx| {
+                                            run_blocking_dialog(cx,
+                                                || -> Option<std::path::PathBuf> {
+                                                    rfd::FileDialog::new()
+                                                        .add_filter("播放列表", &["m3u", "m3u8", "wpl", "ttpl", "playlist"])
+                                                        .pick_file()
+                                                },
+                                                |file, this, cx| {
+                                                    if let Some(file) = file {
+                                                        let path = file.to_string_lossy().to_string();
+                                                        let ext = std::path::Path::new(&path).extension()
+                                                            .and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+                                                        if let Ok(tracks) = match ext.as_str() {
+                                                            "m3u" | "m3u8" => crate::core::playlist::Playlist::import_m3u(&path).map_err(|e| e.to_string()),
+                                                            "wpl" | "ttpl" | "playlist" => {
+                                                                match crate::playlist_format::read_playlist(&path) {
+                                                                    Ok(paths) => Ok(paths.into_iter().map(|p| crate::core::playlist::Track::new(&p)).collect()),
+                                                                    Err(e) => Err(e.to_string()),
+                                                                }
+                                                            }
+                                                            _ => Err("不支持的格式".to_string()),
+                                                        } {
+                                                            let count = tracks.len();
+                                                            this.player.playlist_mut().add_tracks(tracks);
+                                                            tracing::info!("[Playlist] 导入 {} 首", count);
+                                                        }
+                                                    }
+                                                    cx.notify();
+                                                });
+                                        })))
+                                    .child(Button::new("pl_clear").label("清空").compact().ghost()
+                                        .on_click(cx.listener(|this, _, _w, _cx| {
+                                            this.player.playlist_mut().clear();
+                                        })))
+                            )
                     )
-                    // Search and filter bar
+                    // Search and filter bar with proper Input
                     .child(
                         h_flex()
                             .w_full()
@@ -3165,23 +3218,16 @@ impl MusicPlayer {
                             .items_center()
                             .child(
                                 // Search input area
-                                div()
+                                h_flex()
                                     .flex_grow()
                                     .h(px(24.0))
                                     .bg(c.bg)
-                                    .border_1()
-                                    .border_color(c.border)
                                     .rounded(px(4.0))
-                                    .px_2()
-                                    .flex()
+                                    .px_1()
                                     .items_center()
-                                    .text_size(px(10.0))
-                                    .text_color(if filter_text.is_empty() { c.text_dim } else { c.text })
-                                    .child(if filter_text.is_empty() {
-                                        "� 搜索歌曲、艺术家或专辑...".to_string()
-                                    } else {
-                                        filter_text.clone()
-                                    })
+                                    .child(
+                                        gpui_component::input::Input::new(&self.search_input)
+                                    )
                             )
                             .child(
                                 // Filter: All
@@ -3766,9 +3812,10 @@ impl MusicPlayer {
                     .child(div().flex_grow())
                     .child(
                         Button::new("ml_refresh_btn").label("刷新").compact().ghost()
-                            .on_click(cx.listener(move |_this, _w, cx| {
+                            .on_click(cx.listener(move |_this, _e: &gpui::ClickEvent, _w, cx| {
                                 let weak = cx.entity().downgrade();
-                                cx.background_executor().spawn(async move {
+                                let (tx, rx) = async_channel::unbounded();
+                                std::thread::spawn(move || {
                                     let cfg = crate::config::Config::load();
                                     let mut lib = crate::media::MediaLib::load();
                                     for dir in &cfg.media_lib.media_dirs {
@@ -3778,8 +3825,11 @@ impl MusicPlayer {
                                     }
                                     let _ = lib.save();
                                     tracing::info!("[MediaLib] 扫描完成: {} 首", lib.entries.len());
-                                    // Notify the main thread to repaint
-                                    let _ = weak.update(cx, |_, cx| cx.notify());
+                                    let _ = tx.send(());
+                                });
+                                cx.spawn(async move |_this, cx| {
+                                    let _ = rx.recv().await;
+                                    let _ = weak.update(cx, |_, cx_| cx_.notify());
                                 }).detach();
                             }))
                     )
@@ -3980,19 +4030,41 @@ impl MusicPlayer {
             .child(
                 div()
                     .w_full()
-                    .h(px(60.0))
+                    .h(px(80.0))
                     .px_4().py_2()
                     .bg(c.panel_alt)
                     .child(
-                        h_flex().w_full().h_full().items_end().gap_1()
-                            .children(self.eq_sliders.iter().map(|slider| {
-                                let val = match slider.read(cx).value() {
-                                    SliderValue::Single(v) => v,
-                                    _ => 0.0,
-                                };
-                                let h = ((val + 12.0) / 24.0 * 50.0).max(2.0);
-                                div().w(px(20.0)).h(px(h)).bg(c.accent).rounded(px(1.0))
-                            }))
+                        v_flex().w_full().h_full()
+                            // Center line (0 dB reference)
+                            .child(div().w_full().h(px(1.0)).bg(c.border))
+                            // Bar area with positioning relative to center
+                            .child(
+                                h_flex().w_full().flex_grow().items_center().gap_1()
+                                    .children(self.eq_sliders.iter().map(|slider| {
+                                        let val = match slider.read(cx).value() {
+                                            SliderValue::Single(v) => v,
+                                            _ => 0.0,
+                                        };
+                                        let bar_h = ((val.abs()) / 12.0 * 30.0).max(1.0).min(30.0);
+                                        let is_positive = val >= 0.0;
+                                        let bar_color = if is_positive { c.accent } else { Hsla { h: 0.0, s: 0.8, l: 0.5, a: 1.0 } };
+                                        div()
+                                            .flex_grow()
+                                            .h_full()
+                                            .flex_col()
+                                            .justify_center()
+                                            .items_center()
+                                            .child(
+                                                div()
+                                                    .w(px(16.0))
+                                                    .h(px(bar_h))
+                                                    .bg(bar_color)
+                                                    .rounded(px(2.0))
+                                                    .mt(if is_positive { px(0.0) } else { px(bar_h - bar_h) })
+                                                    .mb(if is_positive { px(bar_h - bar_h) } else { px(0.0) })
+                                            )
+                                    }))
+                            )
                     )
             )
             .child(sliders_row)
