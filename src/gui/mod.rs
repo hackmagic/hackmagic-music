@@ -394,9 +394,17 @@ impl MusicPlayer {
         .detach();
 
         // Build the 10 EQ band sliders and wire each to the audio engine.
+        // Initial values come from EqConfig (restored below via default_value).
         let eq_sliders: Vec<Entity<SliderState>> = (0..10)
-            .map(|_| {
-                cx.new(|_| SliderState::new().min(-12.0).max(12.0).step(0.5).default_value(0.0))
+            .map(|i| {
+                let g = cfg.eq.gains.get(i).copied().unwrap_or(0).clamp(-12, 12) as f32;
+                cx.new(|_cx| {
+                    SliderState::new()
+                        .min(-12.0)
+                        .max(12.0)
+                        .step(0.5)
+                        .default_value(g)
+                })
             })
             .collect();
         for (i, slider) in eq_sliders.iter().enumerate() {
@@ -408,6 +416,21 @@ impl MusicPlayer {
                     let _ = this.player.eq_set(i, v as i32);
                 }
             });
+        }
+
+        // Restore EQ state from config: apply gains to player + enable engine.
+        {
+            let eq_cfg = &cfg.eq;
+            let _ = player.eq_enable(eq_cfg.enabled);
+            if eq_cfg.enabled {
+                for (i, &g) in eq_cfg.gains.iter().enumerate() {
+                    let _ = player.eq_set(i, g);
+                }
+            } else {
+                for i in 0..10 {
+                    let _ = player.eq_set(i, 0);
+                }
+            }
         }
 
         Self {
@@ -2135,6 +2158,69 @@ impl MusicPlayer {
                                 this.lyric_offset_ms -= 500;
                                 cx.notify();
                                 tracing::info!("[Lyric] offset -0.5s -> {}ms", this.lyric_offset_ms);
+                            }).ok();
+                        }
+                    }))
+                    .separator()
+                    .item(PopupMenuItem::new("保存歌词改动").on_click({
+                        let weak = weak.clone();
+                        move |_, _, cx| {
+                            weak.update(cx, |this, _cx| {
+                                // Write the in-memory lyrics back to the .lrc
+                                // next to the current track.
+                                if let Some(lyrics) = &this.lyric_state.lyrics.clone() {
+                                    if let Some(track) = this.player.playlist().current_track() {
+                                        let path = std::path::Path::new(&track.file_path);
+                                        let stem = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+                                        let parent = path.parent().unwrap_or(std::path::Path::new("."));
+                                        let lrc_path = parent.join(format!("{}.lrc", stem));
+                                        let lrc_text = lyrics.to_lrc_string();
+                                        match std::fs::write(&lrc_path, lrc_text.as_bytes()) {
+                                            Ok(()) => tracing::info!("[Lyric] 保存到: {}", lrc_path.display()),
+                                            Err(e) => tracing::warn!("[Lyric] 保存失败: {}", e),
+                                        }
+                                    }
+                                }
+                            }).ok();
+                        }
+                    }))
+                    .item(PopupMenuItem::new("关联本地歌词").on_click({
+                        let weak = weak.clone();
+                        move |_, window, cx| {
+                            // Pick a .lrc file, then copy/rename it next to the
+                            // current track so it gets auto-loaded.
+                            run_blocking_dialog_app(cx, &weak,
+                                || rfd::FileDialog::new().add_filter("LRC", &["lrc"]).pick_file(),
+                                |path, this, cx| {
+                                    if let Some(path) = path {
+                                        if let Some(track) = this.player.playlist().current_track() {
+                                            let audio = std::path::Path::new(&track.file_path);
+                                            let stem = audio.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+                                            let parent = audio.parent().unwrap_or(std::path::Path::new("."));
+                                            let dest = parent.join(format!("{}.lrc", stem));
+                                            let _ = std::fs::copy(&path, &dest);
+                                            this.load_lyrics_for_track(&track.file_path);
+                                            tracing::info!("[Lyric] 关联本地歌词: {}", dest.display());
+                                        }
+                                    }
+                                    cx.notify();
+                                });
+                        }
+                    }))
+                    .item(PopupMenuItem::new("内嵌歌词到文件").on_click({
+                        let weak = weak.clone();
+                        move |_, _, cx| {
+                            weak.update(cx, |this, _cx| {
+                                if let (Some(track), Some(lyrics)) = (
+                                    this.player.playlist().current_track(),
+                                    this.lyric_state.lyrics.clone(),
+                                ) {
+                                    let lrc_text = lyrics.to_lrc_string();
+                                    match crate::tag::writer::embed_lyrics(&track.file_path, &lrc_text) {
+                                        Ok(()) => tracing::info!("[Lyric] 内嵌歌词成功: {}", track.file_path),
+                                        Err(e) => tracing::warn!("[Lyric] 内嵌歌词失败: {}", e),
+                                    }
+                                }
                             }).ok();
                         }
                     }))
@@ -4296,7 +4382,18 @@ impl MusicPlayer {
                                 let _ = this.player.eq_set(i, 0);
                             }
                         }
-                        tracing::info!("[EQ] enabled={}", this.eq_enabled);
+                        // Persist to config
+                        let mut cfg = Config::load();
+                        cfg.eq.enabled = this.eq_enabled;
+                        if this.eq_enabled {
+                            for (i, slider) in this.eq_sliders.iter().enumerate() {
+                                if let SliderValue::Single(v) = slider.read(_cx).value() {
+                                    cfg.eq.gains[i] = v as i32;
+                                }
+                            }
+                        }
+                        let _ = cfg.save();
+                        tracing::info!("[EQ] enabled={} (persisted)", this.eq_enabled);
                     }))
             )
             .child(div().flex_grow())
@@ -4344,6 +4441,13 @@ impl MusicPlayer {
                                         let _ = this.player.eq_set(i, *g as i32);
                                     }
                                 }
+                                // Persist preset gains
+                                let mut cfg = Config::load();
+                                cfg.eq.preset = n.clone();
+                                for (i, g) in gains.iter().enumerate() {
+                                    cfg.eq.gains[i] = *g as i32;
+                                }
+                                let _ = cfg.save();
                             }
                         }))
                 }));

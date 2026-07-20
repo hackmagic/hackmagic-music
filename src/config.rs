@@ -14,6 +14,7 @@ pub struct Config {
     pub hotkey: HotkeyConfig,
     pub lastfm: LastfmConfig,
     pub midi: MidiConfig,
+    pub eq: EqConfig,
 }
 
 
@@ -221,6 +222,27 @@ impl Default for LastfmConfig {
 pub struct MidiConfig {
     pub soundfont: String,
     pub enabled: bool,
+}
+
+/// 10-band equalizer persistent state.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EqConfig {
+    pub enabled: bool,
+    /// 10 band gains in dB, range [-15, 15].
+    pub gains: [i32; 10],
+    /// Last selected preset name (empty = custom).
+    pub preset: String,
+}
+
+impl Default for EqConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            gains: [0; 10],
+            preset: String::new(),
+        }
+    }
 }
 
 
