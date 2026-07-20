@@ -27,7 +27,7 @@ pub fn parse_time_ms(s: &str) -> Option<u64> {
         } else if cs_str.len() == 2 {
             cs_str.parse::<u64>().ok()? * 10
         } else {
-            cs_str.parse::<u64>().ok()? / 10
+            cs_str.parse::<u64>().ok()?
         }
     } else {
         0

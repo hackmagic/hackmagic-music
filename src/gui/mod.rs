@@ -1020,14 +1020,18 @@ impl MusicPlayer {
             // File menu
             .child({
                 let player = self.player.clone();
+                let s_open_url = tr.menu_open_url;
+                let s_open_playlist = tr.menu_open_playlist;
                 layout::menu_dropdown(s_file, IconName::Folder, move |menu, _w, _cx| {
-                    let p = player.clone();
-                    menu.item(PopupMenuItem::new(s_open_file).on_click(move |_, _, _| {
-                        if let Some(path) = rfd::FileDialog::new()
-                            .add_filter("音频文件", &["mp3", "flac", "wav", "ogg", "aac", "m4a", "wma", "ape", "cue"])
-                            .pick_file()
-                        {
-                            let _ = p.play_file(path.to_str().unwrap_or_default());
+                    menu.item(PopupMenuItem::new(s_open_file).on_click({
+                        let p = player.clone();
+                        move |_, _, _| {
+                            if let Some(path) = rfd::FileDialog::new()
+                                .add_filter("音频文件", &["mp3", "flac", "wav", "ogg", "aac", "m4a", "wma", "ape", "cue"])
+                                .pick_file()
+                            {
+                                let _ = p.play_file(path.to_str().unwrap_or_default());
+                            }
                         }
                     }))
                     .item(PopupMenuItem::new(s_open_folder).on_click({
@@ -1037,18 +1041,15 @@ impl MusicPlayer {
                                 let dir = folder.to_str().unwrap_or_default();
                                 match crate::media::scan_directory(dir, true, None) {
                                     Ok(entries) => {
-                                        // Add all tracks to playlist
                                         let mut pl = p.playlist_mut();
                                         let first_idx = pl.len();
                                         for e in &entries {
                                             pl.add_track(crate::core::playlist::Track::new(&e.file_path));
                                         }
                                         drop(pl);
-                                        // Save to media library
                                         let mut lib = crate::media::MediaLib::load();
                                         for e in &entries { lib.upsert(e.clone()); }
                                         let _ = lib.save();
-                                        // Play first track
                                         if !entries.is_empty() {
                                             let _ = p.play_at_index(first_idx);
                                         }
@@ -1059,6 +1060,43 @@ impl MusicPlayer {
                             }
                         }
                     }))
+                    .item(PopupMenuItem::new(s_open_url).on_click(move |_, _, _| {
+                        tracing::info!("[Menu] Open URL");
+                    }))
+                    .item(PopupMenuItem::new(s_open_playlist).on_click({
+                        let p = player.clone();
+                        move |_, _, _| {
+                            if let Some(file) = rfd::FileDialog::new()
+                                .add_filter("播放列表", &["m3u", "m3u8", "wpl", "ttpl", "playlist"])
+                                .pick_file()
+                            {
+                                let path = file.to_string_lossy().to_string();
+                                let ext = std::path::Path::new(&path).extension()
+                                    .and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+                                let result: Result<Vec<crate::core::playlist::Track>, String> = match ext.as_str() {
+                                    "m3u" | "m3u8" => crate::core::playlist::Playlist::import_m3u(&path).map_err(|e| e.to_string()),
+                                    "wpl" | "ttpl" | "playlist" => {
+                                        match crate::playlist_format::read_playlist(&path) {
+                                            Ok(paths) => Ok(paths.into_iter().map(|p| crate::core::playlist::Track::new(&p)).collect()),
+                                            Err(e) => Err(e.to_string()),
+                                        }
+                                    }
+                                    _ => Err("不支持的格式".to_string()),
+                                };
+                                match result {
+                                    Ok(tracks) => {
+                                        let mut pl = p.playlist_mut();
+                                        pl.clear();
+                                        pl.add_tracks(tracks);
+                                        let _ = p.play_at_index(0);
+                                        tracing::info!("[Menu] Loaded playlist: {}", path);
+                                    }
+                                    Err(e) => tracing::error!("[Menu] Failed to load playlist: {}", e),
+                                }
+                            }
+                        }
+                    }))
+                    .separator()
                     .item(PopupMenuItem::new(s_save_as_new).on_click({
                         let p = player.clone();
                         move |_, _, _| {
@@ -1300,6 +1338,7 @@ impl MusicPlayer {
                     let p1 = player.clone();
                     let p2 = player.clone();
                     let p3 = player.clone();
+                    let p4 = player.clone();
                     menu.item(PopupMenuItem::new(s_reload_lyric).on_click(move |_, _, _| {
                         // Reload lyrics: search for .lrc file in same directory as current track
                         if let Some(track) = p1.playlist().current_track() {
@@ -1355,19 +1394,26 @@ impl MusicPlayer {
                         }
                     }))
                     .item(PopupMenuItem::new(s_download_lyric).on_click(move |_, _, _| {
-                        tracing::info!("Search and download lyrics online");
-                        // Would integrate with online lyric download (netease/qq music APIs)
+                        if let Some(track) = p4.playlist().current_track() {
+                            if !track.title.is_empty() || !track.artist.is_empty() {
+                                tracing::info!("[LyricDownload] Searching for: {} - {}", track.artist, track.title);
+                                // Would open lyric download panel
+                                ACTIVE_PANEL.store(6, Ordering::Relaxed);
+                            }
+                        }
                     }))
                     .item(PopupMenuItem::new(s_batch_download).on_click(move |_, _, _| {
                         tracing::info!("Batch download lyrics for all tracks");
+                        // Would start batch download in background
                     }))
                     .separator()
                     .item(PopupMenuItem::new(s_show_trans).on_click(|_, _, _| {
                         tracing::info!("Toggle lyric translation display");
+                        // Would toggle translation visibility
                     }))
                     .item(PopupMenuItem::new(s_show_desktop).on_click(|_, _, _| {
                         tracing::info!("Toggle desktop lyrics window");
-                        // Would toggle desktop lyrics overlay
+                        // Would toggle desktop lyrics overlay visibility
                     }))
                     .item(PopupMenuItem::new("桌面歌词锁定").on_click(|_, _, _| {
                         tracing::info!("Lock/unlock desktop lyrics position");
@@ -1375,9 +1421,11 @@ impl MusicPlayer {
                     .separator()
                     .item(PopupMenuItem::new("歌词前进0.5秒").on_click(|_, _, _| {
                         tracing::info!("Shift lyrics forward 0.5s");
+                        // Would adjust lyric offset
                     }))
                     .item(PopupMenuItem::new("歌词后退0.5秒").on_click(|_, _, _| {
                         tracing::info!("Shift lyrics backward 0.5s");
+                        // Would adjust lyric offset
                     }))
                 })
             })

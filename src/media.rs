@@ -447,6 +447,7 @@ mod tests {
             last_played: String::new(),
             song_id_netease: 0,
             song_id_qq_music: String::new(),
+            rating: 0,
         }
     }
 
