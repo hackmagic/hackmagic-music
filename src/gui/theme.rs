@@ -130,84 +130,86 @@ impl UiColors {
     fn dark_base(theme: &ThemeName) -> Self {
         let accent = dark_accent(theme);
         Self {
-            bg: rgba(26, 28, 31),
-            panel: rgba(36, 38, 41),
-            panel_alt: rgba(46, 48, 51),
-            titlebar_bg: rgba(18, 20, 23),
-            menubar_bg: rgba(31, 33, 36),
-            statusbar_bg: rgba(20, 23, 26),
-            control_bar_bg: rgba(24, 26, 29),
+            // Original MusicPlayer2 dark mode: dark gray background with amber/gold accents
+            // ColorTable: dark2 = luminance(orig*0.3 + 20)
+            bg: rgba(32, 32, 32),
+            panel: rgba(40, 40, 40),
+            panel_alt: rgba(50, 50, 50),
+            titlebar_bg: rgba(38, 38, 38),
+            menubar_bg: rgba(42, 42, 42),
+            statusbar_bg: rgba(35, 35, 35),
+            control_bar_bg: rgba(36, 36, 36),
             accent,
-            text: rgba(235, 235, 242),
-            text_dim: rgba(140, 140, 158),
-            text_title: rgba(250, 250, 255),
+            text: rgba(240, 240, 240),
+            text_dim: rgba(160, 160, 160),
+            text_title: rgba(255, 255, 255),
             text_selected: accent,
-            button: rgba(56, 56, 69),
-            button_hover: rgba(76, 76, 89),
-            button_press: rgba(97, 97, 112),
+            button: rgba(60, 60, 60),
+            button_hover: rgba(75, 75, 75),
+            button_press: rgba(90, 90, 90),
             button_accent: accent,
             button_accent_hover: lighten(accent, 0.1),
-            button_disabled: rgba(38, 38, 46),
-            progress_track: rgba(64, 64, 76),
+            button_disabled: rgba(45, 45, 45),
+            progress_track: rgba(60, 60, 60),
             progress_fill: accent,
-            progress_thumb: lighten(accent, 0.25),
+            progress_thumb: lighten(accent, 0.2),
             spectrum_bar: accent,
-            spectrum_peak: lighten(accent, 0.35),
-            playlist_item: rgba(41, 41, 48),
-            playlist_item_hover: rgba(56, 56, 69),
+            spectrum_peak: lighten(accent, 0.3),
+            playlist_item: rgba(40, 40, 40),
+            playlist_item_hover: rgba(55, 55, 55),
             playlist_item_selected: darken(accent, 0.3),
             playlist_playing: darken(accent, 0.5),
-            border: rgba(71, 71, 82),
-            divider: rgba(51, 51, 61),
-            btn_close: rgba(56, 56, 69),
+            border: rgba(65, 65, 65),
+            divider: rgba(55, 55, 55),
+            btn_close: rgba(60, 60, 60),
             btn_close_hover: rgba(204, 51, 51),
-            btn_minmax: rgba(56, 56, 69),
-            btn_minmax_hover: rgba(76, 76, 89),
+            btn_minmax: rgba(60, 60, 60),
+            btn_minmax_hover: rgba(75, 75, 75),
             shadow: hsla(0.0, 0.0, 0.0),
-            scrollbar: rgba(71, 71, 82),
-            scrollbar_hover: rgba(89, 89, 102),
+            scrollbar: rgba(65, 65, 65),
+            scrollbar_hover: rgba(80, 80, 80),
         }
     }
 
     fn light_base(theme: &ThemeName) -> Self {
         let accent = light_accent(theme);
         Self {
-            bg: rgba(240, 240, 245),
-            panel: rgba(250, 250, 255),
-            panel_alt: rgba(230, 230, 237),
-            titlebar_bg: rgba(217, 217, 224),
-            menubar_bg: rgba(230, 230, 237),
-            statusbar_bg: rgba(217, 217, 224),
-            control_bar_bg: rgba(245, 245, 250),
+            bg: rgba(240, 240, 240),
+            panel: rgba(250, 250, 250),
+            panel_alt: rgba(230, 230, 230),
+            titlebar_bg: rgba(220, 220, 220),
+            menubar_bg: rgba(235, 235, 235),
+            statusbar_bg: rgba(225, 225, 225),
+            control_bar_bg: rgba(245, 245, 245),
             accent,
-            text: rgba(31, 31, 36),
-            text_dim: rgba(115, 115, 128),
-            text_title: rgba(13, 13, 20),
+            text: rgba(40, 40, 40),
+            text_dim: rgba(120, 120, 120),
+            text_title: rgba(20, 20, 20),
             text_selected: accent,
-            button: rgba(217, 217, 224),
-            button_hover: rgba(199, 199, 209),
-            button_press: rgba(178, 178, 191),
+            button: rgba(220, 220, 220),
+            button_hover: rgba(200, 200, 200),
+            button_press: rgba(180, 180, 180),
             button_accent: accent,
             button_accent_hover: lighten(accent, 0.1),
-            button_disabled: rgba(191, 191, 199),
-            progress_track: rgba(199, 199, 209),
+            button_disabled: rgba(200, 200, 200),
+            progress_track: rgba(200, 200, 200),
             progress_fill: accent,
-            progress_thumb: lighten(accent, 0.15),
+            progress_thumb: lighten(accent, 0.1),
             spectrum_bar: accent,
             spectrum_peak: lighten(accent, 0.15),
-            playlist_item: rgba(250, 250, 255),
-            playlist_item_hover: rgba(235, 235, 245),
-            playlist_item_selected: lighten(accent, 0.6),
+            playlist_item: rgba(250, 250, 250),
+            playlist_item_hover: rgba(238, 238, 238),
+            playlist_item_selected: lighten(accent, 0.55),
             playlist_playing: lighten(accent, 0.4),
-            border: rgba(178, 178, 188),
-            divider: rgba(204, 204, 214),
-            btn_close: rgba(217, 217, 224),
+            border: rgba(180, 180, 180),
+            divider: rgba(200, 200, 200),
+            btn_close: rgba(220, 220, 220),
             btn_close_hover: rgba(204, 51, 51),
-            btn_minmax: rgba(217, 217, 224),
-            btn_minmax_hover: rgba(199, 199, 209),
+            btn_minmax: rgba(220, 220, 220),
+            btn_minmax_hover: rgba(200, 200, 200),
             shadow: hsla(0.0, 0.0, 0.0),
-            scrollbar: rgba(178, 178, 188),
-            scrollbar_hover: rgba(158, 158, 168),
+            scrollbar: rgba(180, 180, 180),
+            scrollbar_hover: rgba(160, 160, 160),
         }
     }
 }
@@ -218,56 +220,57 @@ impl Default for UiColors {
     }
 }
 
+/// Dark mode accent colors — original MusicPlayer2 default is RGB(255, 168, 59) = gold/amber
 fn dark_accent(theme: &ThemeName) -> Hsla {
     match theme {
-        ThemeName::Default => rgba(0, 120, 215),
-        ThemeName::Ocean   => rgba(0, 150, 170),
-        ThemeName::Forest  => rgba(60, 160, 80),
-        ThemeName::Lavender => rgba(150, 120, 220),
-        ThemeName::Sunset  => rgba(220, 100, 50),
-        ThemeName::Midnight => rgba(80, 80, 200),
-        ThemeName::Autumn  => rgba(200, 120, 40),
-        ThemeName::Spring  => rgba(80, 180, 100),
+        ThemeName::Default => rgba(255, 168, 59),   // Gold/Amber (original default)
+        ThemeName::Ocean   => rgba(0, 170, 200),     // Teal
+        ThemeName::Forest  => rgba(80, 180, 80),     // Green
+        ThemeName::Lavender => rgba(160, 130, 230),  // Lavender
+        ThemeName::Sunset  => rgba(230, 110, 60),    // Orange
+        ThemeName::Midnight => rgba(100, 100, 220),  // Blue
+        ThemeName::Autumn  => rgba(210, 130, 50),    // Warm orange
+        ThemeName::Spring  => rgba(100, 190, 120),   // Fresh green
     }
 }
 
+/// Light mode accent colors
 fn light_accent(theme: &ThemeName) -> Hsla {
     match theme {
-        ThemeName::Default => rgba(0, 100, 200),
-        ThemeName::Ocean   => rgba(0, 130, 150),
-        ThemeName::Forest  => rgba(50, 140, 70),
+        ThemeName::Default => rgba(220, 140, 30),    // Deeper gold for light mode
+        ThemeName::Ocean   => rgba(0, 140, 170),
+        ThemeName::Forest  => rgba(50, 150, 60),
         ThemeName::Lavender => rgba(130, 100, 200),
-        ThemeName::Sunset  => rgba(200, 80, 30),
-        ThemeName::Midnight => rgba(60, 60, 180),
-        ThemeName::Autumn  => rgba(180, 100, 20),
+        ThemeName::Sunset  => rgba(200, 90, 30),
+        ThemeName::Midnight => rgba(70, 70, 180),
+        ThemeName::Autumn  => rgba(180, 110, 20),
         ThemeName::Spring  => rgba(60, 160, 80),
     }
 }
 
-pub const TITLEBAR_HEIGHT: f32 = 32.0;
+// ── Layout constants ────────────────────────────────────────────────
+pub const TITLEBAR_HEIGHT: f32 = 28.0;
 pub const MENUBAR_HEIGHT: f32 = 24.0;
 pub const STATUSBAR_HEIGHT: f32 = 22.0;
-pub const CONTROL_BAR_HEIGHT: f32 = 96.0;
-pub const SPECTRUM_HEIGHT: f32 = 60.0;
-pub const PROGRESS_BAR_HEIGHT: f32 = 6.0;
-pub const ALBUM_COVER_SIZE: f32 = 180.0;
-/// Left playlist panel width (matches original MusicPlayer2 ~230px)
-pub const LEFT_PANEL_WIDTH: f32 = 230.0;
-/// Right lyric/info panel width (matches original MusicPlayer2 ~300px)
-pub const RIGHT_PANEL_WIDTH: f32 = 300.0;
 
-/// Left navigation rail width (icon + text). Matches the original
-/// GrooveMusic skin's 134px verticalLayout navigationBar, narrowed to
-/// 140px to fit Chinese labels comfortably.
-pub const NAV_RAIL_WIDTH: f32 = 140.0;
+/// Left panel default width (album + lyrics + controls)
+pub const LEFT_PANEL_WIDTH: f32 = 420.0;
+/// Right panel default width (playlist)
+pub const RIGHT_PANEL_WIDTH: f32 = 380.0;
 
-/// Right-docked playlist column width in Big mode.
-pub const PLAYLIST_DOCK_WIDTH: f32 = 320.0;
-
-pub const WINDOW_MIN_WIDTH: f32 = 480.0;
-pub const WINDOW_MIN_HEIGHT: f32 = 360.0;
+pub const WINDOW_MIN_WIDTH: f32 = 600.0;
+pub const WINDOW_MIN_HEIGHT: f32 = 400.0;
 pub const NARROW_MODE_THRESHOLD: f32 = 600.0;
 
 pub const BUTTON_SIZE: f32 = 32.0;
 pub const BUTTON_ICON_SIZE: f32 = 18.0;
 pub const BORDER_RADIUS: f32 = 4.0;
+
+/// Playlist toolbar height (search + add/delete/sort row)
+pub const PLAYLIST_TOOLBAR_HEIGHT: f32 = 28.0;
+
+/// Left navigation rail width (for nav_rail method, kept for compatibility)
+pub const NAV_RAIL_WIDTH: f32 = 140.0;
+
+/// Right-docked playlist column width in Big mode
+pub const PLAYLIST_DOCK_WIDTH: f32 = 380.0;

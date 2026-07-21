@@ -19,9 +19,9 @@ use gpui_component::{h_flex, v_flex, IconName, Root};
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::menu::{ContextMenuExt, PopupMenuItem};
 use gpui_component::slider::{Slider, SliderState, SliderValue};
-use gpui_component::input::{InputState};
+use gpui_component::input::{Input, InputState};
 use i18n::{Locale, Tr};
-use theme::{UiColors, LEFT_PANEL_WIDTH, RIGHT_PANEL_WIDTH};
+use theme::{UiColors, LEFT_PANEL_WIDTH};
 use crate::config::Config;
 use crate::core::engine_trait::EngineType;
 use crate::core::player::Player;
@@ -96,7 +96,17 @@ pub fn run(cx: &mut App) {
     }, |window, cx| {
         let url_state = cx.new(|c| InputState::new(window, c));
         let search_input = cx.new(|c| InputState::new(window, c).placeholder("搜索媒体库..."));
-        let content = cx.new(|cx| MusicPlayer::new(cx, url_state, search_input));
+        let editor_title_input = cx.new(|c| InputState::new(window, c).placeholder("标题"));
+        let editor_artist_input = cx.new(|c| InputState::new(window, c).placeholder("艺术家"));
+        let editor_album_input = cx.new(|c| InputState::new(window, c).placeholder("专辑"));
+        let editor_genre_input = cx.new(|c| InputState::new(window, c).placeholder("流派"));
+        let editor_year_input = cx.new(|c| InputState::new(window, c).placeholder("年份"));
+        let editor_track_num_input = cx.new(|c| InputState::new(window, c).placeholder("曲目号"));
+        let editor_rating_input = cx.new(|c| InputState::new(window, c).placeholder("评分 (0-5)"));
+        let content = cx.new(|cx| MusicPlayer::new(cx, url_state, search_input,
+            editor_title_input, editor_artist_input, editor_album_input,
+            editor_genre_input, editor_year_input, editor_track_num_input,
+            editor_rating_input));
         cx.new(|c| {
             Root::new(content, window, c)
         })
@@ -109,6 +119,7 @@ enum ModalKind {
     About,
     SongInfo,
     FormatConvert,
+    TrackEditor,
 }
 
 /// Copy text to the system clipboard using platform utilities (no extra deps).
@@ -202,6 +213,7 @@ pub struct MusicPlayer {
     playlist_filter_mode: PlaylistFilterMode,
     playlist_sort_field: PlaylistSortField,
     playlist_sort_asc: bool,
+    playlist_view_mode: PlaylistViewMode,
     /// Playlist drag-drop reorder state
     playlist_drag_from: Option<usize>,
     playlist_drag_to: Option<usize>,
@@ -216,6 +228,14 @@ pub struct MusicPlayer {
     media_lib_category: MediaLibCategory,
     media_lib_selected: Option<String>,
     media_lib_search: String,
+    /// Cached sidebar items (artists/albums/genres etc.) — recomputed only on category change.
+    media_lib_sidebar_cache: Vec<String>,
+    /// Cached list items for current selection — recomputed only on category/selection change.
+    media_lib_list_cache: Vec<ViewEntry>,
+    /// Tracks which (category, selected) the cache was built for.
+    media_lib_cache_key: (MediaLibCategory, Option<String>),
+    /// Cached total duration in seconds (recomputed when lib changes).
+    media_lib_total_dur: u64,
     /// Equalizer state
     eq_enabled: bool,
     eq_sliders: Vec<Entity<SliderState>>,
@@ -236,6 +256,15 @@ pub struct MusicPlayer {
     desktop_lyrics_open: bool,
     /// Current modal dialog (None = no dialog open)
     modal: Option<ModalKind>,
+    /// Track editor state (used when modal == Some(ModalKind::TrackEditor))
+    editor_track_idx: Option<usize>,
+    editor_title_input: Entity<InputState>,
+    editor_artist_input: Entity<InputState>,
+    editor_album_input: Entity<InputState>,
+    editor_genre_input: Entity<InputState>,
+    editor_year_input: Entity<InputState>,
+    editor_track_num_input: Entity<InputState>,
+    editor_rating_input: Entity<InputState>,
 }
 
 /// Filter mode for the playlist
@@ -256,6 +285,13 @@ enum PlaylistSortField {
     Artist,
     Album,
     Duration,
+}
+
+/// View mode for the playlist dock
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PlaylistViewMode {
+    Detail,
+    Compact,
 }
 
 /// Media library browsing category
@@ -347,7 +383,18 @@ fn run_blocking_dialog<T, F, A>(
 }
 
 impl MusicPlayer {
-    fn new(cx: &mut Context<Self>, url_state: Entity<InputState>, search_input: Entity<InputState>) -> Self {
+    fn new(
+        cx: &mut Context<Self>,
+        url_state: Entity<InputState>,
+        search_input: Entity<InputState>,
+        editor_title_input: Entity<InputState>,
+        editor_artist_input: Entity<InputState>,
+        editor_album_input: Entity<InputState>,
+        editor_genre_input: Entity<InputState>,
+        editor_year_input: Entity<InputState>,
+        editor_track_num_input: Entity<InputState>,
+        editor_rating_input: Entity<InputState>,
+    ) -> Self {
         let cfg = Config::load();
         let engine = EngineType::from_str(&cfg.play.engine);
         let player = Arc::new(Player::new(engine));
@@ -407,7 +454,7 @@ impl MusicPlayer {
             if existing.entries.is_empty() {
                 // Capture a weak handle to self so the background scan can
                 // refresh `media_lib_cache` and trigger a repaint when done.
-                let weak = cx.weak_entity();
+                let _weak = cx.weak_entity();
                 std::thread::spawn(move || {
                     let total = dirs.len();
                     for (i, dir) in dirs.iter().enumerate() {
@@ -422,14 +469,7 @@ impl MusicPlayer {
                         }
                     }
                     tracing::info!("[MediaLib] 初始化扫描完成");
-                    // Refresh the in-memory cache so the UI sees the new entries
-                    // without needing a restart.
-                    if let Some(w) = weak.upgrade() {
-                        let _ = w.update(|this, cx| {
-                            this.media_lib_cache = Some(crate::media::MediaLib::load());
-                            cx.notify();
-                        });
-                    }
+                    // Cache refresh deferred — cannot use cx in std::thread
                 });
             } else {
                 tracing::info!("[MediaLib] 跳过自动扫描（已有 {} 条记录）", existing.entries.len());
@@ -542,6 +582,7 @@ impl MusicPlayer {
             playlist_filter_mode: PlaylistFilterMode::All,
             playlist_sort_field: PlaylistSortField::Title,
             playlist_sort_asc: true,
+            playlist_view_mode: PlaylistViewMode::Detail,
             playlist_drag_from: None,
             playlist_drag_to: None,
             playlist_drag_active: false,
@@ -551,6 +592,10 @@ impl MusicPlayer {
             media_lib_category: MediaLibCategory::AllTracks,
             media_lib_selected: None,
             media_lib_search: String::new(),
+            media_lib_sidebar_cache: Vec::new(),
+            media_lib_list_cache: Vec::new(),
+            media_lib_cache_key: (MediaLibCategory::Rating, Some("__init__".into())),
+            media_lib_total_dur: 0,
             eq_enabled: false,
             eq_sliders,
             eq_preset_name: "自定义".to_string(),
@@ -563,6 +608,14 @@ impl MusicPlayer {
             lyric_show_translation: false,
             desktop_lyrics_open: false,
             modal: None,
+            editor_track_idx: None,
+            editor_title_input,
+            editor_artist_input,
+            editor_album_input,
+            editor_genre_input,
+            editor_year_input,
+            editor_track_num_input,
+            editor_rating_input,
         }
     }
 
@@ -888,7 +941,7 @@ impl Render for MusicPlayer {
             let player_ff = self.player.clone();
             let player_repeat = self.player.clone();
             let player_mute_m = self.player.clone();
-            let vol = self.volume;
+            let _vol = self.volume;
             let pos_str_mini = format!(
                 "{:02}:{:02} / {:02}:{:02}",
                 (self.position as u32) / 60, (self.position as u32) % 60,
@@ -955,9 +1008,9 @@ impl Render for MusicPlayer {
                                 .child(Button::new("mini_exit").label("⤢").ghost().compact().on_click(|_, _, _| {
                                     MINI_MODE.store(false, Ordering::Relaxed);
                                 }))
-                        )
-                )
-                .child(
+                    )
+            )
+            .child(
                     // Bottom: 2px progress bar (miniMode01.xml: <progressBar height="2"/>)
                     h_flex()
                         .id("mini-progress")
@@ -1010,38 +1063,8 @@ impl Render for MusicPlayer {
         };
         let raw_spec = self.player.calculate_spectrum();
         let raw_peaks = self.player.spectrum_peak_data();
-        let panel = Panel::from_u8(ACTIVE_PANEL.load(Ordering::Relaxed));
         let playlist_tracks = self.player.playlist().tracks().to_vec();
         let current_idx = self.player.playlist().current_index();
-
-        // Left playlist panel is always available in Big mode; removed icon sidebar
-        // (original MusicPlayer2 has no icon rail — the left column IS the playlist).
-
-        let content_area = div().flex_grow().h_full().child(match panel {
-            Panel::Playlist => {
-                // In Big mode, the playlist is already rendered as the left column;
-                // the center shows an empty space. In Narrow/Small mode, show it here.
-                if matches!(layout_mode, LayoutMode::Big) {
-                    div().into_any_element()
-                } else {
-                    self.render_playlist(&playlist_tracks, current_idx, layout_mode, window, cx).into_any_element()
-                }
-            }
-            Panel::MediaLib => self.render_media_lib_panel(c, window, cx).into_any_element(),
-            Panel::Lyrics => desktop_lyrics::render_lyrics_panel(&self.lyric_state, c).into_any_element(),
-            Panel::LyricEditor => self.render_lyric_editor_panel(c, window, cx).into_any_element(),
-            Panel::Equalizer => self.render_equalizer_panel(c, window, cx).into_any_element(),
-            Panel::Search => dialogs::render_search_panel(c, &self.playlist_filter_text, &self.search_input, window, cx).into_any_element(),
-            Panel::Settings => dialogs::render_settings_panel(c, self.settings_tab, window, cx).into_any_element(),
-            Panel::LyricDownload => self.render_lyric_download_panel(c, window, cx).into_any_element(),
-            Panel::FileBrowser => self.render_file_browser(c, window, cx).into_any_element(),
-        });
-
-        let control_bar_h = layout_mode.control_bar_height();
-        let progress_h = layout_mode.progress_bar_height();
-        let title_size = layout_mode.title_font_size();
-        let artist_size = layout_mode.artist_font_size();
-        let vol_width = layout_mode.volume_slider_width();
 
         // Build main layout with responsive adjustments
         let mut main_layout = v_flex().size_full().bg(c.bg);
@@ -1054,318 +1077,186 @@ impl Render for MusicPlayer {
             main_layout = main_layout.child(self.render_menu_bar(c, tr, window, cx));
         }
 
-        // ── Main content area ────────────────────────────────────────────
-        // Original GrooveMusic skin layout (matches the screenshots in
-        // 原播放器界面截图/): a horizontalLayout with a left navigation bar
-        // and a stackElement that switches between the "now playing" view
-        // and the playlist/medialib views. The bottom 88px rectangle holds
-        // the playback controls + progress + volume.
-        //
-        // We mirror that with a 3-column body:
-        //   [left nav rail] [main view (now playing / playlist / medialib)]
-        //   [right playlist (Big mode only)]
-        // followed by a bottom control bar (rendered separately below).
-        let show_columns = matches!(layout_mode, LayoutMode::Big);
+        // ── Main content area: left-right split matching original MusicPlayer2 ──
+        // LEFT:  album art + title/artist + spectrum + lyrics + toolbar + transport + progress
+        // RIGHT: playlist (search + toolbar + list) — Big mode only
+        let player_mute = self.player.clone();
+        let dur = self.duration;
+        let vol_width = layout_mode.volume_slider_width();
+        let has_track = !self.title.is_empty() || self.duration > 0.0;
 
+        // ── Left panel: now-playing + controls ──────────────────────────────
+        let left_panel = v_flex()
+            .flex_grow()
+            .h_full()
+            .bg(c.bg)
+            // Status line: "已暂停 081 ..." + format info
+            .child(
+                v_flex().w_full().px_4().pt_2().gap_0()
+                    .child(
+                        h_flex().items_center().gap_2()
+                            .child(layout::txt(
+                                &if self.is_playing { "播放中" } else { "已暂停" },
+                                10.0, c.text_dim))
+                            .child(layout::txt(&self.title, 10.0, c.text))
+                    )
+                    .child(layout::txt(&self.format_line(), 9.0, c.text_dim))
+            )
+            // Album cover (large, centered)
+            .child(
+                v_flex().flex_grow().items_center().justify_center()
+                    .child(self.album_art_element(px(200.0), c))
+            )
+            // Track title + artist
+            .child(
+                v_flex().items_center().gap_1().px_4()
+                    .child(layout::txt(&self.title, 14.0, c.text_title))
+                    .child(layout::txt(&self.artist, 11.0, c.text_dim))
+            )
+            // Spectrum
+            .child(
+                if layout_mode.show_spectrum() {
+                    self.render_spectrum_strip(&raw_spec, &raw_peaks, 48, c).into_any_element()
+                } else {
+                    div().into_any_element()
+                }
+            )
+            // Lyrics (karaoke style)
+            .child(
+                if has_track {
+                    v_flex().flex_grow().h(px(120.0)).child(
+                        desktop_lyrics::render_lyrics_panel(&self.lyric_state, c).into_any_element()
+                    ).into_any_element()
+                } else {
+                    div().into_any_element()
+                }
+            )
+            // Toolbar icons row (matching original: playlist/settings/eq/favourite/search/translate/brightness/AB/lyrics)
+            .child(
+                h_flex().w_full().px_4().py_1().gap_2().items_center()
+                    .child(Button::new("tb_playlist").label("☰").ghost().compact().on_click(|_, _, _| {
+                        ACTIVE_PANEL.store(0, Ordering::Relaxed);
+                    }))
+                    .child(Button::new("tb_settings").label("⚙").ghost().compact().on_click(|_, _, _| {
+                        ACTIVE_PANEL.store(8, Ordering::Relaxed);
+                    }))
+                    .child(Button::new("tb_eq").label("EQ").ghost().compact().on_click(|_, _, _| {
+                        ACTIVE_PANEL.store(7, Ordering::Relaxed);
+                    }))
+                    .child(Button::new("tb_fav").label(if self.is_favourite { "♥" } else { "♡" }).ghost().compact())
+                    .child(Button::new("tb_search").icon(IconName::Search).ghost().compact().on_click(|_, _, _| {
+                        ACTIVE_PANEL.store(3, Ordering::Relaxed);
+                    }))
+                    .child(Button::new("tb_ab").label("A-B").ghost().compact())
+                    .child(Button::new("tb_lyrics").label("词").ghost().compact().on_click(|_, _, _| {
+                        ACTIVE_PANEL.store(4, Ordering::Relaxed);
+                    }))
+                    .child(div().flex_grow())
+                    // Volume on the right side of toolbar
+                    .child(Button::new("mute").label(if self.is_muted { "🔇" } else { "🔊" }).ghost().compact().on_click(move |_, _, _| {
+                        let vol = player_mute.volume();
+                        if vol > 0 {
+                            let _ = player_mute.set_volume(0);
+                        } else {
+                            let _ = player_mute.set_volume(80);
+                        }
+                    }))
+                    .child(Slider::new(&self.volume_slider).horizontal().w(px(vol_width)))
+            )
+            // Transport controls: stop / prev / rew / play / ff / next + time
+            .child(
+                h_flex().w_full().px_4().py_2().gap_3().items_center().justify_center()
+                    .child(Button::new("stop").label("⏹").ghost().compact().on_click(move |_, _, _| { let _ = player_stop.stop(); }))
+                    .child(Button::new("prev").label("⏮").ghost().compact().on_click(move |_, _, _| { let _ = player_prev.prev(); }))
+                    .child(Button::new("rew").label("⏪").ghost().compact().on_click(move |_, _, _| {
+                        let pos = player_rew.position();
+                        let _ = player_rew.seek(pos.saturating_sub(std::time::Duration::from_secs(5)));
+                    }))
+                    .child(Button::new("play").label(play_label).primary().compact().on_click({
+                        let p = player_play.clone();
+                        move |_, _, _| {
+                            let is_playing = p.is_playing();
+                            if is_playing {
+                                let _ = p.toggle_pause();
+                            } else {
+                                if p.playlist().is_empty() {
+                                    let p_clone = p.clone();
+                                    std::thread::spawn(move || {
+                                        if let Some(file) = rfd::FileDialog::new()
+                                            .add_filter("音频文件", &["mp3", "flac", "wav", "ogg", "aac", "m4a", "wma", "ape", "cue"])
+                                            .pick_file()
+                                        {
+                                            let path = file.to_string_lossy().to_string();
+                                            let _ = p_clone.play_file(&path);
+                                        }
+                                    });
+                                    return;
+                                }
+                                let idx = p.playlist().current_index().unwrap_or(0);
+                                let _ = p.play_at_index(idx);
+                            }
+                        }
+                    }))
+                    .child(Button::new("ff").label("⏩").ghost().compact().on_click(move |_, _, _| {
+                        let dur = player_ff.duration();
+                        let pos = player_ff.position();
+                        let _ = player_ff.seek((pos + std::time::Duration::from_secs(5)).min(dur));
+                    }))
+                    .child(Button::new("next").label("⏭").ghost().compact().on_click(move |_, _, _| { let _ = player_next.next(); }))
+                    .child(div().w(px(1.0)).h(px(20.0)).bg(c.border))
+                    .child(layout::txt(&pos_str, 11.0, c.text_dim))
+                    // Repeat mode
+                    .child(Button::new("repeat").label(repeat_label).ghost().compact().on_click(move |_, _, _| {
+                        use crate::core::playlist::RepeatMode;
+                        let modes = [RepeatMode::PlayOrder, RepeatMode::LoopPlaylist, RepeatMode::LoopTrack, RepeatMode::PlayShuffle, RepeatMode::PlayRandom];
+                        let current = player_repeat.repeat_mode();
+                        let idx = modes.iter().position(|m| *m == current).unwrap_or(0);
+                        let next = modes[(idx + 1) % modes.len()];
+                        player_repeat.set_repeat_mode(next);
+                    }))
+            )
+            // Progress bar (full width, click-to-seek)
+            .child(
+                h_flex()
+                    .id("progress-bar")
+                    .w_full()
+                    .h(px(layout_mode.progress_bar_height()))
+                    .cursor(gpui::CursorStyle::PointingHand)
+                    .child(
+                        h_flex().w_full().h_full()
+                            .bg(c.progress_track)
+                            .child(
+                                div()
+                                    .h_full()
+                                    .w(DefiniteLength::Fraction(seek_pct / 100.0))
+                                    .bg(c.accent),
+                            ),
+                    )
+                    .on_mouse_down(gpui::MouseButton::Left, move |e, window, _cx| {
+                        let win_w: f32 = window.bounds().size.width.into();
+                        let mouse_x: f32 = e.position.x.into();
+                        // Progress bar spans the full window width
+                        let ratio = (mouse_x / win_w).clamp(0.0, 1.0);
+                        let seek_to = dur * ratio as f64;
+                        let _ = player_seek.seek(std::time::Duration::from_secs_f64(seek_to));
+                    })
+            );
+
+        // ── Right panel: playlist dock (Big mode only) ─────────────────────
+        let right_panel = if layout_mode.show_right_panel() {
+            Some(self.render_playlist_dock(&playlist_tracks, current_idx, layout_mode, c, window, cx))
+        } else {
+            None
+        };
+
+        // Assemble: left panel + optional divider + right panel
         let mut content_flex = h_flex().w_full().flex_grow();
-
-        // Left navigation rail — vertical icon bar that swaps the main view.
-        // Matches the original `navigationBar orientation="vertical"`.
-        content_flex = content_flex.child(self.render_nav_rail(c, window, cx));
-
-        // Main view column — switches between "now playing" (cover+info+
-        // spectrum+lyrics) and the panel the user picked (playlist / medialib
-        // / lyrics / eq / settings / etc).
-        content_flex = content_flex.child(
-            v_flex()
-                .flex_grow()
-                .h_full()
-                .bg(c.bg)
-                .child(self.render_main_view(&playlist_tracks, current_idx, layout_mode, &raw_spec, &raw_peaks, c, window, cx))
-        );
-
-        // Right playlist column — only in Big mode. Original placed the
-        // playlist inside the stack element, but the screenshots show it
-        // docked to the right of the main view, which is more natural for
-        // a desktop player.
-        if show_columns {
+        content_flex = content_flex.child(left_panel);
+        if let Some(right) = right_panel {
             content_flex = content_flex.child(div().w(px(1.0)).h_full().bg(c.border));
-            content_flex = content_flex.child(self.render_playlist_dock(&playlist_tracks, current_idx, layout_mode, c, window, cx));
+            content_flex = content_flex.child(right);
         }
         main_layout = main_layout.child(content_flex);
-
-        // Prepare button states
-        let player_mute = self.player.clone();
-
-        // Control bar at bottom — mirrors original 01_simple.xml:
-        //   <horizontalLayout height="42">
-        //     <button key="previous"/><button key="playPause"/><button key="next"/>
-        //     <progressBar show_play_time="true"/>
-        //     <button key="repeatMode"/><button key="mediaLib"/>
-        //     <volume show_text="false"/><button key="showPlaylist"/>
-        //   </horizontalLayout>
-        //
-        // We keep rew/ff/stop as compact icon buttons between next and the
-        // progress bar (they exist in the Playback menu but are convenient
-        // here); speed/mute/EQ/fullscreen move to the now-playing screen and
-        // View menu to keep the bar clean like the original.
-        main_layout = main_layout.child(
-            v_flex()
-                .w_full()
-                .bg(c.control_bar_bg)
-                .child({
-                    let dur = self.duration;
-                    h_flex()
-                        .id("progress-bar")
-                        .w_full()
-                        .h(px(progress_h))
-                        .cursor(gpui::CursorStyle::PointingHand)
-                        .child(
-                            h_flex().w_full().h_full()
-                                .bg(c.progress_track)
-                                .child(
-                                    div()
-                                        .h_full()
-                                        .w(DefiniteLength::Fraction(seek_pct / 100.0))
-                                        .bg(c.accent),
-                                ),
-                        )
-                        .on_mouse_down(gpui::MouseButton::Left, move |e, window, _cx| {
-                            // Progress bar is w_full() inside the control-bar v_flex,
-                            // which spans the entire window width (no padding).
-                            // e.position is in window coordinates, so x=0 is the left
-                            // edge of the window — which is also the left edge of the
-                            // progress bar.
-                            let win_w: f32 = window.bounds().size.width.into();
-                            let mouse_x: f32 = e.position.x.into();
-                            let ratio = (mouse_x / win_w).clamp(0.0, 1.0);
-                            let seek_to = dur * ratio as f64;
-                            let _ = player_seek.seek(std::time::Duration::from_secs_f64(seek_to));
-                        })
-                })
-                .child(
-                    self.render_spectrum_strip(&raw_spec, &raw_peaks, SPECTRUM_BARS, c)
-                )
-                .child(
-                    // Original 01_simple.xml control row (height=42):
-                    //   prev / play / next / progressBar / repeatMode / mediaLib / volume / showPlaylist
-                    h_flex()
-                        .items_center()
-                        .w_full()
-                        .px_4().gap_4()
-                        .h(px(control_bar_h))
-                        // Left: playback controls (prev / play / next + compact rew/ff/stop)
-                        .child(
-                            h_flex().items_center().gap_2()
-                                .child(Button::new("prev").icon(IconName::ChevronLeft).ghost().compact().on_click(move |_, _, _| { let _ = player_prev.prev(); }))
-                                .child(Button::new("rew").label("⏪").ghost().compact().on_click(move |_, _, _| {
-                                    let pos = player_rew.position();
-                                    let new_pos = pos.saturating_sub(std::time::Duration::from_secs(5));
-                                    let _ = player_rew.seek(new_pos);
-                                }))
-                                .child(Button::new("play").label(play_label).primary().compact().on_click({
-                                    let p = player_play.clone();
-                                    move |_, _, _| {
-                                        tracing::info!("[GUI] Play button clicked, is_playing={}", p.is_playing());
-                                        // Toggle pause if playing, otherwise play current/first track
-                                        let is_playing = p.is_playing();
-                                        if is_playing {
-                                            tracing::info!("[GUI] toggle_pause");
-                                            let _ = p.toggle_pause();
-                                        } else {
-                                            // Check if playlist is empty before trying to play
-                                            if p.playlist().is_empty() {
-                                                tracing::info!("[GUI] 播放列表为空，打开文件选择对话框");
-                                                // Open file dialog on a separate thread
-                                                let p_clone = p.clone();
-                                                std::thread::spawn(move || {
-                                                    if let Some(file) = rfd::FileDialog::new()
-                                                        .add_filter("音频文件", &["mp3", "flac", "wav", "ogg", "aac", "m4a", "wma", "ape", "cue"])
-                                                        .pick_file()
-                                                    {
-                                                        let path = file.to_string_lossy().to_string();
-                                                        tracing::info!("[GUI] 选择文件: {}", path);
-                                                        let _ = p_clone.play_file(&path);
-                                                    }
-                                                });
-                                                return;
-                                            }
-                                            let idx = p.playlist().current_index().unwrap_or(0);
-                                            tracing::info!("[GUI] play_at_index({}), playlist len={}", idx, p.playlist().len());
-                                            let res = p.play_at_index(idx);
-                                            tracing::info!("[GUI] play_at_index result: {:?}", res.as_ref().map(|_| ()).map_err(|e| e.to_string()));
-                                            if let Err(e) = &res {
-                                                tracing::error!("[GUI] 播放失败: {}", e);
-                                            }
-                                            let _ = res;
-                                        }
-                                    }
-                                }))
-                                .child(Button::new("ff").label("⏩").ghost().compact().on_click(move |_, _, _| {
-                                    let dur = player_ff.duration();
-                                    let pos = player_ff.position();
-                                    let new_pos = (pos + std::time::Duration::from_secs(5)).min(dur);
-                                    let _ = player_ff.seek(new_pos);
-                                }))
-                                .child(Button::new("next").icon(IconName::ChevronRight).ghost().compact().on_click(move |_, _, _| { let _ = player_next.next(); }))
-                                .child(Button::new("stop").label("⏹").ghost().compact().on_click(move |_, _, _| { let _ = player_stop.stop(); })),
-                        )
-                        // Center: progress time + track info (mirrors progressBar show_play_time)
-                        .child(
-                            h_flex().flex_grow().gap_3().items_center()
-                                .child(layout::txt(&pos_str, artist_size, c.text_dim))
-                                .child(self.album_art_element(px(48.0), c))
-                                .child(v_flex().flex_grow().gap_1()
-                                    .child(crate::gui::layout::txt(&self.title, title_size, c.text_title))
-                                    .child(crate::gui::layout::txt(&self.artist, artist_size, c.text_dim)))
-                        )
-                        // Right: repeatMode / mediaLib / volume / showPlaylist (original order)
-                        .child(
-                            h_flex().items_center().gap_2()
-                                // repeatMode (cycles: order → loop playlist → loop track → shuffle → random)
-                                .child(Button::new("repeat").label(repeat_label).ghost().compact().on_click(move |_, _, _| {
-                                    use crate::core::playlist::RepeatMode;
-                                    let modes = [RepeatMode::PlayOrder, RepeatMode::LoopPlaylist, RepeatMode::LoopTrack, RepeatMode::PlayShuffle, RepeatMode::PlayRandom];
-                                    let current = player_repeat.repeat_mode();
-                                    let idx = modes.iter().position(|m| *m == current).unwrap_or(0);
-                                    let next = modes[(idx + 1) % modes.len()];
-                                    player_repeat.set_repeat_mode(next);
-                                }))
-                                // mediaLib — toggle the media library panel
-                                .child(Button::new("media_lib").icon(IconName::Folder).ghost().compact().on_click(|_, _, _| {
-                                    ACTIVE_PANEL.store(2, Ordering::Relaxed);
-                                }))
-                                // volume: mute toggle + slider (original <volume show_text="false">)
-                                .child(Button::new("mute").label(if self.is_muted { "🔇" } else { "🔊" }).ghost().compact().on_click(move |_, _, _| {
-                                    let vol = player_mute.volume();
-                                    if vol > 0 {
-                                        let _ = player_mute.set_volume(0);
-                                    } else {
-                                        let _ = player_mute.set_volume(80);
-                                    }
-                                }))
-                                .child(Slider::new(&self.volume_slider).horizontal().w(px(vol_width)))
-                                // showPlaylist — toggle the right-docked playlist (Big mode only)
-                                .child(Button::new("show_playlist").label("☰").ghost().compact().on_click(|_, _, _| {
-                                    ACTIVE_PANEL.store(0, Ordering::Relaxed);
-                                }))
-                                // Fullscreen button (kept from View menu for convenience)
-                                .child(Button::new("fullscreen").label("⛶").ghost().compact().on_click(|_, window, _| {
-                                    window.toggle_fullscreen();
-                                })),
-                        ),
-                ),
-        );
-
-        // Extra toolbar row for BIG mode (favourite, playlist ops, media library, etc.)
-        if matches!(layout_mode, LayoutMode::Big) {
-            let track_count = playlist_tracks.len();
-            let total_dur = self.player.playlist().total_duration_str();
-            main_layout = main_layout.child(
-                h_flex()
-                    .items_center()
-                    .w_full()
-                    .h(px(28.0))
-                    .px_4().gap_3()
-                    .bg(c.control_bar_bg)
-                    .child(Button::new("media_lib_btn").icon(IconName::Folder).ghost().compact().label("媒体库")
-                        .on_click(cx.listener(|this, _, _window, _cx| {
-                            this.media_lib_open = !this.media_lib_open;
-                            tracing::info!("[Playlist] 媒体库 toggled: {}", this.media_lib_open);
-                        })))
-                    .child(Button::new("add_files_btn").icon(IconName::Plus).ghost().compact().label("添加")
-                        .on_click(cx.listener(|this, _, _window, cx| {
-                            run_blocking_dialog(cx,
-                                || rfd::FileDialog::new()
-                                    .add_filter("音频文件", &["mp3", "flac", "wav", "ogg", "aac", "m4a", "wma", "ape"])
-                                    .add_filter("播放列表", &["m3u", "m3u8"])
-                                    .pick_file(),
-                                |file, this, cx| {
-                                    if let Some(file) = file {
-                                        let path = file.to_string_lossy().to_string();
-                                        if path.ends_with(".m3u") || path.ends_with(".m3u8") {
-                                            match crate::core::playlist::Playlist::import_m3u(&path) {
-                                                Ok(tracks) => {
-                                                    let count = tracks.len();
-                                                    this.player.playlist_mut().add_tracks(tracks);
-                                                    tracing::info!("[Playlist] 导入 {} 首从 {}", count, path);
-                                                }
-                                                Err(e) => tracing::error!("[Playlist] 导入失败: {}", e),
-                                            }
-                                        } else {
-                                            let _ = this.player.play_file(&path);
-                                        }
-                                    }
-                                    cx.notify();
-                                });
-                        })))
-                    .child(Button::new("import_pl_btn").icon(IconName::ArrowDown).ghost().compact().label("导入")
-                        .on_click(cx.listener(|this, _, _window, cx| {
-                            run_blocking_dialog(cx,
-                                || rfd::FileDialog::new()
-                                    .add_filter("播放列表", &["m3u", "m3u8", "wpl", "ttpl", "playlist"])
-                                    .pick_file(),
-                                |file, this, cx| {
-                                    if let Some(file) = file {
-                                        let path = file.to_string_lossy().to_string();
-                                        let ext = std::path::Path::new(&path).extension()
-                                            .and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
-                                        let result: Result<Vec<crate::core::playlist::Track>, String> = match ext.as_str() {
-                                            "m3u" | "m3u8" => crate::core::playlist::Playlist::import_m3u(&path).map_err(|e| e.to_string()),
-                                            "wpl" | "ttpl" | "playlist" => {
-                                                match crate::playlist_format::read_playlist(&path) {
-                                                    Ok(paths) => Ok(paths.into_iter().map(|p| crate::core::playlist::Track::new(&p)).collect()),
-                                                    Err(e) => Err(e.to_string()),
-                                                }
-                                            }
-                                            _ => Err("不支持的格式".to_string()),
-                                        };
-                                        match result {
-                                            Ok(tracks) => {
-                                                let count = tracks.len();
-                                                this.player.playlist_mut().add_tracks(tracks);
-                                                tracing::info!("[Playlist] 导入 {} 首从 {}", count, path);
-                                            }
-                                            Err(e) => tracing::error!("[Playlist] 导入失败: {}", e),
-                                        }
-                                    }
-                                    cx.notify();
-                                });
-                        })))
-                    .child(Button::new("save_pl_btn").icon(IconName::File).ghost().compact().label("导出")
-                        .on_click(cx.listener(|this, _, _window, cx| {
-                            run_blocking_dialog(cx,
-                                || rfd::FileDialog::new()
-                                    .add_filter("M3U播放列表", &["m3u8"])
-                                    .add_filter("WPL播放列表", &["wpl"])
-                                    .add_filter("TTPL播放列表", &["ttpl"])
-                                    .add_filter("原生播放列表", &["playlist"])
-                                    .set_file_name("playlist.m3u8")
-                                    .save_file(),
-                                |file, this, cx| {
-                                    if let Some(file) = file {
-                                        let path = file.to_string_lossy().to_string();
-                                        let ext = std::path::Path::new(&path).extension()
-                                            .and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
-                                        let result = match ext.as_str() {
-                                            "m3u" | "m3u8" => this.player.playlist().export_m3u(&path, true).map_err(|e| e.to_string()),
-                                            "wpl" => crate::playlist_format::write_playlist(&path, this.player.playlist().tracks(), None).map_err(|e| e.to_string()),
-                                            "ttpl" => crate::playlist_format::write_playlist(&path, this.player.playlist().tracks(), None).map_err(|e| e.to_string()),
-                                            "playlist" => crate::playlist_format::write_playlist(&path, this.player.playlist().tracks(), None).map_err(|e| e.to_string()),
-                                            _ => Err("不支持的格式".to_string()),
-                                        };
-                                        match result {
-                                            Ok(()) => tracing::info!("[Playlist] 导出到 {}", path),
-                                            Err(e) => tracing::error!("[Playlist] 导出失败: {}", e),
-                                        }
-                                    }
-                                    cx.notify();
-                                });
-                        })))
-                    .child(div().flex_grow())
-                    .child(layout::txt(&format!("{} 首 | {}", track_count, total_dur), 10.0, c.text_dim))
-            );
-        }
 
         // Status bar - only shown in BIG mode
         if layout_mode.show_statusbar() && STATUSBAR_VISIBLE.load(Ordering::Relaxed) {
@@ -1458,6 +1349,8 @@ impl MusicPlayer {
     /// Mirrors the original `navigationBar orientation="vertical" icon_and_text`
     /// with item_list="now_playing,play_queue,recently_played,folder,playlist,
     /// my_favourite,media_lib" plus a settings button at the bottom.
+    /// DEAD CODE — kept for reference but no longer called from render().
+    #[allow(dead_code)]
     fn render_nav_rail(
         &self,
         c: &UiColors,
@@ -1555,50 +1448,6 @@ impl MusicPlayer {
                             })
                     })
             )
-    }
-
-    /// The center "main view" column. Mirrors the original GrooveMusic
-    /// stackElement: when the active panel is Lyrics/Playlist we show the
-    /// "now playing" screen (big cover + title/artist/album + spectrum +
-    /// synced lyrics); for other panels we render that panel directly.
-    fn render_main_view(
-        &self,
-        tracks: &[Track],
-        current_idx: Option<usize>,
-        layout_mode: LayoutMode,
-        raw_spec: &[f32],
-        raw_peaks: &[f32],
-        c: &UiColors,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let panel = Panel::from_u8(ACTIVE_PANEL.load(Ordering::Relaxed));
-
-        // The "now playing" screen is shown when the user picks the Lyrics
-        // panel (nav: 正在播放) OR when they pick the Playlist panel from
-        // the nav rail (we treat that as "now playing" and dock the actual
-        // playlist on the right in Big mode).
-        let show_now_playing = matches!(panel, Panel::Lyrics)
-            || (matches!(panel, Panel::Playlist)
-                && !matches!(layout_mode, LayoutMode::Big));
-
-        if show_now_playing {
-            return self.render_now_playing(raw_spec, raw_peaks, c, window, cx).into_any_element();
-        }
-
-        match panel {
-            Panel::MediaLib => self.render_media_lib_panel(c, window, cx).into_any_element(),
-            Panel::Search => dialogs::render_search_panel(c, &self.playlist_filter_text, &self.search_input, window, cx).into_any_element(),
-            Panel::Equalizer => self.render_equalizer_panel(c, window, cx).into_any_element(),
-            Panel::Settings => dialogs::render_settings_panel(c, self.settings_tab, window, cx).into_any_element(),
-            Panel::LyricEditor => self.render_lyric_editor_panel(c, window, cx).into_any_element(),
-            Panel::LyricDownload => self.render_lyric_download_panel(c, window, cx).into_any_element(),
-            Panel::FileBrowser => self.render_file_browser(c, window, cx).into_any_element(),
-            // Panel::Playlist in Big mode is docked on the right; the center
-            // shows the now-playing screen.
-            Panel::Playlist => self.render_now_playing(raw_spec, raw_peaks, c, window, cx).into_any_element(),
-            _ => self.render_now_playing(raw_spec, raw_peaks, c, window, cx).into_any_element(),
-        }
     }
 
     /// "Now Playing" screen — the heart of the original MusicPlayer2 main
@@ -1743,6 +1592,106 @@ impl MusicPlayer {
                     })
             )
             .child(
+                // Toolbar: +添加 / ×删除 / ↕排序 / ≡列表 / ✏编辑 / ⟳
+                h_flex().w_full().px_3().py_1().gap_3().items_center()
+                    .child(Button::new("pl_add").label("+ 添加").compact().ghost().text_size(px(10.0)).on_click({
+                        let w = weak.clone();
+                        let w2 = weak.clone();
+                        move |_, _, cx| {
+                            let _ = w.update(cx, |this, cx| {
+                                let weak_ = w2.clone();
+                                run_blocking_dialog_app(cx, &weak_,
+                                    || rfd::FileDialog::new()
+                                        .add_filter("音频文件", &["mp3", "flac", "wav", "ogg", "aac", "m4a", "wma", "ape"])
+                                        .add_filter("播放列表", &["m3u", "m3u8"])
+                                        .pick_file(),
+                                    |file, this, cx| {
+                                        if let Some(file) = file {
+                                            let path = file.to_string_lossy().to_string();
+                                            if path.ends_with(".m3u") || path.ends_with(".m3u8") {
+                                                if let Ok(tracks) = crate::core::playlist::Playlist::import_m3u(&path) {
+                                                    this.player.playlist_mut().add_tracks(tracks);
+                                                }
+                                            } else {
+                                                let _ = this.player.play_file(&path);
+                                            }
+                                        }
+                                        cx.notify();
+                                    });
+                            });
+                        }
+                    }))
+                    .child(Button::new("pl_remove").label("× 删除").compact().ghost().text_size(px(10.0)).on_click({
+                        let w = weak.clone();
+                        move |_, _, cx| {
+                            let _ = w.update(cx, |this, cx| {
+                                if let Some(idx) = this.player.playlist().current_index() {
+                                    this.player.playlist_mut().remove(idx);
+                                }
+                                cx.notify();
+                            });
+                        }
+                    }))
+                    .child(Button::new("pl_sort").label("↕ 排序").compact().ghost().text_size(px(10.0)).on_click({
+                        let w = weak.clone();
+                        move |_, _, cx| {
+                            let _ = w.update(cx, |this, cx| {
+                                this.player.playlist_mut().sort(crate::core::playlist::SortMode::Title, false);
+                                cx.notify();
+                            });
+                        }
+                    }))
+                    .child(Button::new("pl_list").label(if self.playlist_view_mode == PlaylistViewMode::Detail { "≡ 简洁" } else { "≡ 详情" }).compact().ghost().text_size(px(10.0)).on_click({
+                        let w = weak.clone();
+                        move |_, _, cx| {
+                            let _ = w.update(cx, |this, cx| {
+                                this.playlist_view_mode = match this.playlist_view_mode {
+                                    PlaylistViewMode::Detail => PlaylistViewMode::Compact,
+                                    PlaylistViewMode::Compact => PlaylistViewMode::Detail,
+                                };
+                                cx.notify();
+                            });
+                        }
+                    }))
+                    .child(Button::new("pl_edit").label("✏ 编辑").compact().ghost().text_size(px(10.0)).on_click({
+                        let w = weak.clone();
+                        let e_title = self.editor_title_input.clone();
+                        let e_artist = self.editor_artist_input.clone();
+                        let e_album = self.editor_album_input.clone();
+                        let e_genre = self.editor_genre_input.clone();
+                        let e_year = self.editor_year_input.clone();
+                        let e_tnum = self.editor_track_num_input.clone();
+                        let e_rating = self.editor_rating_input.clone();
+                        move |_, window, cx| {
+                            let data = w.update(cx, |this, _cx| {
+                                this.player.playlist().current_index().and_then(|idx| {
+                                    this.player.playlist().get(idx).map(|t| {
+                                        (idx, t.title.clone(), t.artist.clone(), t.album.clone(), t.genre.clone(),
+                                         if t.year > 0 { t.year.to_string() } else { String::new() },
+                                         if t.track_number > 0 { t.track_number.to_string() } else { String::new() },
+                                         if t.rating > 0 { t.rating.to_string() } else { String::new() })
+                                    })
+                                })
+                            }).ok().flatten();
+                            if let Some((idx, title, artist, album, genre, year, tnum, rating)) = data {
+                                let _ = e_title.update(cx, |s, cx| s.set_value(&title, window, cx));
+                                let _ = e_artist.update(cx, |s, cx| s.set_value(&artist, window, cx));
+                                let _ = e_album.update(cx, |s, cx| s.set_value(&album, window, cx));
+                                let _ = e_genre.update(cx, |s, cx| s.set_value(&genre, window, cx));
+                                let _ = e_year.update(cx, |s, cx| s.set_value(&year, window, cx));
+                                let _ = e_tnum.update(cx, |s, cx| s.set_value(&tnum, window, cx));
+                                let _ = e_rating.update(cx, |s, cx| s.set_value(&rating, window, cx));
+                                let _ = w.update(cx, |this, cx| {
+                                    this.editor_track_idx = Some(idx);
+                                    this.modal = Some(ModalKind::TrackEditor);
+                                    cx.notify();
+                                });
+                            }
+                        }
+                    }))
+                    .child(Button::new("pl_refresh").label("⟳").compact().ghost().text_size(px(10.0)))
+            )
+            .child(
                 // The actual playlist (flex_grow fills the rest)
                 v_flex().flex_grow().h_full().child(
                     self.render_playlist(tracks, current_idx, layout_mode, window, cx)
@@ -1763,9 +1712,9 @@ impl MusicPlayer {
         let weak_file = weak.clone();
         let weak_playlist = weak.clone();
         let weak_lyric = weak.clone();
-        let weak_view = weak.clone();
-        let weak_tools = weak.clone();
-        let weak_help = weak.clone();
+        let _weak_view = weak.clone();
+        let _weak_tools = weak.clone();
+        let _weak_help = weak.clone();
         // Copy i18n strings to satisfy 'static lifetime for closures
         let s_file = tr.menu_file;
         let s_open_file = tr.menu_open_file;
@@ -1823,6 +1772,7 @@ impl MusicPlayer {
                                                 for e in &entries { lib.upsert(e.clone()); }
                                                 let _ = lib.save();
                                                 this.media_lib_cache = Some(lib);
+                                                this.media_lib_cache_key = (MediaLibCategory::AllTracks, None);
                                                 if !entries.is_empty() {
                                                     let _ = this.player.play_at_index(first_idx);
                                                 }
@@ -2855,6 +2805,54 @@ impl MusicPlayer {
             ModalKind::FormatConvert => {
                 self.render_format_convert_card(c, cx)
             }
+            ModalKind::TrackEditor => {
+                let weak = cx.entity().downgrade();
+                let weak_save = weak.clone();
+                v_flex()
+                    .w(px(400.0))
+                    .max_h(px(520.0))
+                    .rounded(px(12.0))
+                    .bg(c.bg)
+                    .p_6()
+                    .gap_3()
+                    .child(layout::txt("编辑曲目信息", 16.0, c.text_title))
+                    .child(div().w_full().h(px(1.0)).bg(c.divider))
+                    .child(self.render_editor_field("标题", &self.editor_title_input, c))
+                    .child(self.render_editor_field("艺术家", &self.editor_artist_input, c))
+                    .child(self.render_editor_field("专辑", &self.editor_album_input, c))
+                    .child(self.render_editor_field("流派", &self.editor_genre_input, c))
+                    .child(self.render_editor_field("年份", &self.editor_year_input, c))
+                    .child(self.render_editor_field("曲目号", &self.editor_track_num_input, c))
+                    .child(self.render_editor_field("评分", &self.editor_rating_input, c))
+                    .child(h_flex().w_full().justify_end().gap_2()
+                        .child(close_btn)
+                        .child(Button::new("editor_save").label("保存").on_click(move |_, _, cx| {
+                            let _ = weak_save.update(cx, |this, cx| {
+                                if let Some(idx) = this.editor_track_idx {
+                                    let title = this.editor_title_input.read(cx).value().to_string();
+                                    let artist = this.editor_artist_input.read(cx).value().to_string();
+                                    let album = this.editor_album_input.read(cx).value().to_string();
+                                    let genre = this.editor_genre_input.read(cx).value().to_string();
+                                    let year: u32 = this.editor_year_input.read(cx).value().parse().unwrap_or(0);
+                                    let track_num: u32 = this.editor_track_num_input.read(cx).value().parse().unwrap_or(0);
+                                    let rating: u32 = this.editor_rating_input.read(cx).value().parse().unwrap_or(0);
+                                    if let Some(track) = this.player.playlist_mut().get_mut(idx) {
+                                        track.title = title;
+                                        track.artist = artist;
+                                        track.album = album;
+                                        track.genre = genre;
+                                        track.year = year;
+                                        track.track_number = track_num;
+                                        track.rating = rating.min(5);
+                                    }
+                                    this.modal = None;
+                                }
+                                cx.notify();
+                            });
+                        }))
+                    )
+                    .into_any_element()
+            }
         };
 
         div().size_full()
@@ -2884,6 +2882,16 @@ impl MusicPlayer {
             rows.push(("提示".into(), "当前没有播放的曲目".into()));
         }
         rows
+    }
+
+    /// Render a labeled input row for the track editor modal.
+    fn render_editor_field(&self, label: &str, input: &Entity<InputState>, c: &UiColors) -> impl IntoElement {
+        h_flex().w_full().gap_2().items_center()
+            .child(div().w(px(64.0)).child(layout::txt(label, 11.0, c.text_dim)))
+            .child(
+                h_flex().flex_grow().h(px(28.0)).bg(c.bg).rounded(px(4.0)).px_2().items_center()
+                    .child(Input::new(input))
+            )
     }
 
     /// Render the format-conversion modal card. Picking a target format opens a
@@ -3355,7 +3363,7 @@ impl MusicPlayer {
                                 .on_click(cx.listener(move |this, _, _window, _cx| {
                                     this.download_state.source = "qqmusic".to_string();
                                     tracing::info!("[LyricDownload] 切换到QQ音乐");
-                                }))
+                            }))
                     )
             )
             .child(
@@ -3743,9 +3751,9 @@ impl MusicPlayer {
                                         .w(DefiniteLength::Fraction(state.progress.clamp(0.0, 1.0)))
                                         .bg(c.accent)
                                         .rounded(px(2.0))
-                                )
-                        )
-                        .child(
+                    )
+            )
+            .child(
                             div()
                                 .w(px(36.0))
                                 .text_size(px(9.0))
@@ -4107,7 +4115,8 @@ impl MusicPlayer {
             )
             // Column headers
             .child(
-                h_flex()
+                if self.playlist_view_mode == PlaylistViewMode::Detail {
+                    h_flex()
                     .w_full()
                     .h(px(24.0))
                     .px_4().gap_3()
@@ -4197,8 +4206,11 @@ impl MusicPlayer {
                                     this.playlist_sort_asc = true;
                                 }
                                 let _ = this.player.playlist_mut().sort(crate::core::playlist::SortMode::Time, !this.playlist_sort_asc);
-                            }))
+                            }                            ))
                     )
+                } else {
+                    div().h(px(0.0))
+                }
             )
             .child(
                 div().flex_grow()
@@ -4290,7 +4302,11 @@ impl MusicPlayer {
                                         div().into_any_element()
                                     })
                                     .child(if is_fav { layout::txt("♥", font_size, c.accent) } else { layout::txt("", font_size, c.text_dim) })
-                                    .child(layout::txt(&dur_str, font_size - 1.0, c.text_dim))
+                                    .child(if self.playlist_view_mode == PlaylistViewMode::Detail {
+                                        layout::txt(&dur_str, font_size - 1.0, c.text_dim).into_any_element()
+                                    } else {
+                                        div().into_any_element()
+                                    })
                                     .on_click({
                                         let v = view.clone();
                                         let idx = i;
@@ -4521,6 +4537,8 @@ impl MusicPlayer {
     }
 
     /// Render the media library panel with category browsing.
+    /// Recomputes sidebar/list data only on category/selection change
+    /// (equivalent to MFC virtual list: data prepared once, not per-frame).
     fn render_media_lib_panel(
         &mut self,
         c: &UiColors,
@@ -4532,94 +4550,91 @@ impl MusicPlayer {
         if self.media_lib_cache.is_none() {
             self.media_lib_cache = Some(crate::media::MediaLib::load());
         }
-        let lib = self.media_lib_cache.as_ref().expect("cache just initialized");
-        self.render_media_lib_panel_inner(c, cx, lib)
-    }
 
-    /// Inner render function that takes a borrowed MediaLib reference.
-    fn render_media_lib_panel_inner(
-        &self,
-        c: &UiColors,
-        cx: &mut Context<Self>,
-        lib: &crate::media::MediaLib,
-    ) -> impl IntoElement {
-        let total_tracks = lib.entries.len();
-        let total_dur_secs: u64 = lib.entries.iter().map(|e| e.duration_secs).sum();
-        let total_dur = format!(
-            "{}:{:02}:{:02}",
-            total_dur_secs / 3600,
-            (total_dur_secs % 3600) / 60,
-            total_dur_secs % 60
-        );
         let cat = self.media_lib_category;
         let sel = self.media_lib_selected.clone();
 
-        // Limit the number of entries processed to avoid creating thousands
-        // of ViewEntry objects on every render frame (30fps).
-        const MAX_ENTRIES: usize = 500;
-        let (sidebar_items, list_items): (Vec<String>, Vec<ViewEntry>) = match cat {
-            MediaLibCategory::AllTracks => (
-                Vec::new(),
-                lib.entries.iter().take(MAX_ENTRIES).map(ViewEntry::from).collect(),
-            ),
-            MediaLibCategory::Artists => {
-                let artists = lib.artists();
-                let items = sel.as_ref()
-                    .map(|n| lib.by_artist(Some(n)).iter().map(|e| ViewEntry::from(*e)).collect())
-                    .unwrap_or_default();
-                (artists, items)
+        // Recompute sidebar + list only when category or selection changes.
+        if self.media_lib_cache_key != (cat, sel.clone()) {
+            self.media_lib_cache_key = (cat, sel.clone());
+            if let Some(lib) = self.media_lib_cache.as_ref() {
+                self.media_lib_total_dur = lib.entries.iter().map(|e| e.duration_secs).sum();
+                const MAX_ENTRIES: usize = 500;
+                let (sidebar, list): (Vec<String>, Vec<ViewEntry>) = match cat {
+                    MediaLibCategory::AllTracks => (
+                        Vec::new(),
+                        lib.entries.iter().take(MAX_ENTRIES).map(ViewEntry::from).collect(),
+                    ),
+                    MediaLibCategory::Artists => {
+                        let artists = lib.artists();
+                        let items = sel.as_ref()
+                            .map(|n| lib.by_artist(Some(n)).iter().map(|e| ViewEntry::from(*e)).collect())
+                            .unwrap_or_default();
+                        (artists, items)
+                    }
+                    MediaLibCategory::Albums => {
+                        let albums = lib.albums();
+                        let items = sel.as_ref()
+                            .map(|n| lib.by_album(Some(n)).iter().map(|e| ViewEntry::from(*e)).collect())
+                            .unwrap_or_default();
+                        (albums, items)
+                    }
+                    MediaLibCategory::Genres => {
+                        let genres = lib.genres();
+                        let items = sel.as_ref()
+                            .map(|n| lib.by_genre(n).iter().map(|e| ViewEntry::from(*e)).collect())
+                            .unwrap_or_default();
+                        (genres, items)
+                    }
+                    MediaLibCategory::Years => {
+                        let years: Vec<String> = lib.years().iter().map(|y| y.to_string()).collect();
+                        let items = sel.as_ref()
+                            .and_then(|y_str| y_str.parse::<u32>().ok())
+                            .map(|year| lib.by_year(year).iter().map(|e| ViewEntry::from(*e)).collect())
+                            .unwrap_or_default();
+                        (years, items)
+                    }
+                    MediaLibCategory::FileTypes => {
+                        let types = lib.file_types();
+                        let items = sel.as_ref()
+                            .map(|ext| lib.by_file_type(ext).iter().map(|e| ViewEntry::from(*e)).collect())
+                            .unwrap_or_default();
+                        (types, items)
+                    }
+                    MediaLibCategory::Bitrates => {
+                        let bitrates = lib.bitrates();
+                        let items = sel.as_ref()
+                            .and_then(|b| b.parse::<u32>().ok())
+                            .map(|b| lib.by_bitrate(b).iter().map(|e| ViewEntry::from(*e)).collect())
+                            .unwrap_or_default();
+                        (bitrates.iter().map(|b| format!("{} kbps", b)).collect::<Vec<_>>(), items)
+                    }
+                    MediaLibCategory::Recent => {
+                        let recent = lib.recent(50);
+                        let items: Vec<String> = recent.iter().map(|e| e.file_path.clone()).collect();
+                        (items, Vec::new())
+                    }
+                    MediaLibCategory::Rating => {
+                        let ratings = lib.ratings();
+                        let items = sel.as_ref()
+                            .and_then(|r| r.parse::<u32>().ok())
+                            .map(|r| lib.by_rating(r).iter().map(|e| ViewEntry::from(*e)).collect())
+                            .unwrap_or_default();
+                        (ratings.iter().map(|r| format!("{} 星", r)).collect::<Vec<_>>(), items)
+                    }
+                };
+                self.media_lib_sidebar_cache = sidebar;
+                self.media_lib_list_cache = list;
             }
-            MediaLibCategory::Albums => {
-                let albums = lib.albums();
-                let items = sel.as_ref()
-                    .map(|n| lib.by_album(Some(n)).iter().map(|e| ViewEntry::from(*e)).collect())
-                    .unwrap_or_default();
-                (albums, items)
-            }
-            MediaLibCategory::Genres => {
-                let genres = lib.genres();
-                let items = sel.as_ref()
-                    .map(|n| lib.by_genre(n).iter().map(|e| ViewEntry::from(*e)).collect())
-                    .unwrap_or_default();
-                (genres, items)
-            }
-            MediaLibCategory::Years => {
-                let years: Vec<String> = lib.years().iter().map(|y| y.to_string()).collect();
-                let items = sel.as_ref()
-                    .and_then(|y_str| y_str.parse::<u32>().ok())
-                    .map(|year| lib.by_year(year).iter().map(|e| ViewEntry::from(*e)).collect())
-                    .unwrap_or_default();
-                (years, items)
-            }
-            MediaLibCategory::FileTypes => {
-                let types = lib.file_types();
-                let items = sel.as_ref()
-                    .map(|ext| lib.by_file_type(ext).iter().map(|e| ViewEntry::from(*e)).collect())
-                    .unwrap_or_default();
-                (types, items)
-            }
-            MediaLibCategory::Bitrates => {
-                let bitrates = lib.bitrates();
-                let items = sel.as_ref()
-                    .and_then(|b| b.parse::<u32>().ok())
-                    .map(|b| lib.by_bitrate(b).iter().map(|e| ViewEntry::from(*e)).collect())
-                    .unwrap_or_default();
-                (bitrates.iter().map(|b| format!("{} kbps", b)).collect::<Vec<_>>(), items)
-            }
-            MediaLibCategory::Recent => {
-                let recent = lib.recent(50);
-                let items: Vec<String> = recent.iter().map(|e| e.file_path.clone()).collect();
-                (items, Vec::new())
-            }
-            MediaLibCategory::Rating => {
-                let ratings = lib.ratings();
-                let items = sel.as_ref()
-                    .and_then(|r| r.parse::<u32>().ok())
-                    .map(|r| lib.by_rating(r).iter().map(|e| ViewEntry::from(*e)).collect())
-                    .unwrap_or_default();
-                (ratings.iter().map(|r| format!("{} 星", r)).collect::<Vec<_>>(), items)
-            }
-        };
+        }
+
+        // Read stats from cache (cheap: no per-entry iteration on every frame).
+        let total_tracks = self.media_lib_cache.as_ref().map_or(0, |lib| lib.entries.len());
+        let secs = self.media_lib_total_dur;
+        let total_dur = format!("{}:{:02}:{:02}", secs / 3600, (secs % 3600) / 60, secs % 60);
+
+        let sidebar_items = &self.media_lib_sidebar_cache;
+        let list_items = &self.media_lib_list_cache;
 
         let mk_btn = |label: &'static str, id: &'static str, target: MediaLibCategory| {
             let is_active = cat == target;
@@ -4635,10 +4650,9 @@ impl MusicPlayer {
         let show_sidebar = !matches!(cat, MediaLibCategory::AllTracks) && !sidebar_items.is_empty();
 
         let sidebar_el = if show_sidebar {
-            let items: Vec<String> = sidebar_items.clone();
             div().w(px(150.0)).h_full().bg(c.panel_alt).border_r(px(1.0)).border_color(c.border)
                 .child(v_flex().w_full().h_full().py_1()
-                    .children(items.into_iter().map(|item| {
+                    .children(sidebar_items.iter().map(|item| {
                         let is_active = sel.as_ref().map(|s| s.as_str()) == Some(item.as_str());
                         let bg = if is_active { c.accent.opacity(0.2) } else { Hsla { h: 0.0, s: 0.0, l: 0.0, a: 0.0 } };
                         div().px_3().py_1().bg(bg).text_size(px(11.0))
@@ -4697,6 +4711,8 @@ impl MusicPlayer {
                                     let _ = this.update(cx, |this, cx_| {
                                         if let Some(lib) = lib {
                                             this.media_lib_cache = Some(lib);
+                                            // Invalidate cached sidebar/list so they rebuild from new data.
+                                            this.media_lib_cache_key = (MediaLibCategory::AllTracks, None);
                                         }
                                         cx_.notify();
                                     });
@@ -4713,10 +4729,9 @@ impl MusicPlayer {
                                 // Limit displayed tracks to avoid creating thousands of
                                 // GPUI elements when the media library is large.
                                 const MAX_DISPLAY: usize = 500;
-                                let display_items: Vec<&ViewEntry> = list_items.iter().take(MAX_DISPLAY).collect();
                                 let total = list_items.len();
-                                let mut items: Vec<gpui::AnyElement> = Vec::with_capacity(display_items.len() + 1);
-                                items.extend(display_items.iter().enumerate().map(|(i, item)| {
+                                let mut items: Vec<gpui::AnyElement> = Vec::with_capacity(list_items.len().min(MAX_DISPLAY) + 1);
+                                items.extend(list_items.iter().take(MAX_DISPLAY).enumerate().map(|(i, item)| {
                                     let is_even = i % 2 == 0;
                                     let bg = if is_even { c.playlist_item } else { c.playlist_item_hover };
                                     let title = item.title.clone();
@@ -4738,8 +4753,8 @@ impl MusicPlayer {
                                     items.push(
                                         div().w_full().px_4().py_2().text_size(px(11.0)).text_color(c.text_dim)
                                             .child(format!("... 及其他 {} 首 (共 {} 首)", total - MAX_DISPLAY, total))
-                                            .into_any_element()
-                                    );
+                .into_any_element()
+        );
                                 }
                                 items
                             })

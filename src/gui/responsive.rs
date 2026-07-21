@@ -1,41 +1,28 @@
-//! Responsive layout system - adapts UI based on window width
+//! Responsive layout system - adapts UI based on window width/height
 //! Mirrors the original MusicPlayer2's 3 layout modes: BIG / NARROW / SMALL
 
-/// Layout mode based on window width
+/// Layout mode based on window dimensions
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LayoutMode {
-    /// Full layout: sidebar + content + full controls (≥900px)
+    /// Full layout: left panel (album+lyrics+spectrum+controls) + right panel (playlist) (width >= 600, height >= 260)
     Big,
-    /// Narrow layout: compact sidebar + content (600-899px)
+    /// Narrow layout: stacked elements, no separate panels (width < 600, height >= 260)
     Narrow,
-    /// Small layout: minimal UI (<600px)
+    /// Small layout: minimal UI (height < 260)
     Small,
 }
 
 impl LayoutMode {
-    /// Determine layout mode from window width
-    pub fn from_width(width: f32) -> Self {
-        if width >= 900.0 {
+    /// Determine layout mode from window dimensions
+    /// Original MusicPlayer2: width_threshold=600, height_threshold=260
+    pub fn from_dimensions(width: f32, height: f32) -> Self {
+        if width >= 600.0 && height >= 260.0 {
             LayoutMode::Big
-        } else if width >= 600.0 {
+        } else if height >= 260.0 {
             LayoutMode::Narrow
         } else {
             LayoutMode::Small
         }
-    }
-
-    /// Sidebar width for current layout mode
-    pub fn sidebar_width(&self) -> f32 {
-        match self {
-            LayoutMode::Big => 52.0,
-            LayoutMode::Narrow => 44.0,
-            LayoutMode::Small => 0.0, // Hidden in small mode
-        }
-    }
-
-    /// Whether to show the sidebar
-    pub fn show_sidebar(&self) -> bool {
-        !matches!(self, LayoutMode::Small)
     }
 
     /// Whether to show the menu bar
@@ -48,7 +35,7 @@ impl LayoutMode {
         matches!(self, LayoutMode::Big)
     }
 
-    /// Whether to show album art in control bar
+    /// Whether to show album art
     pub fn show_album_art(&self) -> bool {
         matches!(self, LayoutMode::Big)
     }
@@ -58,12 +45,22 @@ impl LayoutMode {
         matches!(self, LayoutMode::Big)
     }
 
+    /// Whether to show the search box
+    pub fn show_search_box(&self) -> bool {
+        matches!(self, LayoutMode::Big)
+    }
+
+    /// Whether to show the right panel (playlist dock)
+    pub fn show_right_panel(&self) -> bool {
+        matches!(self, LayoutMode::Big)
+    }
+
     /// Control bar height
     pub fn control_bar_height(&self) -> f32 {
         match self {
-            LayoutMode::Big => 64.0,
-            LayoutMode::Narrow => 56.0,
-            LayoutMode::Small => 48.0,
+            LayoutMode::Big => 48.0,
+            LayoutMode::Narrow => 42.0,
+            LayoutMode::Small => 36.0,
         }
     }
 
@@ -83,21 +80,6 @@ impl LayoutMode {
             LayoutMode::Narrow => 32.0,
             LayoutMode::Small => 28.0,
         }
-    }
-
-    /// Whether to show labels on sidebar buttons
-    pub fn sidebar_show_labels(&self) -> bool {
-        matches!(self, LayoutMode::Big)
-    }
-
-    /// Whether to show the search box in toolbar
-    pub fn show_search_box(&self) -> bool {
-        matches!(self, LayoutMode::Big)
-    }
-
-    /// Whether to show the extra info panel (right side)
-    pub fn show_info_panel(&self) -> bool {
-        matches!(self, LayoutMode::Big)
     }
 
     /// Volume slider width
@@ -126,6 +108,15 @@ impl LayoutMode {
             LayoutMode::Small => 9.0,
         }
     }
+
+    /// Left panel width percentage (0.0 - 1.0)
+    pub fn left_panel_ratio(&self) -> f32 {
+        match self {
+            LayoutMode::Big => 0.5,
+            LayoutMode::Narrow => 1.0, // full width
+            LayoutMode::Small => 1.0,
+        }
+    }
 }
 
 /// Track responsive layout state for a window
@@ -138,7 +129,7 @@ pub struct ResponsiveState {
 impl ResponsiveState {
     pub fn new(width: f32, height: f32) -> Self {
         Self {
-            mode: LayoutMode::from_width(width),
+            mode: LayoutMode::from_dimensions(width, height),
             window_width: width,
             window_height: height,
         }
@@ -147,7 +138,7 @@ impl ResponsiveState {
     pub fn update(&mut self, width: f32, height: f32) {
         self.window_width = width;
         self.window_height = height;
-        self.mode = LayoutMode::from_width(width);
+        self.mode = LayoutMode::from_dimensions(width, height);
     }
 }
 
@@ -172,29 +163,28 @@ mod tests {
 
     #[test]
     fn test_layout_mode_big() {
-        let mode = LayoutMode::from_width(1200.0);
+        let mode = LayoutMode::from_dimensions(1200.0, 800.0);
         assert_eq!(mode, LayoutMode::Big);
-        assert!(mode.show_sidebar());
         assert!(mode.show_menubar());
         assert!(mode.show_statusbar());
         assert!(mode.show_album_art());
+        assert!(mode.show_right_panel());
     }
 
     #[test]
     fn test_layout_mode_narrow() {
-        let mode = LayoutMode::from_width(750.0);
+        let mode = LayoutMode::from_dimensions(500.0, 500.0);
         assert_eq!(mode, LayoutMode::Narrow);
-        assert!(mode.show_sidebar());
         assert!(mode.show_menubar());
         assert!(!mode.show_statusbar());
         assert!(!mode.show_album_art());
+        assert!(!mode.show_right_panel());
     }
 
     #[test]
     fn test_layout_mode_small() {
-        let mode = LayoutMode::from_width(400.0);
+        let mode = LayoutMode::from_dimensions(400.0, 200.0);
         assert_eq!(mode, LayoutMode::Small);
-        assert!(!mode.show_sidebar());
         assert!(!mode.show_menubar());
         assert!(!mode.show_statusbar());
         assert!(!mode.show_album_art());
@@ -202,11 +192,10 @@ mod tests {
 
     #[test]
     fn test_boundary_values() {
-        assert_eq!(LayoutMode::from_width(900.0), LayoutMode::Big);
-        assert_eq!(LayoutMode::from_width(899.9), LayoutMode::Narrow);
-        assert_eq!(LayoutMode::from_width(600.0), LayoutMode::Narrow);
-        assert_eq!(LayoutMode::from_width(599.9), LayoutMode::Small);
-        assert_eq!(LayoutMode::from_width(0.0), LayoutMode::Small);
+        assert_eq!(LayoutMode::from_dimensions(600.0, 260.0), LayoutMode::Big);
+        assert_eq!(LayoutMode::from_dimensions(599.9, 260.0), LayoutMode::Narrow);
+        assert_eq!(LayoutMode::from_dimensions(600.0, 259.9), LayoutMode::Small);
+        assert_eq!(LayoutMode::from_dimensions(0.0, 0.0), LayoutMode::Small);
     }
 
     #[test]
@@ -214,25 +203,10 @@ mod tests {
         let mut state = ResponsiveState::new(1200.0, 800.0);
         assert_eq!(state.mode, LayoutMode::Big);
 
-        state.update(700.0, 500.0);
+        state.update(500.0, 500.0);
         assert_eq!(state.mode, LayoutMode::Narrow);
 
-        state.update(400.0, 300.0);
+        state.update(400.0, 200.0);
         assert_eq!(state.mode, LayoutMode::Small);
-    }
-
-    #[test]
-    fn test_dimensions() {
-        let big = LayoutMode::Big;
-        let narrow = LayoutMode::Narrow;
-        let small = LayoutMode::Small;
-
-        // Sidebar width decreases
-        assert!(big.sidebar_width() > narrow.sidebar_width());
-        assert!(narrow.sidebar_width() > small.sidebar_width());
-
-        // Control bar height decreases
-        assert!(big.control_bar_height() > narrow.control_bar_height());
-        assert!(narrow.control_bar_height() > small.control_bar_height());
     }
 }

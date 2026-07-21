@@ -31,7 +31,9 @@ gui/src-tauri/gen
 
 # AtomCode local config (not uploaded to git)
 .atomcode/
-
+.trae/
+.workbuddy/
+.uploads/
 # OS files
 .DS_Store
 Thumbs.db
