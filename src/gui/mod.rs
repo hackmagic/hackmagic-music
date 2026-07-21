@@ -211,7 +211,8 @@ pub struct MusicPlayer {
     playlist_selected: std::collections::HashSet<usize>,
     /// Recently played track file paths (most recent first), capped
     recent_tracks: VecDeque<String>,
-    /// Media library panel state
+    /// Media library cached data (loaded once per session, not on every render).
+    media_lib_cache: Option<crate::media::MediaLib>,
     media_lib_category: MediaLibCategory,
     media_lib_selected: Option<String>,
     media_lib_search: String,
@@ -219,7 +220,8 @@ pub struct MusicPlayer {
     eq_enabled: bool,
     eq_sliders: Vec<Entity<SliderState>>,
     eq_preset_name: String,
-    /// Settings dialog state
+    /// Current playback error message (shown in status bar / overlay)
+    playback_error: Option<String>,
     settings_tab: dialogs::SettingsTab,
     /// Open URL dialog state
     url_dialog_open: bool,
@@ -299,7 +301,18 @@ fn run_blocking_dialog_app<T, F, A>(
         let _ = tx.send(build());
     });
     cx.spawn(async move |cx| {
+        // Wait for the background thread result. The `.await` yields back to
+        // the GPUI executor, so by the time `update` runs we're outside any
+        // outer `App::borrow_mut()` frame (e.g. render / event dispatch).
+        // Without this yield, calling `weak.update` from a synchronous spawn
+        // re-enters the GPUI message pump while `App` is already borrowed,
+        // which panics ("RefCell already borrowed") inside the non-unwinding
+        // window procedure and aborts the process.
         if let Ok(result) = rx.recv().await {
+            // Yield once to ensure we don't run inside the same borrow frame.
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(0))
+                .await;
             let _ = weak_clone.update(cx, |this, cx| apply(result, this, cx));
         }
     })
@@ -321,7 +334,12 @@ fn run_blocking_dialog<T, F, A>(
         let _ = tx.send(build());
     });
     cx.spawn(async move |this, cx| {
+        // Same yield-once trick as `run_blocking_dialog_app`: ensure we don't
+        // run inside the same `App` borrow frame that triggered the dialog.
         if let Ok(result) = rx.recv().await {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(0))
+                .await;
             let _ = this.update(cx, |this, cx| apply(result, this, cx));
         }
     })
@@ -384,37 +402,63 @@ impl MusicPlayer {
 
         if cfg.media_lib.auto_scan && !cfg.media_lib.media_dirs.is_empty() {
             let dirs = cfg.media_lib.media_dirs.clone();
-            std::thread::spawn(move || {
-                let total = dirs.len();
-                for (i, dir) in dirs.iter().enumerate() {
-                    tracing::info!("[MediaLib] 扫描进度: {}/{} 目录", i + 1, total);
-                    match crate::media::scan_directory(dir, true, None) {
-                        Ok(entries) => {
-                            let mut lib = crate::media::MediaLib::load();
-                            for e in entries { lib.upsert(e); }
-                            let _ = lib.save();
+            // 只在媒体库为空时自动扫描，避免每次启动都扫描大量文件导致卡顿
+            let existing = crate::media::MediaLib::load();
+            if existing.entries.is_empty() {
+                // Capture a weak handle to self so the background scan can
+                // refresh `media_lib_cache` and trigger a repaint when done.
+                let weak = cx.weak_entity();
+                std::thread::spawn(move || {
+                    let total = dirs.len();
+                    for (i, dir) in dirs.iter().enumerate() {
+                        tracing::info!("[MediaLib] 扫描进度: {}/{} 目录", i + 1, total);
+                        match crate::media::scan_directory(dir, true, None) {
+                            Ok(entries) => {
+                                let mut lib = crate::media::MediaLib::load();
+                                for e in entries { lib.upsert(e); }
+                                let _ = lib.save();
+                            }
+                            Err(e) => tracing::warn!("Scan failed {}: {}", dir, e),
                         }
-                        Err(e) => tracing::warn!("Scan failed {}: {}", dir, e),
                     }
-                }
-                tracing::info!("[MediaLib] 初始化扫描完成");
-            });
+                    tracing::info!("[MediaLib] 初始化扫描完成");
+                    // Refresh the in-memory cache so the UI sees the new entries
+                    // without needing a restart.
+                    if let Some(w) = weak.upgrade() {
+                        let _ = w.update(|this, cx| {
+                            this.media_lib_cache = Some(crate::media::MediaLib::load());
+                            cx.notify();
+                        });
+                    }
+                });
+            } else {
+                tracing::info!("[MediaLib] 跳过自动扫描（已有 {} 条记录）", existing.entries.len());
+            }
         }
 
         // ── B1 fix: drive continuous redraw so the progress bar, spectrum and
         //    lyrics update live during playback. GPUI is immediate-mode: render()
         //    only reads state and never calls cx.notify(), so without a periodic
         //    repaint the window freezes until the user moves the mouse. We spawn a
-        //    ~30fps loop on the main-thread executor that marks this view dirty.
-        //    `this` is a WeakEntity, so the loop self-terminates once the
-        //    window/view is released.
+        //    ~30fps loop on the main-thread executor that polls the player state
+        //    (mutating self.title / self.position / lyric_state etc.) and then
+        //    marks this view dirty.
+        //
+        //    Polling happens HERE (in the timer) rather than at the top of
+        //    `render()` because render() runs inside an `App::borrow_mut()`
+        //    frame, and mutating sub-entities (e.g. `lyric_state.update`) from
+        //    within render can trigger their observers and re-enter the borrow,
+        //    panicking with "RefCell already borrowed".
         cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor()
                     .timer(std::time::Duration::from_millis(33))
                     .await;
                 let alive = this
-                    .update(cx, |_, cx| {
+                    .update(cx, |this, cx| {
+                        // Use a dummy window ref — poll only reads player state.
+                        // We pass through `cx.update_global` to access the window.
+                        this.poll_player_state_in_render(cx);
                         cx.notify();
                     })
                     .is_ok();
@@ -503,12 +547,14 @@ impl MusicPlayer {
             playlist_drag_active: false,
             playlist_selected: std::collections::HashSet::new(),
             recent_tracks: VecDeque::new(),
+            media_lib_cache: Some(crate::media::MediaLib::load()),
             media_lib_category: MediaLibCategory::AllTracks,
             media_lib_selected: None,
             media_lib_search: String::new(),
             eq_enabled: false,
             eq_sliders,
             eq_preset_name: "自定义".to_string(),
+            playback_error: None,
             settings_tab: dialogs::SettingsTab::General,
             url_dialog_open: false,
             url_state,
@@ -521,6 +567,19 @@ impl MusicPlayer {
     }
 
     fn poll_player_state(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {
+        self.poll_player_state_inner();
+    }
+
+    /// Window-less variant used by the 30fps repaint timer (which runs inside
+    /// `this.update(cx, …)` and has no `&mut Window` handle). See the comment
+    /// at the spawn site for why polling moved out of `render()`.
+    fn poll_player_state_in_render(&mut self, _cx: &mut Context<Self>) {
+        self.poll_player_state_inner();
+    }
+
+    /// Shared body of `poll_player_state` and `poll_player_state_in_render`.
+    /// Reads from the player engine and updates self.* fields + lyric state.
+    fn poll_player_state_inner(&mut self) {
         self.position = self.player.position().as_secs_f64();
         self.duration = self.player.duration().as_secs_f64();
         self.volume = self.player.volume();
@@ -791,7 +850,10 @@ impl Render for MusicPlayer {
         // infinite re-render loop / "RefCell already borrowed" panic). Instead,
         // continuous repaint during playback is driven by the ~30fps timer spawned
         // in `MusicPlayer::new` (B1 fix), which calls cx.notify() on this view.
-        self.poll_player_state(window, cx);
+        //
+        // Player state polling ALSO happens in that timer (see
+        // `poll_player_state_in_render`), NOT here — mutating sub-entities like
+        // `lyric_state` from within render re-enters the App borrow and panics.
         let tr = self.tr;
         let c = &self.colours;
 
@@ -1101,19 +1163,42 @@ impl Render for MusicPlayer {
                                     let new_pos = pos.saturating_sub(std::time::Duration::from_secs(5));
                                     let _ = player_rew.seek(new_pos);
                                 }))
-                                .child(Button::new("play").label(play_label).primary().compact().on_click(move |_, _, _| {
-                                    tracing::info!("[GUI] Play button clicked, is_playing={}", player_play.is_playing());
-                                    // Toggle pause if playing, otherwise play current/first track
-                                    let is_playing = player_play.is_playing();
-                                    if is_playing {
-                                        tracing::info!("[GUI] toggle_pause");
-                                        let _ = player_play.toggle_pause();
-                                    } else {
-                                        let idx = player_play.playlist().current_index().unwrap_or(0);
-                                        tracing::info!("[GUI] play_at_index({}), playlist len={}", idx, player_play.playlist().len());
-                                        let res = player_play.play_at_index(idx);
-                                        tracing::info!("[GUI] play_at_index result: {:?}", res.as_ref().map(|_| ()).map_err(|e| e.to_string()));
-                                        let _ = res;
+                                .child(Button::new("play").label(play_label).primary().compact().on_click({
+                                    let p = player_play.clone();
+                                    move |_, _, _| {
+                                        tracing::info!("[GUI] Play button clicked, is_playing={}", p.is_playing());
+                                        // Toggle pause if playing, otherwise play current/first track
+                                        let is_playing = p.is_playing();
+                                        if is_playing {
+                                            tracing::info!("[GUI] toggle_pause");
+                                            let _ = p.toggle_pause();
+                                        } else {
+                                            // Check if playlist is empty before trying to play
+                                            if p.playlist().is_empty() {
+                                                tracing::info!("[GUI] 播放列表为空，打开文件选择对话框");
+                                                // Open file dialog on a separate thread
+                                                let p_clone = p.clone();
+                                                std::thread::spawn(move || {
+                                                    if let Some(file) = rfd::FileDialog::new()
+                                                        .add_filter("音频文件", &["mp3", "flac", "wav", "ogg", "aac", "m4a", "wma", "ape", "cue"])
+                                                        .pick_file()
+                                                    {
+                                                        let path = file.to_string_lossy().to_string();
+                                                        tracing::info!("[GUI] 选择文件: {}", path);
+                                                        let _ = p_clone.play_file(&path);
+                                                    }
+                                                });
+                                                return;
+                                            }
+                                            let idx = p.playlist().current_index().unwrap_or(0);
+                                            tracing::info!("[GUI] play_at_index({}), playlist len={}", idx, p.playlist().len());
+                                            let res = p.play_at_index(idx);
+                                            tracing::info!("[GUI] play_at_index result: {:?}", res.as_ref().map(|_| ()).map_err(|e| e.to_string()));
+                                            if let Err(e) = &res {
+                                                tracing::error!("[GUI] 播放失败: {}", e);
+                                            }
+                                            let _ = res;
+                                        }
                                     }
                                 }))
                                 .child(Button::new("ff").label("⏩").ghost().compact().on_click(move |_, _, _| {
@@ -1737,6 +1822,7 @@ impl MusicPlayer {
                                                 let mut lib = crate::media::MediaLib::load();
                                                 for e in &entries { lib.upsert(e.clone()); }
                                                 let _ = lib.save();
+                                                this.media_lib_cache = Some(lib);
                                                 if !entries.is_empty() {
                                                     let _ = this.player.play_at_index(first_idx);
                                                 }
@@ -4436,13 +4522,27 @@ impl MusicPlayer {
 
     /// Render the media library panel with category browsing.
     fn render_media_lib_panel(
-        &self,
+        &mut self,
         c: &UiColors,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let state_entity = cx.entity().clone();
-        let lib = crate::media::MediaLib::load();
+        // Lazy-load cache if missing; refresh once per render is cheap because
+        // MediaLib::load() is just a serde_json::from_slice of a small file.
+        if self.media_lib_cache.is_none() {
+            self.media_lib_cache = Some(crate::media::MediaLib::load());
+        }
+        let lib = self.media_lib_cache.as_ref().expect("cache just initialized");
+        self.render_media_lib_panel_inner(c, cx, lib)
+    }
+
+    /// Inner render function that takes a borrowed MediaLib reference.
+    fn render_media_lib_panel_inner(
+        &self,
+        c: &UiColors,
+        cx: &mut Context<Self>,
+        lib: &crate::media::MediaLib,
+    ) -> impl IntoElement {
         let total_tracks = lib.entries.len();
         let total_dur_secs: u64 = lib.entries.iter().map(|e| e.duration_secs).sum();
         let total_dur = format!(
@@ -4454,10 +4554,13 @@ impl MusicPlayer {
         let cat = self.media_lib_category;
         let sel = self.media_lib_selected.clone();
 
+        // Limit the number of entries processed to avoid creating thousands
+        // of ViewEntry objects on every render frame (30fps).
+        const MAX_ENTRIES: usize = 500;
         let (sidebar_items, list_items): (Vec<String>, Vec<ViewEntry>) = match cat {
             MediaLibCategory::AllTracks => (
                 Vec::new(),
-                lib.entries.iter().map(ViewEntry::from).collect(),
+                lib.entries.iter().take(MAX_ENTRIES).map(ViewEntry::from).collect(),
             ),
             MediaLibCategory::Artists => {
                 let artists = lib.artists();
@@ -4587,11 +4690,16 @@ impl MusicPlayer {
                                     }
                                     let _ = lib.save();
                                     tracing::info!("[MediaLib] 扫描完成: {} 首", lib.entries.len());
-                                    let _ = tx.send(());
+                                    let _ = tx.send(lib);
                                 });
-                                cx.spawn(async move |_this, cx| {
-                                    let _ = rx.recv().await;
-                                    let _ = weak.update(cx, |_, cx_| cx_.notify());
+                                cx.spawn(async move |this, cx| {
+                                    let lib = rx.recv().await.ok();
+                                    let _ = this.update(cx, |this, cx_| {
+                                        if let Some(lib) = lib {
+                                            this.media_lib_cache = Some(lib);
+                                        }
+                                        cx_.notify();
+                                    });
                                 }).detach();
                             }))
                     )
@@ -4601,23 +4709,40 @@ impl MusicPlayer {
                     .child(sidebar_el)
                     .child(
                         v_flex().flex_grow().h_full().bg(c.bg)
-                            .children(list_items.iter().enumerate().map(|(i, item)| {
-                                let is_even = i % 2 == 0;
-                                let bg = if is_even { c.playlist_item } else { c.playlist_item_hover };
-                                let title = item.title.clone();
-                                let path = item.file_path.clone();
-                                let dur_str = format!("{:02}:{:02}", item.duration / 60, item.duration % 60);
-                                h_flex().w_full().h(px(26.0)).px_4().gap_3().bg(bg)
-                                    .hover(|s| s.bg(c.playlist_item_selected))
-                                    .items_center().cursor(gpui::CursorStyle::PointingHand)
-                                    .child(layout::txt(&title, 11.0, c.text))
-                                    .child(div().flex_grow())
-                                    .child(layout::txt(&item.artist, 10.0, c.text_dim))
-                                    .child(layout::txt(&dur_str, 10.0, c.text_dim))
-                                    .on_mouse_down(gpui::MouseButton::Left, move |_, _, _| {
-                                        tracing::info!("[MediaLib] 播放: {}", path);
-                                    })
-                            }))
+                            .children({
+                                // Limit displayed tracks to avoid creating thousands of
+                                // GPUI elements when the media library is large.
+                                const MAX_DISPLAY: usize = 500;
+                                let display_items: Vec<&ViewEntry> = list_items.iter().take(MAX_DISPLAY).collect();
+                                let total = list_items.len();
+                                let mut items: Vec<gpui::AnyElement> = Vec::with_capacity(display_items.len() + 1);
+                                items.extend(display_items.iter().enumerate().map(|(i, item)| {
+                                    let is_even = i % 2 == 0;
+                                    let bg = if is_even { c.playlist_item } else { c.playlist_item_hover };
+                                    let title = item.title.clone();
+                                    let path = item.file_path.clone();
+                                    let dur_str = format!("{:02}:{:02}", item.duration / 60, item.duration % 60);
+                                    h_flex().w_full().h(px(26.0)).px_4().gap_3().bg(bg)
+                                        .hover(|s| s.bg(c.playlist_item_selected))
+                                        .items_center().cursor(gpui::CursorStyle::PointingHand)
+                                        .child(layout::txt(&title, 11.0, c.text))
+                                        .child(div().flex_grow())
+                                        .child(layout::txt(&item.artist, 10.0, c.text_dim))
+                                        .child(layout::txt(&dur_str, 10.0, c.text_dim))
+                                        .on_mouse_down(gpui::MouseButton::Left, move |_, _, _| {
+                                            tracing::info!("[MediaLib] 播放: {}", path);
+                                        })
+                                        .into_any_element()
+                                }));
+                                if total > MAX_DISPLAY {
+                                    items.push(
+                                        div().w_full().px_4().py_2().text_size(px(11.0)).text_color(c.text_dim)
+                                            .child(format!("... 及其他 {} 首 (共 {} 首)", total - MAX_DISPLAY, total))
+                                            .into_any_element()
+                                    );
+                                }
+                                items
+                            })
                     )
             )
     }

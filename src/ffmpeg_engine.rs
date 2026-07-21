@@ -44,40 +44,58 @@ impl FfmpegEngine {
 
     fn probe_audio(path: &str) -> Result<(u32, usize, f64)> {
         tracing::info!("[FFMPEG] probe_audio(\"{}\")", path);
-        let out = std::process::Command::new("ffprobe")
-            .args([
-                "-v", "quiet",
-                "-print_format", "json",
-                "-show_streams",
-                "-select_streams", "a:0",
-                path,
-            ])
+        // Use ffmpeg -i (not ffprobe) to probe — ffprobe may not be in PATH,
+        // and spawning an extra subprocess is slower. ffmpeg -i prints
+        // metadata to stderr; we parse Duration, sample_rate, channels from it.
+        let out = std::process::Command::new("ffmpeg")
+            .args(["-i", path, "-f", "null", "-"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
             .output()
-            .map_err(|e| PlayerError::Other(format!("Cannot run ffprobe: {e}")))?;
+            .map_err(|e| PlayerError::Other(format!("Cannot run ffmpeg: {e}")))?;
 
-        if !out.status.success() {
-            let stderr = String::from_utf8_lossy(&out.stderr);
-            tracing::error!("[FFMPEG] ffprobe failed: {}", stderr);
-            return Err(PlayerError::Other("ffprobe failed - is FFmpeg installed?".into()));
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let mut sample_rate: u32 = 44100;
+        let mut channels: usize = 2;
+        let mut duration: f64 = 0.0;
+
+        // Parse "Stream #0:0: Audio: ... 44100 Hz, stereo, ..."
+        for line in stderr.lines() {
+            if line.contains("Audio:") {
+                // Sample rate: find "XXXXX Hz"
+                if let Some(hz_pos) = line.find(" Hz") {
+                    if let Some(prev_space) = line[..hz_pos].rfind(' ') {
+                        let rate_str = &line[prev_space+1..hz_pos];
+                        if let Ok(r) = rate_str.parse::<u32>() {
+                            sample_rate = r;
+                        }
+                    }
+                }
+                // Channels: "stereo", "mono", "5.1", etc.
+                if line.contains("stereo") { channels = 2; }
+                else if line.contains("mono") { channels = 1; }
+                else if line.contains("5.1") { channels = 6; }
+            }
+            // Parse "Duration: 01:23:45.67, ..."
+            if line.starts_with("  Duration:") {
+                if let Some(dur_str) = line.split_whitespace().nth(1) {
+                    let dur_str = dur_str.trim_end_matches(',');
+                    let parts: Vec<&str> = dur_str.split(':').collect();
+                    if parts.len() == 3 {
+                        let h: f64 = parts[0].parse().unwrap_or(0.0);
+                        let m: f64 = parts[1].parse().unwrap_or(0.0);
+                        let s: f64 = parts[2].parse().unwrap_or(0.0);
+                        duration = h * 3600.0 + m * 60.0 + s;
+                    }
+                }
+            }
         }
 
-        let json: serde_json::Value = serde_json::from_slice(&out.stdout)
-            .map_err(|e| PlayerError::Other(format!("Cannot parse ffprobe output: {e}")))?;
+        if duration == 0.0 {
+            tracing::warn!("[FFMPEG] Could not parse duration from ffmpeg output");
+        }
 
-        let streams = json["streams"].as_array().and_then(|a| a.first())
-            .ok_or_else(|| PlayerError::Other("No audio stream found".into()))?;
-
-        let sample_rate: u32 = streams["sample_rate"].as_str()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(44100);
-
-        let channels: usize = streams["channels"].as_i64()
-            .unwrap_or(2) as usize;
-
-        let duration: f64 = streams["duration"].as_str()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(0.0);
-
+        tracing::info!("[FFMPEG] probed: {} Hz, {} ch, {:.1}s", sample_rate, channels, duration);
         Ok((sample_rate, channels, duration))
     }
 

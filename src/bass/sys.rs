@@ -220,13 +220,56 @@ pub fn is_bass_fx_loaded() -> bool {
 }
 
 /// Load BASS libraries. Returns true if successful.
+/// Tries the current working directory first, then the executable directory,
+/// then the system PATH.
 pub fn load_bass(bass_path: Option<&str>, bass_fx_path: Option<&str>) -> bool {
     // Try loading from given paths or default names
     let bass_name = bass_path.unwrap_or("bass");
     let fx_name = bass_fx_path.unwrap_or("bass_fx");
 
+    // Try loading from the current working directory first (Windows)
     let bass_lib = unsafe {
+        // First try the raw name (searches PATH/LD_LIBRARY_PATH/cwd)
         Library::new(bass_name)
+            .or_else(|_| {
+                // Try with explicit .dll extension on Windows
+                #[cfg(target_os = "windows")]
+                { Library::new(format!("{}.dll", bass_name)) }
+                #[cfg(not(target_os = "windows"))]
+                { Err(libloading::Error::new("not windows")) }
+            })
+            .or_else(|_| {
+                // Try the executable's directory and its ancestors (project root search)
+                #[cfg(target_os = "windows")]
+                {
+                    if let Ok(exe) = std::env::current_exe() {
+                        let mut dir = exe.parent().map(|d| d.to_path_buf());
+                        // Walk up the directory tree looking for the DLL
+                        loop {
+                            match dir {
+                                Some(ref d) if d.as_os_str().is_empty() || d == std::path::Path::new("") => {
+                                    break unsafe { Library::new("") };
+                                }
+                                Some(ref d) => {
+                                    let dll_path = d.join(format!("{}.dll", bass_name));
+                                    if dll_path.exists() {
+                                        break unsafe { Library::new(dll_path) };
+                                    }
+                                    // Walk up to parent
+                                    dir = d.parent().map(|p| p.to_path_buf());
+                                }
+                                None => {
+                                    break unsafe { Library::new("") };
+                                }
+                            }
+                        }
+                    } else {
+                        unsafe { Library::new("") }
+                    }
+                }
+                #[cfg(not(target_os = "windows"))]
+                { unsafe { Library::new("") } }
+            })
             .or_else(|_| Library::new("libbass"))
             .or_else(|_| Library::new("libbass.so"))
             .or_else(|_| Library::new("libbass.dylib"))

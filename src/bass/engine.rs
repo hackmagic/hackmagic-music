@@ -131,8 +131,8 @@ impl PlayerEngine for BassEngine {
         }
 
         if !*self.wasapi_active.lock().unwrap() {
-            // Standard BASS initialization
-            sys::BASS_Init(-1, 44100, sys::BASS_DEVICE_DEFAULT, std::ptr::null_mut(), std::ptr::null_mut())
+            // Standard BASS initialization — match original MusicPlayer2 flags
+            sys::BASS_Init(-1, 44100, sys::BASS_DEVICE_CPSPEAKERS, std::ptr::null_mut(), std::ptr::null_mut())
                 .map_err(|e| PlayerError::BassError(format!("BASS_Init failed: {e}")))?;
             sys::BASS_Start()
                 .map_err(|e| PlayerError::BassError(format!("BASS_Start failed: {e}")))?;
@@ -217,7 +217,12 @@ impl PlayerEngine for BassEngine {
             // BASS_FX 可用时用 decode channel + tempo stream 包装（支持变速变调）；
             // BASS_FX 不可用时降级为普通可直接播放的流（decode channel 不能 BASS_ChannelPlay，会报 error 38）
             let bass_fx_available = sys::is_bass_fx_loaded();
-            let flags = if bass_fx_available { sys::BASS_STREAM_DECODE } else { 0 };
+            // 匹配原版 MusicPlayer2 的 BASS_SAMPLE_FLOAT 标志，确保流可直接播放
+            let flags = if bass_fx_available {
+                sys::BASS_STREAM_DECODE | sys::BASS_SAMPLE_FLOAT
+            } else {
+                sys::BASS_SAMPLE_FLOAT
+            };
 
             let stream = if is_url {
                 let url_bytes: Vec<u8> = path.bytes().chain(std::iter::once(0)).collect();

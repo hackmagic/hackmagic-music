@@ -214,29 +214,34 @@ fn main() {
         });
     }
 
-    // Auto-scan media library at startup
+    // Auto-scan media library at startup (only if empty)
     if cfg.media_lib.auto_scan && !cfg.media_lib.media_dirs.is_empty() {
-        let dirs = cfg.media_lib.media_dirs.clone();
-        std::thread::spawn(move || {
-            for dir in &dirs {
-                tracing::info!("Auto-scanning media directory: {}", dir);
-                match hm::media::scan_directory(dir, true, None) {
-                    Ok(entries) => {
-                        let mut lib = hm::media::MediaLib::load();
-                        let before = lib.entries.len();
-                        for e in entries {
-                            lib.upsert(e);
+        let existing = hm::media::MediaLib::load();
+        if existing.entries.is_empty() {
+            let dirs = cfg.media_lib.media_dirs.clone();
+            std::thread::spawn(move || {
+                for dir in &dirs {
+                    tracing::info!("Auto-scanning media directory: {}", dir);
+                    match hm::media::scan_directory(dir, true, None) {
+                        Ok(entries) => {
+                            let mut lib = hm::media::MediaLib::load();
+                            let before = lib.entries.len();
+                            for e in entries {
+                                lib.upsert(e);
+                            }
+                            let added = lib.entries.len() - before;
+                            if added > 0 || before > 0 {
+                                let _ = lib.save();
+                                tracing::info!("Media library updated: {} tracks ({} new)", lib.entries.len(), added);
+                            }
                         }
-                        let added = lib.entries.len() - before;
-                        if added > 0 || before > 0 {
-                            let _ = lib.save();
-                            tracing::info!("Media library updated: {} tracks ({} new)", lib.entries.len(), added);
-                        }
+                        Err(e) => tracing::warn!("Auto-scan failed for {}: {}", dir, e),
                     }
-                    Err(e) => tracing::warn!("Auto-scan failed for {}: {}", dir, e),
                 }
-            }
-        });
+            });
+        } else {
+            tracing::info!("Skipping auto-scan: library already has {} entries", existing.entries.len());
+        }
     }
 
     // Create player
