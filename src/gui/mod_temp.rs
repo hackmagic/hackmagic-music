@@ -12,8 +12,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::path::PathBuf;
 use std::collections::VecDeque;
-use std::hash::{Hash, Hasher};
-use lru::LruCache;
 use async_channel::unbounded;
 use gpui::*;
 use gpui_component::scroll::ScrollableElement;
@@ -264,8 +262,6 @@ pub struct MusicPlayer {
     playlist_scroll_handle: UniformListScrollHandle,
     /// Cached Config to avoid file I/O every frame in render_playlist.
     config_cache: crate::config::Config,
-    /// LRU cache for extracted album art (track_path → temp_cover_path).
-    cover_cache: std::sync::Mutex<LruCache<String, PathBuf>>,
     editor_title_input: Entity<InputState>,
     editor_artist_input: Entity<InputState>,
     editor_album_input: Entity<InputState>,
@@ -629,7 +625,6 @@ impl MusicPlayer {
             editor_rating_input,
             playlist_scroll_handle: UniformListScrollHandle::default(),
             config_cache: cfg,
-            cover_cache: std::sync::Mutex::new(LruCache::new(std::num::NonZeroUsize::new(100).unwrap())),
         }
     }
 
@@ -684,7 +679,7 @@ impl MusicPlayer {
                 self.last_lpc_path = track_path.clone();
                 self.current_track_path_for_download = track_path.clone();
                 self.load_lyrics_for_track(&track_path);
-                self.album_art = self.extract_cover(&track_path);
+                self.album_art = Self::extract_cover(&track_path);
                 // Track recently played (most recent first), capped at 50
                 let path = track.file_path.clone();
                 self.recent_tracks.retain(|p| p != &path);
@@ -709,36 +704,17 @@ impl MusicPlayer {
     /// Extract album art for an audio file: prefer an embedded picture, then a
     /// sidecar `cover`/`folder`/`album`/`front` image in the same directory.
     /// Embedded art is written to a temp file so it can be rendered via `gpui::img`.
-    /// Results are LRU-cached by track path to avoid repeated extraction.
-    fn extract_cover(&self, file_path: &str) -> Option<PathBuf> {
-        {
-            let mut cache = self.cover_cache.lock().unwrap();
-            if let Some(cached) = cache.peek(file_path) {
-                return Some(cached.clone());
-            }
-        }
-        let cover = Self::do_extract_cover(file_path);
-        if let Some(ref path) = cover {
-            let mut cache = self.cover_cache.lock().unwrap();
-            if let Some(evicted) = cache.push(file_path.to_string(), path.clone()) {
-                let _ = std::fs::remove_file(&evicted.1);
-            }
-        }
-        cover
-    }
-
-    fn do_extract_cover(file_path: &str) -> Option<PathBuf> {
+    fn extract_cover(file_path: &str) -> Option<PathBuf> {
+        // 1. Embedded picture (from the audio tag).
         if let Ok(pics) = crate::tag::writer::read_pictures(file_path) {
             if let Some((ext, data)) = pics.into_iter().next() {
-                let mut hasher = std::collections::hash_map::DefaultHasher::new();
-                file_path.hash(&mut hasher);
-                let hash = hasher.finish();
-                let tmp = std::env::temp_dir().join(format!("hm_cover_{:016x}.{}", hash, ext));
+                let tmp = std::env::temp_dir().join(format!("hm_cover.{}", ext));
                 if std::fs::write(&tmp, &data).is_ok() {
                     return Some(tmp);
                 }
             }
         }
+        // 2. External image file next to the audio file.
         let path = std::path::Path::new(file_path);
         if let Some(dir) = path.parent() {
             for name in ["cover", "folder", "album", "front"] {
@@ -1005,13 +981,8 @@ impl Render for MusicPlayer {
                             h_flex().flex_1().items_center().justify_center().gap_1()
                                 .child(Button::new("mini_prev").label("◀").ghost().compact().on_click(move |_, _, _| { let _ = player_p.prev(); }))
                                 .child(Button::new("mini_play").label(play_label).primary().compact().on_click(move |_, _, _| {
-                                    if player_n.is_playing() {
-                                        let _ = player_n.toggle_pause();
-                                    } else if player_n.is_paused() {
-                                        let _ = player_n.toggle_pause();
-                                    } else {
-                                        let _ = player_n.play_at_index(player_n.playlist().current_index().unwrap_or(0));
-                                    }
+                                    let _ = if player_n.is_playing() { player_n.toggle_pause() }
+                                        else { player_n.play_at_index(player_n.playlist().current_index().unwrap_or(0)) };
                                 }))
                                 .child(Button::new("mini_next").label("▶").ghost().compact().on_click(move |_, _, _| { let _ = player_s.next(); }))
                                 .child(Button::new("mini_repeat").label(repeat_label_m).ghost().compact().on_click(move |_, _, _| {
@@ -1213,22 +1184,23 @@ impl Render for MusicPlayer {
                     .child(Button::new("play").label(play_label).primary().compact().on_click({
                         let p = player_play.clone();
                         move |_, _, _| {
-                            if p.is_playing() {
+                            let is_playing = p.is_playing();
+                            if is_playing {
                                 let _ = p.toggle_pause();
-                            } else if p.is_paused() {
-                                let _ = p.toggle_pause();
-                            } else if p.playlist().is_empty() {
-                                let p_clone = p.clone();
-                                std::thread::spawn(move || {
-                                    if let Some(file) = rfd::FileDialog::new()
-                                        .add_filter("音频文件", &["mp3", "flac", "wav", "ogg", "aac", "m4a", "wma", "ape", "cue"])
-                                        .pick_file()
-                                    {
-                                        let path = file.to_string_lossy().to_string();
-                                        let _ = p_clone.play_file(&path);
-                                    }
-                                });
                             } else {
+                                if p.playlist().is_empty() {
+                                    let p_clone = p.clone();
+                                    std::thread::spawn(move || {
+                                        if let Some(file) = rfd::FileDialog::new()
+                                            .add_filter("音频文件", &["mp3", "flac", "wav", "ogg", "aac", "m4a", "wma", "ape", "cue"])
+                                            .pick_file()
+                                        {
+                                            let path = file.to_string_lossy().to_string();
+                                            let _ = p_clone.play_file(&path);
+                                        }
+                                    });
+                                    return;
+                                }
                                 let idx = p.playlist().current_index().unwrap_or(0);
                                 let _ = p.play_at_index(idx);
                             }
@@ -3953,6 +3925,8 @@ impl MusicPlayer {
         let player = self.player.clone();
         let filter_text = self.playlist_filter_text.clone();
         let filter_mode = self.playlist_filter_mode;
+        let drag_active = self.playlist_drag_active;
+        let drag_to = self.playlist_drag_to;
 
         // Filter tracks based on search text and filter mode
         let filtered_indices: Vec<usize> = tracks.iter().enumerate().filter_map(|(i, track)| {
@@ -4246,273 +4220,8 @@ impl MusicPlayer {
                     div().h(px(0.0))
                 }
             )
-            .child({
-                let n = filtered_count;
-                let font_size = font_size;
-                let row_height = row_height;
-                let layout_mode = layout_mode;
-                let c2 = self.colours.clone();
-                let cv = view.clone();
-                let cp = player.clone();
-                let ci = current_idx;
-                let play_vm = self.playlist_view_mode;
-                let da = self.playlist_drag_active;
-                let dt = self.playlist_drag_to;
-                let scroll_handle = self.playlist_scroll_handle.clone();
-                let indices = filtered_indices;
-                let tracks2 = tracks.to_vec();
+            .child(div().flex_grow().h_full().bg(c.bg).child(layout::txt("TODO: playlist list", font_size, c.text)))
 
-                uniform_list("playlist_list", n, move |range, _window, _cx| {
-                    range.map(|rel_i| {
-                        let i = indices[rel_i];
-                        let track = &tracks2[i];
-                        let is_current = ci == Some(i);
-                        let bg = if is_current { c2.playlist_playing } else if i % 2 == 0 { c2.playlist_item } else { c2.playlist_item_hover };
-                        let text_color = if is_current { c2.accent } else { c2.text };
-                        let display_name = if !track.title.is_empty() {
-                            track.title.clone()
-                        } else {
-                            track.file_name.clone()
-                        };
-                        let duration = track.duration;
-                        let dur_str = format!("{:02}:{:02}", duration.as_secs() / 60, duration.as_secs() % 60);
-                        let file_path = track.file_path.clone();
-                        let is_fav = track.is_favourite;
-                        let ctx_player = cp.clone();
-
-                        let is_drop_target = da && dt == Some(i);
-                        let row_bg = if is_drop_target {
-                            c2.accent.opacity(0.3)
-                        } else {
-                            bg
-                        };
-
-                        h_flex()
-                            .id(("track", i))
-                            .items_center()
-                            .w_full()
-                            .h(px(row_height))
-                            .px_4().gap_3()
-                            .bg(row_bg)
-                            .hover(|s| s.bg(if is_drop_target { c2.accent.opacity(0.4) } else { c2.playlist_item_selected }))
-                            .cursor(gpui::CursorStyle::PointingHand)
-                            .child(
-                                div()
-                                    .w(px(10.0))
-                                    .h(px(row_height - 4.0))
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .cursor(gpui::CursorStyle::PointingHand)
-                                    .text_color(c2.text_dim)
-                                    .text_size(px(10.0))
-                                    .child("⠿")
-                                    .on_mouse_down(gpui::MouseButton::Left, {
-                                        let v = cv.clone();
-                                        let idx = i;
-                                        move |_, _, cx| {
-                                            let _ = v.update(cx, |this, _cx| {
-                                                this.playlist_drag_active = true;
-                                                this.playlist_drag_from = Some(idx);
-                                                this.playlist_drag_to = Some(idx);
-                                            });
-                                        }
-                                    })
-                                    .on_mouse_up(gpui::MouseButton::Left, {
-                                        let v = cv.clone();
-                                        move |_, _, cx| {
-                                            let _ = v.update(cx, |this, _cx| {
-                                                if this.playlist_drag_active {
-                                                    if let (Some(from), Some(to)) = (this.playlist_drag_from, this.playlist_drag_to) {
-                                                        if from != to {
-                                                            let _ = this.player.playlist_mut().move_track(from, to);
-                                                        }
-                                                    }
-                                                }
-                                                this.playlist_drag_active = false;
-                                                this.playlist_drag_from = None;
-                                                this.playlist_drag_to = None;
-                                            });
-                                        }
-                                    })
-                            )
-                            .child(div().w(px(28.0)).child(layout::txt(&(i + 1).to_string(), font_size, c2.text_dim)))
-                            .child(h_flex().flex_grow().child(layout::txt(&display_name, font_size, text_color)))
-                            .child(if matches!(layout_mode, LayoutMode::Big) {
-                                div().w(px(90.0)).child(layout::txt(&track.artist, font_size, c2.text_dim)).into_any_element()
-                            } else {
-                                div().into_any_element()
-                            })
-                            .child(if matches!(layout_mode, LayoutMode::Big) {
-                                div().w(px(90.0)).child(layout::txt(&track.album, font_size, c2.text_dim)).into_any_element()
-                            } else {
-                                div().into_any_element()
-                            })
-                            .child(if is_fav { layout::txt("♥", font_size, c2.accent) } else { layout::txt("", font_size, c2.text_dim) })
-                            .child(if play_vm == PlaylistViewMode::Detail {
-                                layout::txt(&dur_str, font_size - 1.0, c2.text_dim).into_any_element()
-                            } else {
-                                div().into_any_element()
-                            })
-                            .on_click({
-                                let v = cv.clone();
-                                let idx = i;
-                                let p = cp.clone();
-                                move |e, _, _cx| {
-                                    if e.modifiers().control {
-                                        let _ = v.update(_cx, |this, _| {
-                                            if this.playlist_selected.contains(&idx) {
-                                                this.playlist_selected.remove(&idx);
-                                            } else {
-                                                this.playlist_selected.insert(idx);
-                                            }
-                                        });
-                                    } else {
-                                        let _ = v.update(_cx, |this, _| {
-                                            this.playlist_selected.clear();
-                                            this.playlist_selected.insert(idx);
-                                        });
-                                        let _ = p.play_at_index(idx);
-                                    }
-                                }
-                            })
-                            .on_mouse_move({
-                                let v = cv.clone();
-                                let idx = i;
-                                move |_, _, cx| {
-                                    let _ = v.update(cx, |this, _cx| {
-                                        if this.playlist_drag_active && this.playlist_drag_to != Some(idx) {
-                                            this.playlist_drag_to = Some(idx);
-                                        }
-                                    });
-                                }
-                            })
-                            .context_menu(move |menu, _w, _cx| {
-                                let p_play = ctx_player.clone();
-                                let p_remove = ctx_player.clone();
-                                let p_fav = ctx_player.clone();
-                                let p_next = ctx_player.clone();
-                                let p_r1 = ctx_player.clone();
-                                let p_r2 = ctx_player.clone();
-                                let p_r3 = ctx_player.clone();
-                                let p_r4 = ctx_player.clone();
-                                let p_r5 = ctx_player.clone();
-                                let p_r0 = ctx_player.clone();
-                                let fp_loc = file_path.clone();
-                                let fp_copy = file_path.clone();
-                                let dn = display_name.clone();
-                                let fav = is_fav;
-                                let idx = i;
-
-                                menu.item(PopupMenuItem::new("播放").on_click(move |_, _, _| {
-                                    let _ = p_play.play_at_index(idx);
-                                }))
-                                .item(PopupMenuItem::new("下一首播放").on_click(move |_, _, _| {
-                                    p_next.push_next_track(idx);
-                                }))
-                                .separator()
-                                .item(PopupMenuItem::new("移除").on_click(move |_, _, _| {
-                                    p_remove.playlist_mut().remove(idx);
-                                }))
-                                .item(PopupMenuItem::new(if fav { "取消收藏" } else { "收藏" }).on_click(move |_, _, _| {
-                                    p_fav.playlist_mut().toggle_favourite(idx);
-                                }))
-                                .separator()
-                                .item(PopupMenuItem::new("评级: ★☆☆☆☆").on_click(move |_, _, _| {
-                                    p_r1.playlist_mut().set_rating(idx, 1);
-                                }))
-                                .item(PopupMenuItem::new("评级: ★★☆☆☆").on_click(move |_, _, _| {
-                                    p_r2.playlist_mut().set_rating(idx, 2);
-                                }))
-                                .item(PopupMenuItem::new("评级: ★★★☆☆").on_click(move |_, _, _| {
-                                    p_r3.playlist_mut().set_rating(idx, 3);
-                                }))
-                                .item(PopupMenuItem::new("评级: ★★★★☆").on_click(move |_, _, _| {
-                                    p_r4.playlist_mut().set_rating(idx, 4);
-                                }))
-                                .item(PopupMenuItem::new("评级: ★★★★★").on_click(move |_, _, _| {
-                                    p_r5.playlist_mut().set_rating(idx, 5);
-                                }))
-                                .item(PopupMenuItem::new("清除评级").on_click(move |_, _, _| {
-                                    p_r0.playlist_mut().set_rating(idx, 0);
-                                }))
-                                .separator()
-                                .item(PopupMenuItem::new("打开文件位置").on_click({
-                                    let fp_loc2 = fp_loc.clone();
-                                    let dn2 = dn.clone();
-                                    let fav2 = fav;
-                                    move |_, _, _| {
-                                    let path = std::path::Path::new(&fp_loc2);
-                                    if let Some(_parent) = path.parent() {
-                                        #[cfg(windows)]
-                                        {
-                                            let _ = std::process::Command::new("explorer")
-                                                .arg("/select,")
-                                                .arg(&fp_loc2)
-                                                .spawn();
-                                        }
-                                        #[cfg(target_os = "macos")]
-                                        {
-                                            let _ = std::process::Command::new("open")
-                                                .arg("-R")
-                                                .arg(&fp_loc2)
-                                                .spawn();
-                                        }
-                                        #[cfg(all(not(windows), not(target_os = "macos")))]
-                                        {
-                                            if let Some(p) = parent.to_str() {
-                                                let _ = std::process::Command::new("xdg-open")
-                                                    .arg(p)
-                                                    .spawn();
-                                            }
-                                        }
-                                    }
-                                }}))
-                                .item(PopupMenuItem::new("复制路径").on_click(move |_, _, _| {
-                                }))
-                                .item(PopupMenuItem::new("属性").on_click({
-                                let fp_loc2 = fp_loc.clone();
-                                let idx2 = idx;
-                                let dn2 = dn.clone();
-                                let fav2 = fav;
-                                move |_, _, _| {
-                                let file_size = std::path::Path::new(&fp_loc2).metadata().ok()
-                                    .map(|m| {
-                                        let bytes = m.len();
-                                        if bytes > 1024 * 1024 {
-                                            format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
-                                        } else if bytes > 1024 {
-                                            format!("{:.0} KB", bytes as f64 / 1024.0)
-                                        } else {
-                                            format!("{} B", bytes)
-                                        }
-                                    }).unwrap_or_else(|| "--".to_string());
-                                let mod_time = std::path::Path::new(&fp_loc2).metadata().ok()
-                                    .and_then(|m| m.modified().ok())
-                                    .map(|t| {
-                                        let secs = t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
-                                        let days = secs / 86400;
-                                        let year = 1970 + (days / 365) as u32;
-                                        let month = ((days % 365) / 30 + 1) as u32;
-                                        let day = ((days % 365) % 30 + 1) as u32;
-                                        format!("{}-{:02}-{:02}", year, month, day)
-                                    }).unwrap_or_else(|| "--".to_string());
-                                let info = format!(
-                                    "标题: {}\n艺术家: {}\n专辑: {}\n文件名: {}\n路径: {}\n时长: {}\n收藏: {}\n类型: {}\n比特率: {}\n采样率: {}\n\n--- 高级信息 ---\n文件大小: {}\n修改日期: {}",
-                                    dn2, "", "", "", fp_loc2, "", if fav2 { "是" } else { "否" }, "", "--", "--", file_size, mod_time,
-                                );
-                                let _ = rfd::MessageDialog::new()
-                                    .set_title("歌曲属性")
-                                    .set_description(&info)
-                                    .show();
-                            }}))
-                            })
-                            .into_any_element()
-                    }).collect::<Vec<_>>()
-                })
-                .track_scroll(scroll_handle)
-                .flex_grow()
-            })
     }
 
     /// Render the file browser panel for browsing the local filesystem.

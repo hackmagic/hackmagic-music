@@ -8,9 +8,25 @@ use crate::core::player::Player;
 static PLAYER: OnceLock<std::sync::Arc<Player>> = OnceLock::new();
 
 pub fn init(player: std::sync::Arc<Player>) {
-    let _ = PLAYER.set(player);
+    let _ = PLAYER.set(player.clone());
+    crate::commands::init_player(player);
     #[cfg(target_os = "windows")]
-    start_message_thread();
+    {
+        extern "system" {
+            fn CreateMutexW(
+                lpMutexAttributes: *const std::ffi::c_void,
+                bInitialOwner: i32,
+                lpName: *const u16,
+            ) -> isize;
+            fn GetLastError() -> u32;
+        }
+        const ERROR_ALREADY_EXISTS: u32 = 183;
+        let name: Vec<u16> = "HackMagicMusic\0".encode_utf16().collect();
+        unsafe {
+            CreateMutexW(std::ptr::null(), 1, name.as_ptr());
+        }
+        start_message_thread();
+    }
 }
 
 #[cfg(not(target_os = "windows"))]

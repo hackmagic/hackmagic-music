@@ -10,6 +10,13 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
+struct MappedTrack {
+    path: String,
+    mmap: memmap2::Mmap,
+    stream: u32,
+    tempo_stream: u32,
+}
+
 /// Global WASAPI callback stream handle. Set by engine when starting playback.
 static WASAPI_STREAM: AtomicU32 = AtomicU32::new(0);
 
@@ -54,6 +61,10 @@ pub struct BassEngine {
     replaygain_db: Mutex<f32>,
     /// Whether WASAPI output is active
     wasapi_active: Mutex<bool>,
+    /// Memory-mapped region for the current audio file (kept alive while stream is active).
+    mmap: Mutex<Option<memmap2::Mmap>>,
+    /// Preloaded next track (mmap + stream) for gapless transition.
+    preload: Mutex<Option<MappedTrack>>,
 }
 
 unsafe impl Send for BassEngine {}
@@ -77,6 +88,8 @@ impl BassEngine {
             is_midi_file: Mutex::new(false),
             replaygain_db: Mutex::new(0.0),
             wasapi_active: Mutex::new(false),
+            mmap: Mutex::new(None),
+            preload: Mutex::new(None),
         }
     }
 }
@@ -179,6 +192,40 @@ impl PlayerEngine for BassEngine {
 
     fn open(&self, path: &str) -> Result<()> {
         tracing::info!("[BASS] open(\"{}\")", path);
+
+        // Fast path: swap in a preloaded track (mmap + stream) if it matches.
+        {
+            let mut preload = self.preload.lock().unwrap();
+            if let Some(p) = preload.take() {
+                if p.path == path {
+                    tracing::info!("[BASS] open: swapped preloaded track '{}'", path);
+                    // Free current streams without affecting mmap/preload state
+                    let old_tempo = *self.tempo_stream.lock().unwrap();
+                    let old_stream = *self.stream.lock().unwrap();
+                    if old_tempo != 0 { let _ = sys::BASS_StreamFree(old_tempo); }
+                    if old_stream != 0 && old_stream != old_tempo { let _ = sys::BASS_StreamFree(old_stream); }
+                    *self.mmap.lock().unwrap() = Some(p.mmap);
+                    *self.stream.lock().unwrap() = p.stream;
+                    *self.tempo_stream.lock().unwrap() = p.tempo_stream;
+                    *self.eq_handles.lock().unwrap() = [0; 10];
+                    *self.reverb_handle.lock().unwrap() = 0;
+                    // Apply volume, speed, pitch to the swapped stream.
+                    let vol = *self.volume.lock().unwrap();
+                    let _ = sys::BASS_ChannelSetAttribute(p.tempo_stream, sys::BASS_ATTRIB_VOL, vol / 100.0);
+                    let speed = *self.speed.lock().unwrap();
+                    let _ = self.apply_speed(p.tempo_stream, speed);
+                    let pitch = *self.pitch.lock().unwrap();
+                    let _ = self.apply_pitch(p.tempo_stream, pitch);
+                    return Ok(());
+                }
+                // Path doesn't match — free the preloaded resources.
+                let _ = sys::BASS_StreamFree(p.tempo_stream);
+                if p.stream != p.tempo_stream {
+                    let _ = sys::BASS_StreamFree(p.stream);
+                }
+            }
+        }
+
         self.close()?;
 
         let is_midi = path.ends_with(".mid") || path.ends_with(".midi") || path.ends_with(".rmi")
@@ -234,13 +281,24 @@ impl PlayerEngine for BassEngine {
                     std::ptr::null_mut(),
                 )
             } else {
-                let path_wide: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
-                sys::BASS_StreamCreateFile(
+                let file = std::fs::File::open(path)
+                    .map_err(|e| PlayerError::CannotOpen(format!("Cannot open '{path}': {e}")))?;
+                let file_len = file.metadata().map(|m| m.len()).unwrap_or(0) as usize;
+                let mmap = unsafe { memmap2::Mmap::map(&file) }
+                    .map_err(|e| PlayerError::CannotOpen(format!("Cannot mmap '{path}': {e}")))?;
+                std::mem::drop(file);
+                let ptr = mmap.as_ptr().cast::<c_void>();
+                let result = sys::BASS_StreamCreateFile(
+                    1,  // mem = TRUE
+                    ptr,
                     0,
-                    path_wide.as_ptr().cast::<c_void>(),
-                    0, 0,
-                    flags | sys::BASS_UNICODE, // wide (UTF-16) path，否则中文路径打不开
-                )
+                    file_len as u64,
+                    flags,
+                );
+                if result.is_ok() {
+                    *self.mmap.lock().unwrap() = Some(mmap);
+                }
+                result
             }.map_err(|e| PlayerError::CannotOpen(format!("Cannot open '{path}': {e}")))?;
 
             *self.stream.lock().unwrap() = stream;
@@ -298,11 +356,9 @@ impl PlayerEngine for BassEngine {
         }
 
         if *tempo != 0 {
-            // Brief fade-out before closing (crossfade effect)
             if !*self.wasapi_active.lock().unwrap() && *self.fade_effect.lock().unwrap() {
                 let fade_ms = (*self.fade_time.lock().unwrap()).min(200);
                 let _ = sys::BASS_ChannelSlideAttribute(*tempo, sys::BASS_ATTRIB_VOL, 0.0, fade_ms);
-                std::thread::sleep(std::time::Duration::from_millis(u64::from(fade_ms / 2)));
             }
             let _ = sys::BASS_StreamFree(*tempo);
             *tempo = 0;
@@ -313,6 +369,7 @@ impl PlayerEngine for BassEngine {
             }
             *stream = 0;
         }
+        *self.mmap.lock().unwrap() = None;
         *self.state.lock().unwrap() = EngineState::Stopped;
         Ok(())
     }
@@ -374,13 +431,10 @@ impl PlayerEngine for BassEngine {
                         .map_err(|e| PlayerError::Playback(format!("Cannot pause WASAPI: {e}")))?;
                 } else if *self.fade_effect.lock().unwrap() {
                     let fade_ms = *self.fade_time.lock().unwrap();
-                    let tempo_c = tempo;
                     sys::BASS_ChannelSlideAttribute(tempo, sys::BASS_ATTRIB_VOL, 0.0, fade_ms)
                         .map_err(|e| PlayerError::Playback(format!("Cannot fade out: {e}")))?;
-                    std::thread::spawn(move || {
-                        std::thread::sleep(Duration::from_millis(u64::from(fade_ms) + 50));
-                        let _ = sys::BASS_ChannelPause(tempo_c);
-                    });
+                    sys::BASS_ChannelPause(tempo)
+                        .map_err(|e| PlayerError::Playback(format!("Cannot pause: {e}")))?;
                 } else {
                     sys::BASS_ChannelPause(tempo)
                         .map_err(|e| PlayerError::Playback(format!("Cannot pause: {e}")))?;
@@ -414,14 +468,10 @@ impl PlayerEngine for BassEngine {
             if *self.wasapi_active.lock().unwrap() {
                 let _ = sys::BASS_WASAPI_Stop(1);
                 WASAPI_STREAM.store(0, Ordering::SeqCst);
-            } else if *self.fade_effect.lock().unwrap() && *self.state.lock().unwrap() == EngineState::Playing {
+            } else if *self.fade_effect.lock().unwrap() {
                 let fade_ms = *self.fade_time.lock().unwrap();
-                let tempo_c = tempo;
                 let _ = sys::BASS_ChannelSlideAttribute(tempo, sys::BASS_ATTRIB_VOL, 0.0, fade_ms);
-                std::thread::spawn(move || {
-                    std::thread::sleep(Duration::from_millis(u64::from(fade_ms) + 50));
-                    let _ = sys::BASS_ChannelStop(tempo_c);
-                });
+                let _ = sys::BASS_ChannelStop(tempo);
             } else {
                 let _ = sys::BASS_ChannelStop(tempo);
             }
@@ -726,6 +776,52 @@ impl BassEngine {
         let ch = *self.tempo_stream.lock().unwrap();
         if ch != 0 {
             let _ = sys::BASS_ChannelSetAttribute(ch, sys::BASS_ATTRIB_DB_GAIN, gain_db);
+        }
+    }
+
+    /// Preload the next track in the background. Creates an mmap + BASS stream
+    /// so the next `open()` call can skip file I/O.
+    pub fn preload_next(&self, path: &str) {
+        let file = match std::fs::File::open(path) {
+            Ok(f) => f,
+            Err(e) => { tracing::warn!("[BASS] preload_open failed for '{path}': {e}"); return; }
+        };
+        let file_len = match file.metadata() {
+            Ok(m) => m.len() as usize,
+            Err(_) => return,
+        };
+        let mmap = match unsafe { memmap2::Mmap::map(&file) } {
+            Ok(m) => m,
+            Err(e) => { tracing::warn!("[BASS] preload mmap failed for '{path}': {e}"); return; }
+        };
+        let ptr = mmap.as_ptr().cast::<c_void>();
+        let bass_fx_available = sys::is_bass_fx_loaded();
+        let flags = if bass_fx_available {
+            sys::BASS_STREAM_DECODE | sys::BASS_SAMPLE_FLOAT
+        } else {
+            sys::BASS_SAMPLE_FLOAT
+        };
+        let stream = match sys::BASS_StreamCreateFile(1, ptr, 0, file_len as u64, flags) {
+            Ok(s) => s,
+            Err(e) => { tracing::warn!("[BASS] preload BASS_StreamCreateFile failed for '{path}': {e}"); return; }
+        };
+        let tempo = if bass_fx_available {
+            match sys::BASS_FX_TempoCreate(stream, sys::BASS_FX_FREESOURCE | sys::BASS_FX_TEMPO_ALGO_LINEAR) {
+                Ok(h) => h,
+                Err(e) => {
+                    tracing::warn!("[BASS] preload BASS_FX_TempoCreate failed: {e}");
+                    stream
+                }
+            }
+        } else {
+            stream
+        };
+        let mut preload = self.preload.lock().unwrap();
+        if let Some(old) = preload.replace(MappedTrack { path: path.to_string(), mmap, stream, tempo_stream: tempo }) {
+            let _ = sys::BASS_StreamFree(old.tempo_stream);
+            if old.stream != old.tempo_stream {
+                let _ = sys::BASS_StreamFree(old.stream);
+            }
         }
     }
 }

@@ -271,6 +271,16 @@ impl Player {
             e
         })?;
         tracing::info!("[PLAY] play_at_index({}) OK, path=\"{}\"", index, path);
+
+        // Preload the next track (mmap + stream) for gapless transition.
+        let next_idx = { self.playlist.lock().unwrap().next_index() };
+        if let Some(ni) = next_idx {
+            let next_path = self.playlist.lock().unwrap().get(ni).map(|t| t.file_path.clone());
+            if let Some(np) = next_path {
+                self.engine.preload_next(&np);
+            }
+        }
+
         Ok(())
     }
 

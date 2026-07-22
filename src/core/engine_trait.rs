@@ -123,4 +123,7 @@ pub trait PlayerEngine: Send + Sync {
 
     /// Crossfade: slide current track volume to 0 over `time_ms`, then stop (default no-op)
     fn crossfade_out(&self, _time_ms: u32) {}
+
+    /// Preload the next track (mmap + stream) for gapless transition (default no-op).
+    fn preload_next(&self, _path: &str) {}
 }
