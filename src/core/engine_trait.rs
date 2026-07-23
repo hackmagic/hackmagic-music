@@ -93,10 +93,46 @@ impl Default for EngineStatus {
     }
 }
 
+/// Engine capabilities — tells the UI which features are actually functional.
+/// Some engines (MCI, FFmpeg) don't support speed/pitch/EQ/reverb/FFT.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EngineCapabilities {
+    /// Variable-speed playback
+    pub speed: bool,
+    /// Pitch shifting
+    pub pitch: bool,
+    /// 10-band equalizer
+    pub equalizer: bool,
+    /// Reverb effect
+    pub reverb: bool,
+    /// FFT spectrum data for visualization
+    pub fft: bool,
+    /// Gapless playback (preload next track)
+    pub gapless: bool,
+}
+
+impl EngineCapabilities {
+    /// Full capabilities (BASS engine).
+    pub const fn all() -> Self {
+        Self { speed: true, pitch: true, equalizer: true, reverb: true, fft: true, gapless: true }
+    }
+    /// Minimal capabilities (MCI, FFmpeg).
+    pub const fn minimal() -> Self {
+        Self { speed: false, pitch: false, equalizer: false, reverb: false, fft: false, gapless: false }
+    }
+    /// Decode-only engines (Rodio, Symphonia) — support FFT and speed, but not EQ/reverb/pitch/gapless.
+    pub const fn decode_only() -> Self {
+        Self { speed: true, pitch: false, equalizer: false, reverb: false, fft: true, gapless: false }
+    }
+}
+
 /// The abstract player engine interface (mirrors `IPlayerCore`)
 pub trait PlayerEngine: Send + Sync {
     /// Engine display name
     fn name(&self) -> &'static str;
+
+    /// Return the capabilities this engine supports.
+    fn capabilities(&self) -> EngineCapabilities { EngineCapabilities::minimal() }
 
     /// Initialize the engine
     fn init(&self) -> Result<()>;

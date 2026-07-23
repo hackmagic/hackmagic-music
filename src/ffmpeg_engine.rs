@@ -145,6 +145,10 @@ impl PlayerEngine for FfmpegEngine {
         "FFmpeg"
     }
 
+    fn capabilities(&self) -> crate::core::engine_trait::EngineCapabilities {
+        crate::core::engine_trait::EngineCapabilities::minimal()
+    }
+
     fn init(&self) -> Result<()> {
         let ffmpeg_ok = std::process::Command::new("ffmpeg")
             .arg("-version").output().map(|o| o.status.success()).unwrap_or(false);

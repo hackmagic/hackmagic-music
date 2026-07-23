@@ -47,6 +47,49 @@ pub struct ABRepeatPoint {
 const FFT_SAMPLE_DEFAULT: usize = 512;
 const SPECTRUM_COL_DEFAULT: usize = FFT_SAMPLE_DEFAULT / 4;
 
+/// Player settings (grouped behind a single Mutex to reduce lock count).
+#[derive(Clone)]
+struct PlayerSettings {
+    eq_gains: [i32; 10],
+    eq_enabled: bool,
+    reverb_mix: u32,
+    reverb_time: u32,
+    reverb_enabled: bool,
+    ab_repeat: ABRepeatPoint,
+    display_format: String,
+    volume_map: u32,
+    cue_end_pos: Option<Duration>,
+}
+
+impl Default for PlayerSettings {
+    fn default() -> Self {
+        Self {
+            eq_gains: [0; 10],
+            eq_enabled: false,
+            reverb_mix: 0,
+            reverb_time: 1,
+            reverb_enabled: false,
+            ab_repeat: ABRepeatPoint { a: Duration::ZERO, b: Duration::ZERO, mode: ABRepeatMode::None },
+            display_format: "title".to_string(),
+            volume_map: 100,
+            cue_end_pos: None,
+        }
+    }
+}
+
+/// Spectrum analysis state (separate from settings to avoid contention in the hot path).
+struct SpectrumState {
+    columns: usize,
+    fft_size: usize,
+    peaks: Vec<f32>,
+}
+
+impl SpectrumState {
+    const fn new() -> Self {
+        Self { columns: SPECTRUM_COL_DEFAULT, fft_size: FFT_SAMPLE_DEFAULT, peaks: Vec::new() }
+    }
+}
+
 /// The main player controller (singleton, like original `CPlayer`)
 pub struct Player {
     /// Audio engine
@@ -55,32 +98,12 @@ pub struct Player {
     engine_type: EngineType,
     /// Current playlist
     playlist: Mutex<Playlist>,
-    /// Equalizer gains [10 bands]
-    eq_gains: Mutex<[i32; 10]>,
-    /// Equalizer enabled
-    eq_enabled: Mutex<bool>,
-    /// Reverb mix (0-100) and time (1-300)
-    reverb_mix: Mutex<u32>,
-    reverb_time: Mutex<u32>,
-    /// Reverb enabled
-    reverb_enabled: Mutex<bool>,
-    /// AB repeat state
-    ab_repeat: Mutex<ABRepeatPoint>,
-    /// Spectrum config
-    spectrum_columns: Mutex<usize>,
-    fft_size: Mutex<usize>,
-    /// FFT data
-    fft_data: Mutex<[f32; FFT_SAMPLE_DEFAULT]>,
-    /// Peak values for spectrum (decay)
-    spectrum_peaks: Mutex<Vec<f32>>,
-    /// Display format
-    display_format: Mutex<String>,
+    /// Grouped settings (eq, reverb, ab-repeat, display, volume-map, cue-end)
+    settings: Mutex<PlayerSettings>,
+    /// Spectrum analysis state (separate Mutex to avoid contention with settings)
+    spectrum: Mutex<SpectrumState>,
     /// Loading flag (shared so GUI timer can check it without borrowing Player)
     pub loading: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    /// Volume map (percentage mapping)
-    volume_map: Mutex<u32>,
-    /// CUE track end position (None if not a CUE track)
-    cue_end_pos: Mutex<Option<Duration>>,
     /// Lock-free status snapshot for GUI
     pub status: ArcSwap<EngineStatus>,
 }
@@ -106,24 +129,9 @@ impl Player {
             engine,
             engine_type,
             playlist: Mutex::new(Playlist::new("default")),
-            spectrum_columns: Mutex::new(SPECTRUM_COL_DEFAULT),
-            fft_size: Mutex::new(FFT_SAMPLE_DEFAULT),
-            eq_gains: Mutex::new([0; 10]),
-            eq_enabled: Mutex::new(false),
-            reverb_mix: Mutex::new(0),
-            reverb_time: Mutex::new(1),
-            reverb_enabled: Mutex::new(false),
-            ab_repeat: Mutex::new(ABRepeatPoint {
-                a: Duration::ZERO,
-                b: Duration::ZERO,
-                mode: ABRepeatMode::None,
-            }),
-            fft_data: Mutex::new([0.0; FFT_SAMPLE_DEFAULT]),
-            spectrum_peaks: Mutex::new(Vec::new()),
-            display_format: Mutex::new("title".to_string()),
+            settings: Mutex::new(PlayerSettings::default()),
+            spectrum: Mutex::new(SpectrumState::new()),
             loading: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            volume_map: Mutex::new(100),
-            cue_end_pos: Mutex::new(None),
             status: ArcSwap::new(Arc::new(EngineStatus {
                 engine_name,
                 ..Default::default()
@@ -177,7 +185,7 @@ impl Player {
                 let s = self.calculate_spectrum();
                 s
             },
-            spectrum_peaks: self.spectrum_peaks.lock().unwrap().clone(),
+            spectrum_peaks: self.spectrum.lock().unwrap().peaks.clone(),
             fft: self.fft_data(),
         }));
     }
@@ -190,6 +198,10 @@ impl Player {
 
     pub fn engine_type(&self) -> EngineType {
         self.engine_type
+    }
+
+    pub fn engine_capabilities(&self) -> crate::core::engine_trait::EngineCapabilities {
+        self.engine.capabilities()
     }
 
     // === Playback control ===
@@ -327,7 +339,7 @@ impl Player {
             tracing::info!("[PLAY] CUE seek to {:?}", start_pos);
             self.engine.seek(start_pos)?;
         }
-        *self.cue_end_pos.lock().unwrap() = if is_cue && end_pos != Duration::ZERO { Some(end_pos) } else { None };
+        self.settings.lock().unwrap().cue_end_pos = if is_cue && end_pos != Duration::ZERO { Some(end_pos) } else { None };
         tracing::info!("[PLAY] engine.play() calling");
         self.engine.play().map_err(|e| {
             tracing::error!("[PLAY] engine.play failed for \"{}\": {}", path, e);
@@ -380,11 +392,11 @@ impl Player {
     }
 
     pub fn set_volume_map(&self, map: u32) {
-        *self.volume_map.lock().unwrap() = map.min(100);
+        self.settings.lock().unwrap().volume_map = map.min(100);
     }
 
     fn apply_volume_map(&self, vol: u32) -> u32 {
-        let map = *self.volume_map.lock().unwrap();
+        let map = self.settings.lock().unwrap().volume_map;
         if map >= 100 {
             vol
         } else {
@@ -399,6 +411,10 @@ impl Player {
     }
 
     pub fn set_speed(&self, speed: f32) -> Result<()> {
+        if !self.engine.capabilities().speed {
+            tracing::warn!("[Player] 当前引擎 ({}) 不支持变速", self.engine.name());
+            return Ok(());
+        }
         self.engine.set_speed(speed)?;
         self.refresh_status();
         Ok(())
@@ -427,6 +443,10 @@ impl Player {
     }
 
     pub fn set_pitch(&self, pitch: i32) -> Result<()> {
+        if !self.engine.capabilities().pitch {
+            tracing::warn!("[Player] 当前引擎 ({}) 不支持变调", self.engine.name());
+            return Ok(());
+        }
         self.engine.set_pitch(pitch)?;
         self.refresh_status();
         Ok(())
@@ -449,17 +469,20 @@ impl Player {
     // === Equalizer ===
 
     pub fn eq_set(&self, band: usize, gain: i32) -> Result<()> {
+        if !self.engine.capabilities().equalizer {
+            return Ok(());
+        }
         let gain = gain.clamp(-15, 15);
-        self.eq_gains.lock().unwrap()[band] = gain;
+        self.settings.lock().unwrap().eq_gains[band] = gain;
         self.engine.set_equalizer(band, gain)
     }
 
     pub fn eq_get(&self) -> [i32; 10] {
-        *self.eq_gains.lock().unwrap()
+        self.settings.lock().unwrap().eq_gains
     }
 
     pub fn eq_get_band(&self, band: usize) -> i32 {
-        self.eq_gains.lock().unwrap()[band]
+        self.settings.lock().unwrap().eq_gains[band]
     }
 
     pub fn eq_set_preset(&self, preset: &str) -> Result<()> {
@@ -475,7 +498,7 @@ impl Player {
             "nohigh" | "弱化高音" => [0, 0, 0, 0, 0, -1, -3, -5, -5, -4],
             _ => return Ok(()),
         };
-        *self.eq_gains.lock().unwrap() = gains;
+        self.settings.lock().unwrap().eq_gains = gains;
         for (band, &gain) in gains.iter().enumerate() {
             self.engine.set_equalizer(band, gain)?;
         }
@@ -483,7 +506,7 @@ impl Player {
     }
 
     pub fn eq_reset(&self) -> Result<()> {
-        *self.eq_gains.lock().unwrap() = [0; 10];
+        self.settings.lock().unwrap().eq_gains = [0; 10];
         for band in 0..10 {
             self.engine.set_equalizer(band, 0)?;
         }
@@ -491,32 +514,38 @@ impl Player {
     }
 
     pub fn eq_enable(&self, enable: bool) {
-        *self.eq_enabled.lock().unwrap() = enable;
+        if enable && !self.engine.capabilities().equalizer {
+            return;
+        }
+        self.settings.lock().unwrap().eq_enabled = enable;
     }
 
     pub fn eq_is_enabled(&self) -> bool {
-        *self.eq_enabled.lock().unwrap()
+        self.settings.lock().unwrap().eq_enabled
     }
 
     // === Reverb ===
 
     pub fn reverb_set(&self, mix: u32, time: u32) -> Result<()> {
-        *self.reverb_mix.lock().unwrap() = mix;
-        *self.reverb_time.lock().unwrap() = time;
-        *self.reverb_enabled.lock().unwrap() = true;
+        if !self.engine.capabilities().reverb {
+            return Ok(());
+        }
+        self.settings.lock().unwrap().reverb_mix = mix;
+        self.settings.lock().unwrap().reverb_time = time;
+        self.settings.lock().unwrap().reverb_enabled = true;
         self.engine.set_reverb(mix, time)
     }
 
     pub fn reverb_get(&self) -> (u32, u32) {
-        (*self.reverb_mix.lock().unwrap(), *self.reverb_time.lock().unwrap())
+        (self.settings.lock().unwrap().reverb_mix, self.settings.lock().unwrap().reverb_time)
     }
 
     pub fn reverb_is_enabled(&self) -> bool {
-        *self.reverb_enabled.lock().unwrap()
+        self.settings.lock().unwrap().reverb_enabled
     }
 
     pub fn reverb_clear(&self) -> Result<()> {
-        *self.reverb_enabled.lock().unwrap() = false;
+        self.settings.lock().unwrap().reverb_enabled = false;
         self.engine.clear_reverb()
     }
 
@@ -538,7 +567,7 @@ impl Player {
 
     pub fn ab_set_a(&self) -> Result<()> {
         let pos = self.engine.position();
-        let mut ab = self.ab_repeat.lock().unwrap();
+        let mut ab = self.settings.lock().unwrap().ab_repeat;
         ab.a = pos;
         ab.mode = ABRepeatMode::ASelected;
         tracing::info!("AB repeat A point set: {:.1}s", pos.as_secs_f64());
@@ -547,7 +576,7 @@ impl Player {
 
     pub fn ab_set_b(&self) -> Result<()> {
         let pos = self.engine.position();
-        let mut ab = self.ab_repeat.lock().unwrap();
+        let mut ab = self.settings.lock().unwrap().ab_repeat;
         ab.b = pos;
         if ab.a < ab.b {
             ab.mode = ABRepeatMode::ABRepeat;
@@ -559,21 +588,21 @@ impl Player {
     }
 
     pub fn ab_reset(&self) {
-        let mut ab = self.ab_repeat.lock().unwrap();
+        let mut ab = self.settings.lock().unwrap().ab_repeat;
         ab.mode = ABRepeatMode::None;
         tracing::info!("AB repeat cleared");
     }
 
     pub fn ab_continue(&self) -> Result<()> {
         // Set next AB repeat start to current B point
-        let mut ab = self.ab_repeat.lock().unwrap();
+        let mut ab = self.settings.lock().unwrap().ab_repeat;
         ab.a = ab.b;
         ab.mode = ABRepeatMode::ASelected;
         Ok(())
     }
 
     pub fn ab_status(&self) -> ABRepeatPoint {
-        *self.ab_repeat.lock().unwrap()
+        self.settings.lock().unwrap().ab_repeat
     }
 
     // === Playlist ===
@@ -624,7 +653,7 @@ impl Player {
 
     pub fn song_is_over(&self) -> bool {
         // Check end of CUE track boundary
-        if let Some(end_pos) = *self.cue_end_pos.lock().unwrap() {
+        if let Some(end_pos) = self.settings.lock().unwrap().cue_end_pos {
             let pos = self.engine.position();
             if pos >= end_pos {
                 return true;
@@ -636,25 +665,25 @@ impl Player {
     // === Spectrum Config ===
 
     pub fn set_spectrum_config(&self, columns: usize, fft_size: usize) {
-        *self.spectrum_columns.lock().unwrap() = columns.clamp(4, 128);
-        *self.fft_size.lock().unwrap() = fft_size.clamp(256, 2048);
+        self.spectrum.lock().unwrap().columns = columns.clamp(4, 128);
+        self.spectrum.lock().unwrap().fft_size = fft_size.clamp(256, 2048);
     }
 
     pub fn spectrum_config(&self) -> (usize, usize) {
-        (*self.spectrum_columns.lock().unwrap(), *self.fft_size.lock().unwrap())
+        (self.spectrum.lock().unwrap().columns, self.spectrum.lock().unwrap().fft_size)
     }
 
     // === FFT / Spectrum ===
 
     pub fn fft_data(&self) -> Vec<f32> {
-        let fft_size = *self.fft_size.lock().unwrap() as u32;
+        let fft_size = self.spectrum.lock().unwrap().fft_size as u32;
         self.engine.fft_data_with_size(fft_size)
     }
 
     /// Calculate spectrum column data for visualization (with peak tracking)
     pub fn calculate_spectrum(&self) -> Vec<f32> {
-        let fft_size = *self.fft_size.lock().unwrap();
-        let col = *self.spectrum_columns.lock().unwrap();
+        let fft_size = self.spectrum.lock().unwrap().fft_size;
+        let col = self.spectrum.lock().unwrap().columns;
         let fft = self.engine.fft_data_with_size(fft_size as u32);
         let mut spectrum = vec![0.0f32; col];
 
@@ -684,7 +713,8 @@ impl Player {
         }
 
         // Peak tracking with decay
-        let mut peaks = self.spectrum_peaks.lock().unwrap();
+        let mut peaks_guard = self.spectrum.lock().unwrap();
+        let peaks = &mut peaks_guard.peaks;
         if peaks.len() != col {
             *peaks = vec![0.0f32; col];
         }
@@ -702,17 +732,17 @@ impl Player {
 
     /// Get peak values from spectrum (for visualization)
     pub fn spectrum_peak_data(&self) -> Vec<f32> {
-        self.spectrum_peaks.lock().unwrap().clone()
+        self.spectrum.lock().unwrap().peaks.clone()
     }
 
     // === Display format ===
 
     pub fn display_format(&self) -> String {
-        self.display_format.lock().unwrap().clone()
+        self.settings.lock().unwrap().display_format.clone()
     }
 
     pub fn set_display_format(&self, fmt: String) {
-        *self.display_format.lock().unwrap() = fmt;
+        self.settings.lock().unwrap().display_format = fmt;
     }
 
     // ========== Multi-playlist management ==========

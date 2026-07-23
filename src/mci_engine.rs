@@ -80,6 +80,10 @@ impl PlayerEngine for MciEngine {
         "MCI"
     }
 
+    fn capabilities(&self) -> crate::core::engine_trait::EngineCapabilities {
+        crate::core::engine_trait::EngineCapabilities::minimal()
+    }
+
     fn init(&self) -> Result<()> {
         tracing::info!("MCI engine initialized");
         Ok(())

@@ -99,6 +99,10 @@ impl PlayerEngine for BassEngine {
         "BASS"
     }
 
+    fn capabilities(&self) -> crate::core::engine_trait::EngineCapabilities {
+        crate::core::engine_trait::EngineCapabilities::all()
+    }
+
     fn init(&self) -> Result<()> {
         // Load BASS library
         if !sys::is_bass_loaded() && !sys::load_bass(None, None) {

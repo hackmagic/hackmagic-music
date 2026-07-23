@@ -115,6 +115,10 @@ impl PlayerEngine for RodioEngine {
         "Rodio"
     }
 
+    fn capabilities(&self) -> crate::core::engine_trait::EngineCapabilities {
+        crate::core::engine_trait::EngineCapabilities::decode_only()
+    }
+
     fn init(&self) -> Result<()> {
         tracing::info!("Rodio engine initialized");
         Ok(())

@@ -232,6 +232,10 @@ impl PlayerEngine for SymphoniaEngine {
         "Symphonia"
     }
 
+    fn capabilities(&self) -> crate::core::engine_trait::EngineCapabilities {
+        crate::core::engine_trait::EngineCapabilities::decode_only()
+    }
+
     fn init(&self) -> Result<()> {
         tracing::info!("Symphonia engine initialized");
         Ok(())

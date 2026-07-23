@@ -4920,6 +4920,24 @@ impl MusicPlayer {
             "1kHz", "2kHz", "4kHz", "8kHz", "16kHz",
         ];
 
+        let caps = self.player.engine_capabilities();
+        if !caps.equalizer {
+            return v_flex()
+                .flex_1()
+                .h_full()
+                .bg(c.bg)
+                .justify_center()
+                .items_center()
+                .gap_2()
+                .child(layout::txt("均衡器", 14.0, c.text_title))
+                .child(
+                    div().text_size(px(12.0)).text_color(c.text_dim).child(
+                        format!("当前引擎 ({}) 不支持均衡器", self.player.engine_name())
+                    )
+                )
+                .into_any_element();
+        }
+
         // Preset definition: name -> gains
         let presets: Vec<(&str, &[f32; 10])> = vec![
             ("平坦", &[0.0_f32; 10]),
