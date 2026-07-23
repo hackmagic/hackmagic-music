@@ -3,12 +3,15 @@
 #![allow(dead_code)]
 
 use crate::bass::engine::BassEngine;
-use crate::core::engine_trait::{EngineState, EngineType, PlayerEngine};
+use crate::core::engine_trait::{EngineState, EngineStatus, EngineType, PlayerEngine};
 use crate::core::playlist::{Playlist, RepeatMode, Track};
 use crate::error::{PlayerError, Result};
 use crate::ffmpeg_engine::FfmpegEngine;
-use std::sync::atomic::AtomicBool;
-use std::sync::Mutex;
+use crate::rodio_engine::RodioEngine;
+#[cfg(target_os = "windows")]
+use crate::mci_engine::MciEngine;
+use arc_swap::ArcSwap;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tracing;
 
@@ -72,12 +75,14 @@ pub struct Player {
     spectrum_peaks: Mutex<Vec<f32>>,
     /// Display format
     display_format: Mutex<String>,
-    /// Loading flag
-    pub loading: AtomicBool,
+    /// Loading flag (shared so GUI timer can check it without borrowing Player)
+    pub loading: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Volume map (percentage mapping)
     volume_map: Mutex<u32>,
     /// CUE track end position (None if not a CUE track)
     cue_end_pos: Mutex<Option<Duration>>,
+    /// Lock-free status snapshot for GUI
+    pub status: ArcSwap<EngineStatus>,
 }
 
 unsafe impl Send for Player {}
@@ -88,9 +93,16 @@ impl Player {
     pub fn new(engine_type: EngineType) -> Self {
         let engine: Box<dyn PlayerEngine> = match engine_type {
             EngineType::Bass => Box::new(BassEngine::new()),
-            EngineType::Mci => Box::new(BassEngine::new()), // Placeholder
+            EngineType::Mci => {
+                #[cfg(target_os = "windows")]
+                { Box::new(MciEngine::new()) }
+                #[cfg(not(target_os = "windows"))]
+                { Box::new(RodioEngine::new()) }
+            }
             EngineType::Ffmpeg => Box::new(FfmpegEngine::new()),
+            EngineType::Rodio => Box::new(RodioEngine::new()),
         };
+        let engine_name = engine.name();
 
         Self {
             engine,
@@ -111,9 +123,13 @@ impl Player {
             fft_data: Mutex::new([0.0; FFT_SAMPLE_DEFAULT]),
             spectrum_peaks: Mutex::new(Vec::new()),
             display_format: Mutex::new("title".to_string()),
-            loading: AtomicBool::new(false),
+            loading: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             volume_map: Mutex::new(100),
             cue_end_pos: Mutex::new(None),
+            status: ArcSwap::new(Arc::new(EngineStatus {
+                engine_name,
+                ..Default::default()
+            })),
         }
     }
 
@@ -121,7 +137,51 @@ impl Player {
     pub fn init(&self) -> Result<()> {
         self.engine.init()?;
         tracing::info!("Player initialized with {} engine", self.engine.name());
+        self.refresh_status();
         Ok(())
+    }
+
+    /// Publish a lock-free snapshot of current state so the GUI can read it
+    /// without touching any Mutex.
+    pub fn refresh_status(&self) {
+        let pl = self.playlist.lock().unwrap();
+        let (track_path, track_title, track_artist, track_album, track_is_fav, track_idx) = pl
+            .current_index()
+            .and_then(|i| pl.get(i))
+            .map(|t| {
+                (
+                    t.file_path.clone(),
+                    t.title.clone(),
+                    t.artist.clone(),
+                    t.album.clone(),
+                    t.is_favourite,
+                    pl.current_index(),
+                )
+            })
+            .unwrap_or_default();
+        drop(pl);
+        self.status.store(Arc::new(EngineStatus {
+            state: self.engine.state(),
+            position_secs: self.engine.position().as_secs_f64(),
+            duration_secs: self.engine.duration().as_secs_f64(),
+            volume: self.engine.volume(),
+            speed: self.engine.speed(),
+            song_is_over: self.engine.song_is_over(),
+            loading: self.loading.load(std::sync::atomic::Ordering::Relaxed),
+            engine_name: self.engine.name(),
+            current_track_index: track_idx,
+            current_track_path: track_path,
+            current_track_title: track_title,
+            current_track_artist: track_artist,
+            current_track_album: track_album,
+            current_track_is_favourite: track_is_fav,
+            spectrum: {
+                let s = self.calculate_spectrum();
+                s
+            },
+            spectrum_peaks: self.spectrum_peaks.lock().unwrap().clone(),
+            fft: self.fft_data(),
+        }));
     }
 
     // === Engine info ===
@@ -162,17 +222,23 @@ impl Player {
 
     /// Toggle pause
     pub fn toggle_pause(&self) -> Result<()> {
-        self.engine.pause()
+        self.engine.pause()?;
+        self.refresh_status();
+        Ok(())
     }
 
     /// Stop playback
     pub fn stop(&self) -> Result<()> {
-        self.engine.stop()
+        self.engine.stop()?;
+        self.refresh_status();
+        Ok(())
     }
 
     /// Seek to position
     pub fn seek(&self, pos: Duration) -> Result<()> {
-        self.engine.seek(pos)
+        self.engine.seek(pos)?;
+        self.refresh_status();
+        Ok(())
     }
 
     /// Seek to percentage (0.0 - 1.0)
@@ -230,6 +296,7 @@ impl Player {
     /// Play track at index
     pub fn play_at_index(&self, index: usize) -> Result<()> {
         tracing::info!("[PLAY] play_at_index(index={}) called", index);
+        tracing::info!("[PLAY] backtrace:\n{}", std::backtrace::Backtrace::force_capture());
         let playlist = self.playlist.lock().unwrap();
         tracing::info!("[PLAY] playlist len={}, current_index={:?}", playlist.len(), playlist.current_index());
         let (path, is_cue, start_pos, end_pos, track_gain, album_gain) = playlist.get(index).map(|t| {
@@ -243,7 +310,10 @@ impl Player {
             return Err(PlayerError::NoTrack);
         }
         tracing::info!("[PLAY] engine.open(\"{}\") using {}", path, self.engine.name());
-        self.engine.open(&path).map_err(|e| {
+        self.loading.store(true, std::sync::atomic::Ordering::SeqCst);
+        let open_result = self.engine.open(&path);
+        self.loading.store(false, std::sync::atomic::Ordering::SeqCst);
+        open_result.map_err(|e| {
             tracing::error!("[PLAY] engine.open failed for \"{}\": {}", path, e);
             e
         })?;
@@ -265,11 +335,13 @@ impl Player {
             tracing::error!("[PLAY] engine.play failed for \"{}\": {}", path, e);
             e
         })?;
-        let mut playlist = self.playlist.lock().unwrap();
-        playlist.set_current(index).map_err(|e| {
-            tracing::warn!("[PLAY] set_current({}) failed: {}", index, e);
-            e
-        })?;
+        {
+            let mut playlist = self.playlist.lock().unwrap();
+            playlist.set_current(index).map_err(|e| {
+                tracing::warn!("[PLAY] set_current({}) failed: {}", index, e);
+                e
+            })?;
+        }
         tracing::info!("[PLAY] play_at_index({}) OK, path=\"{}\"", index, path);
 
         // Preload the next track (mmap + stream) for gapless transition.
@@ -281,6 +353,7 @@ impl Player {
             }
         }
 
+        self.refresh_status();
         Ok(())
     }
 
@@ -289,7 +362,9 @@ impl Player {
     pub fn set_volume(&self, vol: u32) -> Result<()> {
         let vol = vol.min(100);
         let mapped = self.apply_volume_map(vol);
-        self.engine.set_volume(mapped)
+        self.engine.set_volume(mapped)?;
+        self.refresh_status();
+        Ok(())
     }
 
     pub fn volume(&self) -> u32 {
@@ -326,23 +401,25 @@ impl Player {
     }
 
     pub fn set_speed(&self, speed: f32) -> Result<()> {
-        self.engine.set_speed(speed)
+        self.engine.set_speed(speed)?;
+        self.refresh_status();
+        Ok(())
     }
 
     pub fn speed_up(&self) -> Result<()> {
         let s = self.engine.speed();
         let new_s = (s * 1.1).min(4.0);
-        self.engine.set_speed(new_s)
+        self.set_speed(new_s)
     }
 
     pub fn speed_down(&self) -> Result<()> {
         let s = self.engine.speed();
         let new_s = (s / 1.1).max(0.1);
-        self.engine.set_speed(new_s)
+        self.set_speed(new_s)
     }
 
     pub fn reset_speed(&self) -> Result<()> {
-        self.engine.set_speed(1.0)
+        self.set_speed(1.0)
     }
 
     // === Pitch ===
@@ -352,21 +429,23 @@ impl Player {
     }
 
     pub fn set_pitch(&self, pitch: i32) -> Result<()> {
-        self.engine.set_pitch(pitch)
+        self.engine.set_pitch(pitch)?;
+        self.refresh_status();
+        Ok(())
     }
 
     pub fn pitch_up(&self) -> Result<()> {
         let p = self.engine.pitch();
-        self.engine.set_pitch((p + 1).min(12))
+        self.set_pitch((p + 1).min(12))
     }
 
     pub fn pitch_down(&self) -> Result<()> {
         let p = self.engine.pitch();
-        self.engine.set_pitch((p - 1).max(-12))
+        self.set_pitch((p - 1).max(-12))
     }
 
     pub fn reset_pitch(&self) -> Result<()> {
-        self.engine.set_pitch(0)
+        self.set_pitch(0)
     }
 
     // === Equalizer ===
@@ -913,9 +992,10 @@ mod tests {
             fft_data: Mutex::new([0.0; FFT_SAMPLE_DEFAULT]),
             spectrum_peaks: Mutex::new(Vec::new()),
             display_format: Mutex::new("title".to_string()),
-            loading: AtomicBool::new(false),
+            loading: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             volume_map: Mutex::new(100),
             cue_end_pos: Mutex::new(None),
+            status: Default::default(),
         };
         (player, opened_paths, play_called)
     }
@@ -1057,9 +1137,10 @@ mod tests {
             fft_data: Mutex::new([0.0; FFT_SAMPLE_DEFAULT]),
             spectrum_peaks: Mutex::new(Vec::new()),
             display_format: Mutex::new("title".to_string()),
-            loading: AtomicBool::new(false),
+            loading: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             volume_map: Mutex::new(100),
             cue_end_pos: Mutex::new(None),
+            status: Default::default(),
         };
         // Set band 3 to gain 7
         player.eq_set(3, 7).unwrap();
@@ -1092,9 +1173,10 @@ mod tests {
             fft_data: Mutex::new([0.0; FFT_SAMPLE_DEFAULT]),
             spectrum_peaks: Mutex::new(Vec::new()),
             display_format: Mutex::new("title".to_string()),
-            loading: AtomicBool::new(false),
+            loading: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             volume_map: Mutex::new(100),
             cue_end_pos: Mutex::new(None),
+            status: Default::default(),
         };
         // Set band 5 to gain 100 — should clamp to 15
         player.eq_set(5, 100).unwrap();
@@ -1124,9 +1206,10 @@ mod tests {
             fft_data: Mutex::new([0.0; FFT_SAMPLE_DEFAULT]),
             spectrum_peaks: Mutex::new(Vec::new()),
             display_format: Mutex::new("title".to_string()),
-            loading: AtomicBool::new(false),
+            loading: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             volume_map: Mutex::new(100),
             cue_end_pos: Mutex::new(None),
+            status: Default::default(),
         };
         // Set band 1 to gain -100 — should clamp to -15
         player.eq_set(1, -100).unwrap();
@@ -1156,9 +1239,10 @@ mod tests {
             fft_data: Mutex::new([0.0; FFT_SAMPLE_DEFAULT]),
             spectrum_peaks: Mutex::new(Vec::new()),
             display_format: Mutex::new("title".to_string()),
-            loading: AtomicBool::new(false),
+            loading: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             volume_map: Mutex::new(100),
             cue_end_pos: Mutex::new(None),
+            status: Default::default(),
         };
         // Set multiple bands and verify each independently
         player.eq_set(0, 3).unwrap();
@@ -1196,9 +1280,10 @@ mod tests {
             fft_data: Mutex::new([0.0; FFT_SAMPLE_DEFAULT]),
             spectrum_peaks: Mutex::new(Vec::new()),
             display_format: Mutex::new("title".to_string()),
-            loading: AtomicBool::new(false),
+            loading: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             volume_map: Mutex::new(100),
             cue_end_pos: Mutex::new(None),
+            status: Default::default(),
         };
         // Set some bands
         player.eq_set(2, 10).unwrap();
@@ -1234,9 +1319,10 @@ mod tests {
             fft_data: Mutex::new([0.0; FFT_SAMPLE_DEFAULT]),
             spectrum_peaks: Mutex::new(Vec::new()),
             display_format: Mutex::new("title".to_string()),
-            loading: AtomicBool::new(false),
+            loading: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             volume_map: Mutex::new(100),
             cue_end_pos: Mutex::new(None),
+            status: Default::default(),
         };
         // Default is disabled
         assert!(!player.eq_is_enabled());

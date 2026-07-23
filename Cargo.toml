@@ -36,6 +36,9 @@ image = "0.25"
 # LRU cache for album art
 lru = "0.13"
 
+# Lock-free snapshot publishing (player state for GUI)
+arc-swap = "1"
+
 # Memory-mapped file I/O for zero-copy audio loading
 memmap2 = "0.9"
 
@@ -52,6 +55,9 @@ libloading = "0.8"
 
 # Cross-platform audio output (for FFmpeg engine)
 cpal = "0.15"
+
+# Pure Rust audio playback (for Rodio engine)
+rodio = { version = "0.19", features = ["mp3", "flac", "vorbis"] }
 
 # FFmpeg subprocess decoding
 # playa-ffmpeg = { version = "8", features = ["build", "static"] }

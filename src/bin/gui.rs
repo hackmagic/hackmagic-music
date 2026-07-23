@@ -1,7 +1,7 @@
 use gpui::*;
 use tracing_subscriber::{EnvFilter, fmt::writer::MakeWriter, prelude::*};
 
-/// A writer that duplicates tracing output to a log file in temp dir,
+/// A writer that duplicates tracing output to a log file in CWD (project dir),
 /// so we can inspect GUI playback issues even without a console.
 struct FileAndStdoutWriter {
     file: std::sync::Mutex<std::fs::File>,
@@ -21,7 +21,7 @@ fn main() {
     hm::color::enable_ansi_support();
 
     // Log panic to file for diagnosis
-    let panic_log = std::env::temp_dir().join("hm_panic.log");
+    let panic_log = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir()).join("hm_panic.log");
     std::panic::set_hook(Box::new(move |info| {
         let msg = format!("[PANIC] {info}\nbacktrace:\n{}\n", std::backtrace::Backtrace::force_capture());
         let _ = std::fs::write(&panic_log, &msg);
@@ -30,7 +30,7 @@ fn main() {
 
     // Configure tracing: write to a log file in temp dir AND stderr.
     // Use env var RUST_LOG to override the default "info" level.
-    let log_path = std::env::temp_dir().join("hm_gui.log");
+    let log_path = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir()).join("hm_gui.log");
     let file = std::fs::OpenOptions::new()
         .create(true)
         .write(true)

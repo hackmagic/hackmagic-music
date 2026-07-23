@@ -11,6 +11,7 @@ pub enum EngineType {
     Bass,
     Mci,
     Ffmpeg,
+    Rodio,
 }
 
 impl EngineType {
@@ -18,6 +19,7 @@ impl EngineType {
         match s.to_lowercase().as_str() {
             "mci" => EngineType::Mci,
             "ffmpeg" => EngineType::Ffmpeg,
+            "rodio" => EngineType::Rodio,
             _ => EngineType::Bass,
         }
     }
@@ -28,6 +30,7 @@ impl EngineType {
             EngineType::Bass => "bass",
             EngineType::Mci => "mci",
             EngineType::Ffmpeg => "ffmpeg",
+            EngineType::Rodio => "rodio",
         }
     }
 }
@@ -38,6 +41,53 @@ pub enum EngineState {
     Stopped,
     Playing,
     Paused,
+}
+
+/// Lock-free snapshot of player state published by `ArcSwap<EngineStatus>`.
+/// GUI reads this in `render()` without any Mutex contention.
+#[derive(Clone)]
+pub struct EngineStatus {
+    pub state: EngineState,
+    pub position_secs: f64,
+    pub duration_secs: f64,
+    pub volume: u32,
+    pub speed: f32,
+    pub song_is_over: bool,
+    pub loading: bool,
+    pub engine_name: &'static str,
+    pub current_track_index: Option<usize>,
+    pub current_track_path: String,
+    pub current_track_title: String,
+    pub current_track_artist: String,
+    pub current_track_album: String,
+    pub current_track_is_favourite: bool,
+    pub spectrum: Vec<f32>,
+    pub spectrum_peaks: Vec<f32>,
+    pub fft: Vec<f32>,
+}
+
+impl Default for EngineStatus {
+    fn default() -> Self {
+        Self {
+            state: EngineState::Stopped,
+            position_secs: 0.0,
+            duration_secs: 0.0,
+            volume: 80,
+            speed: 1.0,
+            song_is_over: false,
+            loading: false,
+            engine_name: "",
+            current_track_index: None,
+            current_track_path: String::new(),
+            current_track_title: String::new(),
+            current_track_artist: String::new(),
+            current_track_album: String::new(),
+            current_track_is_favourite: false,
+            spectrum: Vec::new(),
+            spectrum_peaks: Vec::new(),
+            fft: Vec::new(),
+        }
+    }
 }
 
 /// The abstract player engine interface (mirrors `IPlayerCore`)

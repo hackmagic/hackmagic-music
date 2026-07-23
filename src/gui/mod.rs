@@ -202,6 +202,7 @@ pub struct MusicPlayer {
     media_lib_open: bool,
     lyric_state: desktop_lyrics::LyricsState,
     last_lpc_path: String,
+    pending_track_path: Option<String>,
     editor_state: lyric_editor::LyricEditorState,
     show_editor: bool,
     download_state: lyric_download::LyricDownloadState,
@@ -484,34 +485,47 @@ impl MusicPlayer {
             }
         }
 
-        // ── B1 fix: drive continuous redraw so the progress bar, spectrum and
-        //    lyrics update live during playback. GPUI is immediate-mode: render()
-        //    only reads state and never calls cx.notify(), so without a periodic
-        //    repaint the window freezes until the user moves the mouse. We spawn a
-        //    ~30fps loop on the main-thread executor that polls the player state
-        //    (mutating self.title / self.position / lyric_state etc.) and then
-        //    marks this view dirty.
-        //
-        //    Polling happens HERE (in the timer) rather than at the top of
-        //    `render()` because render() runs inside an `App::borrow_mut()`
-        //    frame, and mutating sub-entities (e.g. `lyric_state.update`) from
-        //    within render can trigger their observers and re-enter the borrow,
-        //    panicking with "RefCell already borrowed".
+        // ── 30fps repaint loop: drives progress bar, spectrum, and lyrics
+        //    updates during playback. Player state is polled from render() now,
+        //    not here; this timer only processes deferred I/O and calls notify.
+        //    The loading guard skips dispatches during BASS blocking operations.
+        //    Kopuz reference: audio engine runs independently, UI reads state
+        //    reactively via render(), never polls from background tasks.
+        let player_loading = std::sync::Arc::clone(&player.loading);
         cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor()
                     .timer(std::time::Duration::from_millis(33))
                     .await;
-                let alive = this
-                    .update(cx, |this, cx| {
-                        // Use a dummy window ref — poll only reads player state.
-                        // We pass through `cx.update_global` to access the window.
-                        this.poll_player_state_in_render(cx);
-                        cx.notify();
-                    })
-                    .is_ok();
-                if !alive {
-                    break;
+                // Skip updates while engine is performing a blocking operation (e.g. BASS open)
+                if player_loading.load(std::sync::atomic::Ordering::SeqCst) {
+                    continue;
+                }
+                // Process deferred track-change I/O (lyrics + cover) on background thread
+                let pending_info = this.update(cx, |this, _| {
+                    let path = this.pending_track_path.take();
+                    let show_trans = this.lyric_show_translation;
+                    let pos_ms = ((this.position * 1000.0) as i64 + this.lyric_offset_ms).max(0) as u64;
+                    (path, show_trans, pos_ms)
+                }).ok();
+                if let Some((Some(ref p), show_trans, pos_ms)) = pending_info {
+                    if !p.is_empty() {
+                        let lyrics = Self::load_lyrics_raw(p, show_trans, pos_ms);
+                        let cover = Self::do_extract_cover(p);
+                        let _ = this.update(cx, |this, _| {
+                            if let Some(l) = lyrics {
+                                this.lyric_state.update(Some(l), pos_ms);
+                            }
+                            this.album_art = cover;
+                        });
+                    }
+                }
+                // Yield then notify render — render() now reads player state directly
+                cx.background_executor()
+                    .timer(std::time::Duration::ZERO)
+                    .await;
+                if this.update(cx, |_this, cx| cx.notify()).is_err() {
+                    tracing::error!("[Timer] notify failed");
                 }
             }
         })
@@ -582,6 +596,7 @@ impl MusicPlayer {
             media_lib_open: false,
             lyric_state: desktop_lyrics::LyricsState::new(),
             last_lpc_path: String::new(),
+            pending_track_path: None,
             editor_state: lyric_editor::LyricEditorState::new(),
             show_editor: false,
             download_state: lyric_download::LyricDownloadState::new(),
@@ -645,7 +660,8 @@ impl MusicPlayer {
     }
 
     /// Shared body of `poll_player_state` and `poll_player_state_in_render`.
-    /// Reads from the player engine and updates self.* fields + lyric state.
+    /// Reads position/duration/volume/state directly from engine (atomic-fast),
+    /// and track info / spectrum / peaks from the lock-free `EngineStatus` snapshot.
     fn poll_player_state_inner(&mut self) {
         self.position = self.player.position().as_secs_f64();
         self.duration = self.player.duration().as_secs_f64();
@@ -656,47 +672,48 @@ impl MusicPlayer {
         // Process pending download events
         self.poll_download_events();
 
-        let pl = self.player.playlist();
-        if let Some(track) = pl.current_track() {
-            let display = if !track.title.is_empty() {
-                track.title.clone()
+        let snap = self.player.status.load();
+        if snap.current_track_index.is_some() {
+            let display = if !snap.current_track_title.is_empty() {
+                snap.current_track_title.clone()
             } else {
-                track.file_name.clone()
+                std::path::Path::new(&snap.current_track_path)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default()
             };
-            let artist = if !track.artist.is_empty() {
-                track.artist.clone()
+            let artist = if !snap.current_track_artist.is_empty() {
+                snap.current_track_artist.clone()
             } else {
                 "未知艺术家".into()
             };
-            let album = if !track.album.is_empty() {
-                track.album.clone()
+            let album = if !snap.current_track_album.is_empty() {
+                snap.current_track_album.clone()
             } else {
                 String::new()
             };
             if self.title != display { self.title = display; }
             if self.artist != artist { self.artist = artist; }
             if self.album != album { self.album = album; }
-            self.is_favourite = track.is_favourite;
+            self.is_favourite = snap.current_track_is_favourite;
 
             // Auto-load lyrics when track changes
-            let track_path = track.file_path.clone();
-            if track_path != self.last_lpc_path {
+            let track_path = &snap.current_track_path;
+            if *track_path != self.last_lpc_path {
                 self.last_lpc_path = track_path.clone();
                 self.current_track_path_for_download = track_path.clone();
-                self.load_lyrics_for_track(&track_path);
-                self.album_art = self.extract_cover(&track_path);
+                self.pending_track_path = Some(track_path.clone());
                 // Track recently played (most recent first), capped at 50
-                let path = track.file_path.clone();
-                self.recent_tracks.retain(|p| p != &path);
-                self.recent_tracks.push_front(path);
+                self.recent_tracks.retain(|p| p != track_path);
+                self.recent_tracks.push_front(track_path.clone());
                 if self.recent_tracks.len() > 50 {
                     self.recent_tracks.pop_back();
                 }
             }
             // Update download state keyword from current track
-            if !track.title.is_empty() || !track.artist.is_empty() {
-                if self.download_state.keyword.is_empty() || self.download_state.track_title != track.title {
-                    self.download_state.auto_fill(&track.title, &track.artist);
+            if !snap.current_track_title.is_empty() || !snap.current_track_artist.is_empty() {
+                if self.download_state.keyword.is_empty() || self.download_state.track_title != snap.current_track_title {
+                    self.download_state.auto_fill(&snap.current_track_title, &snap.current_track_artist);
                 }
             }
         }
@@ -809,6 +826,38 @@ impl MusicPlayer {
         // No lyrics found — clear state
         tracing::debug!("[Lyric] No lyrics found for: {}", audio_path);
         self.lyric_state.update(None, (self.position * 1000.0) as u64);
+    }
+
+    /// Stateless lyrics loader for background use (no &mut self needed).
+    fn load_lyrics_raw(audio_path: &str, show_translation: bool, _position_ms: u64) -> Option<crate::lyric::Lyrics> {
+        if audio_path.is_empty() {
+            return None;
+        }
+        let path = std::path::Path::new(audio_path);
+        let file_stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+        let parent = path.parent().unwrap_or(std::path::Path::new("."));
+        let sibling_lrc = parent.join(format!("{}.lrc", file_stem));
+        let sibling_lrc_lower = parent.join(format!("{}.lrc", file_stem.to_lowercase()));
+        let lyrics_dir = parent.join("lyrics");
+        let lyrics_dir_lrc = lyrics_dir.join(format!("{}.lrc", file_stem));
+        let lyrics_dir_lrc_lower = lyrics_dir.join(format!("{}.lrc", file_stem.to_lowercase()));
+        for candidate in [&sibling_lrc, &sibling_lrc_lower, &lyrics_dir_lrc, &lyrics_dir_lrc_lower] {
+            if candidate.exists() {
+                match crate::lyric::load_lyric_file(candidate.to_str().unwrap_or("")) {
+                    Ok(mut lyrics) => {
+                        lyrics.translate_mode = if show_translation {
+                            crate::lyric::TranslateMode::Separate
+                        } else {
+                            crate::lyric::TranslateMode::Hidden
+                        };
+                        tracing::info!("[Lyric] Loaded: {:?}", candidate);
+                        return Some(lyrics);
+                    }
+                    Err(e) => tracing::warn!("[Lyric] Parse error {}: {}", candidate.display(), e),
+                }
+            }
+        }
+        None
     }
 
     /// Process pending download events from background thread.
@@ -932,14 +981,10 @@ impl MusicPlayer {
 
 impl Render for MusicPlayer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // NOTE: render() must NOT call cx.notify() itself (that recurses into an
-        // infinite re-render loop / "RefCell already borrowed" panic). Instead,
-        // continuous repaint during playback is driven by the ~30fps timer spawned
-        // in `MusicPlayer::new` (B1 fix), which calls cx.notify() on this view.
-        //
-        // Player state polling ALSO happens in that timer (see
-        // `poll_player_state_in_render`), NOT here — mutating sub-entities like
-        // `lyric_state` from within render re-enters the App borrow and panics.
+        // Poll player state directly in render (no thread contention since this
+        // runs on the main thread). Heavy I/O (lyrics, cover extraction) is
+        // deferred to the background timer via pending_track_path.
+        self.poll_player_state_inner();
         let tr = self.tr;
         let c = &self.colours;
 
@@ -1003,17 +1048,19 @@ impl Render for MusicPlayer {
                         // Center: prev/play/next + repeat + play_time + showPlaylist
                         .child(
                             h_flex().flex_1().items_center().justify_center().gap_1()
-                                .child(Button::new("mini_prev").label("◀").ghost().compact().on_click(move |_, _, _| { let _ = player_p.prev(); }))
+                                .child(Button::new("mini_prev").label("◀").ghost().compact().on_click(move |_, _, _| { let p = player_p.clone(); std::thread::spawn(move || { let _ = p.prev(); }); }))
                                 .child(Button::new("mini_play").label(play_label).primary().compact().on_click(move |_, _, _| {
                                     if player_n.is_playing() {
                                         let _ = player_n.toggle_pause();
                                     } else if player_n.is_paused() {
                                         let _ = player_n.toggle_pause();
                                     } else {
-                                        let _ = player_n.play_at_index(player_n.playlist().current_index().unwrap_or(0));
+                                        let p = player_n.clone();
+                                        let idx = p.playlist().current_index().unwrap_or(0);
+                                        std::thread::spawn(move || { let _ = p.play_at_index(idx); });
                                     }
                                 }))
-                                .child(Button::new("mini_next").label("▶").ghost().compact().on_click(move |_, _, _| { let _ = player_s.next(); }))
+                                .child(Button::new("mini_next").label("▶").ghost().compact().on_click(move |_, _, _| { let p = player_s.clone(); std::thread::spawn(move || { let _ = p.next(); }); }))
                                 .child(Button::new("mini_repeat").label(repeat_label_m).ghost().compact().on_click(move |_, _, _| {
                                     use crate::core::playlist::RepeatMode;
                                     let modes = [RepeatMode::PlayOrder, RepeatMode::LoopPlaylist, RepeatMode::LoopTrack, RepeatMode::PlayShuffle, RepeatMode::PlayRandom];
@@ -1099,8 +1146,9 @@ impl Render for MusicPlayer {
             crate::core::playlist::RepeatMode::PlayShuffle => "🔀",
             _ => "➡️",
         };
-        let raw_spec = self.player.calculate_spectrum();
-        let raw_peaks = self.player.spectrum_peak_data();
+        let snap = self.player.status.load();
+        let raw_spec = snap.spectrum.clone();
+        let raw_peaks = snap.spectrum_peaks.clone();
         let playlist_tracks = self.player.playlist().tracks().to_vec();
         let current_idx = self.player.playlist().current_index();
 
@@ -1205,7 +1253,7 @@ impl Render for MusicPlayer {
             .child(
                 h_flex().w_full().px_4().py_2().gap_3().items_center().justify_center()
                     .child(Button::new("stop").label("⏹").ghost().compact().on_click(move |_, _, _| { let _ = player_stop.stop(); }))
-                    .child(Button::new("prev").label("⏮").ghost().compact().on_click(move |_, _, _| { let _ = player_prev.prev(); }))
+                    .child(Button::new("prev").label("⏮").ghost().compact().on_click(move |_, _, _| { let p = player_prev.clone(); std::thread::spawn(move || { let _ = p.prev(); }); }))
                     .child(Button::new("rew").label("⏪").ghost().compact().on_click(move |_, _, _| {
                         let pos = player_rew.position();
                         let _ = player_rew.seek(pos.saturating_sub(std::time::Duration::from_secs(5)));
@@ -1230,7 +1278,8 @@ impl Render for MusicPlayer {
                                 });
                             } else {
                                 let idx = p.playlist().current_index().unwrap_or(0);
-                                let _ = p.play_at_index(idx);
+                                let p2 = p.clone();
+                                std::thread::spawn(move || { let _ = p2.play_at_index(idx); });
                             }
                         }
                     }))
@@ -1239,7 +1288,7 @@ impl Render for MusicPlayer {
                         let pos = player_ff.position();
                         let _ = player_ff.seek((pos + std::time::Duration::from_secs(5)).min(dur));
                     }))
-                    .child(Button::new("next").label("⏭").ghost().compact().on_click(move |_, _, _| { let _ = player_next.next(); }))
+                    .child(Button::new("next").label("⏭").ghost().compact().on_click(move |_, _, _| { let p = player_next.clone(); std::thread::spawn(move || { let _ = p.next(); }); }))
                     .child(div().w(px(1.0)).h(px(20.0)).bg(c.border))
                     .child(layout::txt(&pos_str, 11.0, c.text_dim))
                     // Repeat mode
@@ -1352,8 +1401,8 @@ impl Render for MusicPlayer {
                     let p5 = p.clone();
                     menu.item(PopupMenuItem::new("播放/暂停").on_click(move |_, _, _| { let _ = p1.toggle_pause(); }))
                         .item(PopupMenuItem::new("停止").on_click(move |_, _, _| { let _ = p2.stop(); }))
-                        .item(PopupMenuItem::new("上一曲").on_click(move |_, _, _| { let _ = p3.prev(); }))
-                        .item(PopupMenuItem::new("下一曲").on_click(move |_, _, _| { let _ = p4.next(); }))
+                        .item(PopupMenuItem::new("上一曲").on_click(move |_, _, _| { let p = p3.clone(); std::thread::spawn(move || { let _ = p.prev(); }); }))
+                        .item(PopupMenuItem::new("下一曲").on_click(move |_, _, _| { let p = p4.clone(); std::thread::spawn(move || { let _ = p.next(); }); }))
                         .separator()
                         .item(PopupMenuItem::new("顺序播放").on_click({
                             let p = p5.clone();
@@ -1811,7 +1860,8 @@ impl MusicPlayer {
                                                 this.media_lib_cache = Some(lib);
                                                 this.media_lib_cache_key = (MediaLibCategory::AllTracks, None);
                                                 if !entries.is_empty() {
-                                                    let _ = this.player.play_at_index(first_idx);
+                                                    let p = this.player.clone();
+                                                    std::thread::spawn(move || { let _ = p.play_at_index(first_idx); });
                                                 }
                                                 tracing::info!("[Menu] Loaded {} tracks from folder", entries.len());
                                             }
@@ -1858,7 +1908,8 @@ impl MusicPlayer {
                                                 let mut pl = this.player.playlist_mut();
                                                 pl.clear();
                                                 pl.add_tracks(tracks);
-                                                let _ = this.player.play_at_index(0);
+                                                let p = this.player.clone();
+                                                std::thread::spawn(move || { let _ = p.play_at_index(0); });
                                                 tracing::info!("[Menu] Loaded playlist: {}", path);
                                             }
                                             Err(e) => tracing::error!("[Menu] Failed to load playlist: {}", e),
@@ -1913,8 +1964,8 @@ impl MusicPlayer {
                     let p14 = player.clone();
                     menu.item(PopupMenuItem::new("播放/暂停").on_click(move |_, _, _| { let _ = p1.toggle_pause(); }))
                         .item(PopupMenuItem::new("停止").on_click(move |_, _, _| { let _ = p2.stop(); }))
-                        .item(PopupMenuItem::new("上一曲").on_click(move |_, _, _| { let _ = p3.prev(); }))
-                        .item(PopupMenuItem::new("下一曲").on_click(move |_, _, _| { let _ = p4.next(); }))
+                        .item(PopupMenuItem::new("上一曲").on_click(move |_, _, _| { let p = p3.clone(); std::thread::spawn(move || { let _ = p.prev(); }); }))
+                        .item(PopupMenuItem::new("下一曲").on_click(move |_, _, _| { let p = p4.clone(); std::thread::spawn(move || { let _ = p.next(); }); }))
                         .separator()
                         .item(PopupMenuItem::new("快退5秒").on_click({
                             let p = p14.clone();
@@ -4372,7 +4423,8 @@ impl MusicPlayer {
                                             this.playlist_selected.clear();
                                             this.playlist_selected.insert(idx);
                                         });
-                                        let _ = p.play_at_index(idx);
+                                        let p2 = p.clone();
+                                        std::thread::spawn(move || { let _ = p2.play_at_index(idx); });
                                     }
                                 }
                             })
@@ -4405,7 +4457,8 @@ impl MusicPlayer {
                                 let idx = i;
 
                                 menu.item(PopupMenuItem::new("播放").on_click(move |_, _, _| {
-                                    let _ = p_play.play_at_index(idx);
+                                    let p = p_play.clone();
+                                    std::thread::spawn(move || { let _ = p.play_at_index(idx); });
                                 }))
                                 .item(PopupMenuItem::new("下一首播放").on_click(move |_, _, _| {
                                     p_next.push_next_track(idx);
@@ -4545,7 +4598,8 @@ impl MusicPlayer {
                                                     pl.add_track(crate::core::playlist::Track::new(&e.file_path));
                                                 }
                                                 if !entries.is_empty() {
-                                                    let _ = this.player.play_at_index(first_idx);
+                                                    let p = this.player.clone();
+                                                    std::thread::spawn(move || { let _ = p.play_at_index(first_idx); });
                                                 }
                                                 tracing::info!("[FileBrowser] 打开文件夹: {} ({} 首)", dir, entries.len());
                                             }
@@ -5197,7 +5251,8 @@ impl Render for FloatingPlaylistView {
                             .bg(bg)
                             .text_color(text_color)
                             .on_click(move |_, _, _| {
-                                let _ = player.play_at_index(i);
+                                let p = player.clone();
+                                std::thread::spawn(move || { let _ = p.play_at_index(i); });
                             })
                             .child(
                                 h_flex()
@@ -5260,11 +5315,20 @@ struct DesktopLyricsView {
 
 impl DesktopLyricsView {
     fn new(player: Arc<Player>, _window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let player_loading = std::sync::Arc::clone(&player.loading);
         // Start a periodic timer to repaint so lyrics update live
         cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor()
                     .timer(std::time::Duration::from_millis(33))
+                    .await;
+                // Skip dispatches while engine is blocking (e.g. BASS open)
+                if player_loading.load(std::sync::atomic::Ordering::SeqCst) {
+                    continue;
+                }
+                let _ = this.update(cx, |_, _| {});
+                cx.background_executor()
+                    .timer(std::time::Duration::ZERO)
                     .await;
                 let alive = this.update(cx, |_, cx| cx.notify()).is_ok();
                 if !alive { break; }
