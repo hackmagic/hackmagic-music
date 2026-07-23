@@ -51,7 +51,7 @@ pub fn global_db() -> &'static lancedb::Connection {
 /// Initialise the global vecdb (called once at startup).
 pub async fn init_vecdb(db_path: &str) -> Result<(), Box<dyn std::error::Error>> {
     let conn = open_db(db_path).await?;
-    VECDB.set(conn).map_err(|_| "vecdb already initialised".to_string())?;
+    VECDB.set(conn).map_err(|_| Box::<dyn std::error::Error>::from("vecdb already initialised"))?;
     Ok(())
 }
 
