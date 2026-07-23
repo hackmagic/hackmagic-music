@@ -2592,7 +2592,7 @@ impl MusicPlayer {
                                 let _ = crate::tag::writer::set_tag_field(&path, "artist", &crate::charset::to_simplified_chinese(&track.artist));
                                 let _ = crate::tag::writer::set_tag_field(&path, "album", &crate::charset::to_simplified_chinese(&track.album));
                                 cx.notify();
-                            }).ok();
+                            });
                         }
                     }
                 }))
@@ -2667,7 +2667,7 @@ impl MusicPlayer {
                             this.position = 0.0; this.duration = 0.0; this.is_playing = false;
                             this.lyric_state.clear(); this.lyric_offset_ms = 0; this.playlist_selected.clear();
                             cx.notify();
-                        }).ok();
+                        });
                     }
                 }))
                 .separator()
@@ -2704,7 +2704,7 @@ impl MusicPlayer {
             .item(PopupMenuItem::new(s_supported_formats).on_click(|_, _, _| { let formats = crate::audio_common::supported_extensions(); tracing::info!("Supported formats: {:?}", formats); }))
             .item(PopupMenuItem::new(s_about).on_click({
                 let weak = weak.clone();
-                move |_, _, cx| { weak.update(cx, |this, cx| { this.modal = Some(ModalKind::About); cx.notify(); }).ok(); }
+                move |_, _, cx| { weak.update(cx, |this, cx| { this.modal = Some(ModalKind::About); cx.notify(); }); }
             }))
         })
     }
