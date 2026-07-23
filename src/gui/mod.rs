@@ -2521,108 +2521,193 @@ impl MusicPlayer {
                     }))
                     }})
             })
-            // View menu
-            .child({
-                let weak = weak.clone();
-                let s_view_label = tr.menu_view;
-                let s_toggle_playlist = tr.menu_toggle_playlist;
-                let s_float_playlist = tr.menu_float_playlist;
-                let s_toggle_menubar = tr.menu_toggle_menubar;
-                let s_toggle_statusbar = tr.menu_toggle_statusbar;
-                let s_mini_mode = tr.menu_mini_mode;
-                let s_fullscreen = tr.menu_fullscreen;
-                let s_toggle_dark = tr.menu_toggle_dark_mode;
-                let s_always_on_top = tr.menu_always_on_top;
-                let s_switch_theme = tr.menu_switch_theme;
-                let s_toggle_light = tr.menu_toggle_light_mode;
-                let pl = self.player.clone();
-                layout::menu_dropdown(s_view_label, IconName::LayoutDashboard, move |menu, _, _| {
-                let cfg = crate::config::Config::load();
-                let dark_mode = cfg.appearance.dark_mode;
-                menu.item(PopupMenuItem::new(s_toggle_playlist).on_click(|_, _, _| {
-                    ACTIVE_PANEL.store(0, Ordering::Relaxed);
-                }))
-                .item(PopupMenuItem::new(s_float_playlist).on_click({
-                    let pl = pl.clone();
-                    move |_, _, cx| {
-                        open_floating_playlist(cx, pl.clone());
-                    }
-                }))
-                .item(PopupMenuItem::new(s_toggle_menubar).on_click({
-                    let weak = weak.clone();
-                    move |_, _, cx| {
-                        MENUBAR_VISIBLE.fetch_xor(true, Ordering::Relaxed);
-                        weak.update(cx, |_, cx| cx.notify()).ok();
-                        tracing::info!("[View] Menu bar visibility toggled");
-                    }
-                }))
-                .item(PopupMenuItem::new(s_toggle_statusbar).on_click({
-                    let weak = weak.clone();
-                    move |_, _, cx| {
-                        STATUSBAR_VISIBLE.fetch_xor(true, Ordering::Relaxed);
-                        weak.update(cx, |_, cx| cx.notify()).ok();
-                        tracing::info!("[View] Status bar visibility toggled");
-                    }
-                }))
-                .separator()
-                .item(PopupMenuItem::new(s_mini_mode).on_click(|_, window, _| {
-                    let is_mini = MINI_MODE.fetch_xor(true, Ordering::Relaxed);
-                    if is_mini {
-                        window.resize(gpui::Size { width: px(1200.0), height: px(800.0) });
-                    } else {
-                        window.resize(gpui::Size { width: px(340.0), height: px(520.0) });
-                    }
-                }))
-                .item(PopupMenuItem::new(s_fullscreen).on_click(|_, window, _| {
-                    window.toggle_fullscreen();
-                }))
-                .separator()
-                .item(PopupMenuItem::new(if dark_mode { s_toggle_light } else { s_toggle_dark }).on_click({
-                    let weak = weak.clone();
-                    move |_, _, cx| {
-                        let mut cfg = crate::config::Config::load();
-                        cfg.appearance.dark_mode = !cfg.appearance.dark_mode;
-                        let _ = cfg.save();
-                        let dark = cfg.appearance.dark_mode;
-                        let theme = theme::ThemeName::from_config(&cfg.appearance.theme);
-                        weak.update(cx, |this, cx| {
-                            this.colours = UiColors::build(dark, &theme);
-                            cx.notify();
-                        }).ok();
-                        tracing::info!("Dark mode toggled to: {}", cfg.appearance.dark_mode);
-                    }
-                }))
-                .item(PopupMenuItem::new(s_switch_theme).on_click({
-                    let weak = weak.clone();
-                    move |_, _, cx| {
-                        let mut cfg = crate::config::Config::load();
-                        cfg.appearance.theme = match cfg.appearance.theme.as_str() {
-                            "ocean" => "forest".to_string(),
-                            "forest" => "lavender".to_string(),
-                            "lavender" => "sunset".to_string(),
-                            "sunset" => "midnight".to_string(),
-                            "midnight" => "autumn".to_string(),
-                            "autumn" => "spring".to_string(),
-                            "spring" => "default".to_string(),
-                            _ => "ocean".to_string(),
-                        };
-                        let _ = cfg.save();
-                        let dark = cfg.appearance.dark_mode;
-                        let theme = theme::ThemeName::from_config(&cfg.appearance.theme);
-                        weak.update(cx, |this, cx| {
-                            this.colours = UiColors::build(dark, &theme);
-                            cx.notify();
-                        }).ok();
-                        tracing::info!("Theme switched to: {}", cfg.appearance.theme);
-                    }
-                }))
-                .item(PopupMenuItem::new(s_always_on_top).on_click(|_, _, _| {
-                    toggle_always_on_top();
-                }))
-            })
     }
 
     // ─── Tools menu
+
+    fn render_tools_menu(
+        &self,
+        _c: &UiColors,
+        tr: &Tr,
+        _cx: &mut Context<Self>,
+        weak: Entity<Self>,
+    ) -> impl IntoElement {
+        let player = self.player.clone();
+        let s_tools_label = tr.menu_tools;
+        let s_media_lib = tr.media_lib_title;
+        let s_find = tr.menu_find;
+        let s_equalizer = tr.menu_equalizer;
+        let s_settings = tr.menu_settings;
+        let s_browse_dir = tr.menu_browse_dir;
+        let s_song_info = tr.menu_song_info;
+        let s_format_convert = tr.menu_format_convert;
+        let s_charset_convert = tr.menu_charset_convert;
+        let s_online_tags = tr.menu_online_tags;
+        let s_cover_preview = tr.menu_cover_preview;
+        let s_timer_shutdown = tr.menu_timer_shutdown;
+        let s_file_assoc = tr.menu_file_association;
+        let s_listen_stats = tr.menu_listen_stats;
+        let s_dev_progress = tr.menu_dev_progress;
+        let s_create_shortcut = tr.menu_create_shortcut;
+        let s_reinit_player = tr.menu_reinit_player;
+        let s_cover_info = tr.cover_info;
+        let s_cover_none = tr.cover_none;
+        let s_cover_error = tr.cover_error;
+        let s_format_unsupported = tr.format_unsupported;
+        layout::menu_dropdown(s_tools_label, IconName::Settings, move |menu, _, _| {
+            let player_eq = player.clone();
+            menu.item(PopupMenuItem::new(s_media_lib).on_click(|_, _, _| { ACTIVE_PANEL.store(2, Ordering::Relaxed); }))
+                .item(PopupMenuItem::new(s_find).on_click(|_, _, _| { ACTIVE_PANEL.store(3, Ordering::Relaxed); }))
+                .item(PopupMenuItem::new(s_browse_dir).on_click(|_, _, _| { ACTIVE_PANEL.store(1, Ordering::Relaxed); }))
+                .item(PopupMenuItem::new(s_song_info).on_click({
+                    let weak = weak.clone();
+                    move |_, _, cx| { weak.update(cx, |this, cx| { this.modal = Some(ModalKind::SongInfo); cx.notify(); }); }
+                }))
+                .item(PopupMenuItem::new(s_equalizer).on_click({
+                    let weak = weak.clone();
+                    move |_, _, cx| { weak.update(cx, |_, cx| { ACTIVE_PANEL.store(7, Ordering::Relaxed); cx.notify(); }); }
+                }))
+                .item(PopupMenuItem::new(s_format_convert).on_click({
+                    let weak = weak.clone();
+                    move |_, _, cx| { weak.update(cx, |this, cx| { this.modal = Some(ModalKind::FormatConvert); cx.notify(); }); }
+                }))
+                .item(PopupMenuItem::new(s_charset_convert).on_click({
+                    let weak = weak.clone();
+                    let p = player_eq.clone();
+                    move |_, _, cx| {
+                        if let Some(track) = p.playlist().current_track() {
+                            let path = track.file_path.clone();
+                            weak.update(cx, |this, cx| {
+                                tracing::info!("[Convert] 简体: {}, 繁体: {}", crate::charset::to_simplified_chinese(&track.title), crate::charset::to_traditional_chinese(&track.title));
+                                if let Some(lyrics) = &this.lyric_state.lyrics {
+                                    if !lyrics.is_empty() {
+                                        let mut converted = lyrics.clone();
+                                        for line in converted.lines.iter_mut() {
+                                            line.text = crate::charset::to_simplified_chinese(&line.text);
+                                        }
+                                        this.lyric_state.update(Some(converted), (this.position * 1000.0) as u64);
+                                    }
+                                }
+                                let _ = crate::tag::writer::set_tag_field(&path, "title", &crate::charset::to_simplified_chinese(&track.title));
+                                let _ = crate::tag::writer::set_tag_field(&path, "artist", &crate::charset::to_simplified_chinese(&track.artist));
+                                let _ = crate::tag::writer::set_tag_field(&path, "album", &crate::charset::to_simplified_chinese(&track.album));
+                                cx.notify();
+                            }).ok();
+                        }
+                    }
+                }))
+                .item(PopupMenuItem::new(s_online_tags).on_click({
+                    let p = player_eq.clone();
+                    move |_, _, _| {
+                        if let Some(track) = p.playlist().current_track() {
+                            let path = track.file_path.clone();
+                            runtime().spawn_blocking(move || {
+                                let _ = crate::commands::track::cmd_tag(&crate::cli::TagArgs {
+                                    action: crate::cli::TagAction::Online(crate::cli::TagOnlineArgs { file: path, service: "netease".to_string(), auto: true, cover: false }),
+                                });
+                            });
+                        }
+                    }
+                }))
+                .item(PopupMenuItem::new(s_cover_preview).on_click({
+                    let p = player_eq.clone();
+                    move |_, _, _| {
+                        if let Some(track) = p.playlist().current_track() {
+                            match crate::tag::writer::read_pictures(&track.file_path) {
+                                Ok(pics) => {
+                                    let count = pics.len();
+                                    let info = if count > 0 { s_cover_info.replace("{0}", &count.to_string()).replace("{1}", &pics[0].0).replace("{2}", &(pics[0].1.len() / 1024).to_string()) } else { s_cover_none.to_string() };
+                                    let _ = rfd::MessageDialog::new().set_title(s_cover_preview).set_description(&info).show();
+                                }
+                                Err(e) => { let _ = rfd::MessageDialog::new().set_title(s_cover_preview).set_description(&s_cover_error.replace("{0}", &e.to_string())).show(); }
+                            }
+                        }
+                    }
+                }))
+                .item(PopupMenuItem::new(s_timer_shutdown).on_click(|_, _, _| {
+                    if SLEEP_TIMER_ACTIVE.load(Ordering::Relaxed) {
+                        SLEEP_TIMER_ACTIVE.store(false, Ordering::Relaxed);
+                    } else {
+                        SLEEP_TIMER_ACTIVE.store(true, Ordering::Relaxed);
+                        runtime().spawn_blocking(|| { std::thread::sleep(std::time::Duration::from_secs(3600)); SLEEP_TIMER_ACTIVE.store(false, Ordering::Relaxed); });
+                    }
+                }))
+                .item(PopupMenuItem::new(s_file_assoc).on_click(|_, _, _| { let _ = crate::commands::system::cmd_file_assoc(&crate::cli::FileAssocArgs { action: crate::cli::FileAssocAction::Register }); }))
+                .item(PopupMenuItem::new(s_listen_stats).on_click(move |_, _, _| {
+                    let stats = crate::play_stats::top_stats(20);
+                    let total_secs = crate::play_stats::total_listen_secs();
+                    let total_plays = crate::play_stats::total_play_count();
+                    let total_tracks = crate::play_stats::total_track_count();
+                    tracing::info!("=== 收听统计 === 总曲目: {}, 总播放: {}, 总时长: {}h{}m", total_tracks, total_plays, total_secs / 3600, (total_secs % 3600) / 60);
+                    for (i, (path, entry)) in stats.iter().enumerate() {
+                        if i >= 10 { break; }
+                        tracing::info!("  #{:2} {:>4}h{:02}m  {:>4}次  {}", i+1, entry.listen_secs / 3600, (entry.listen_secs % 3600) / 60, entry.play_count, path);
+                    }
+                }))
+                .item(PopupMenuItem::new(s_dev_progress).on_click(|_, _, _| {
+                    #[cfg(windows)] { let _ = std::process::Command::new("cmd").args(&["/c", "start", "docs\\缺陷分析与改进计划.md"]).spawn(); }
+                    #[cfg(not(windows))] { let _ = std::process::Command::new("xdg-open").arg("docs/缺陷分析与改进计划.md").spawn(); }
+                }))
+                .item(PopupMenuItem::new(s_create_shortcut).on_click(|_, _, _| {
+                    #[cfg(windows)] {
+                        let exe = std::env::current_exe().ok().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
+                        let desktop = std::env::var("USERPROFILE").unwrap_or_default() + "\\Desktop";
+                        let _ = std::process::Command::new("powershell").args(&["-Command", &format!("$ws = New-Object -ComObject WScript.Shell; $sc = $ws.CreateShortcut('{}\\HackMagic Music Player.lnk'); $sc.TargetPath = '{}'; $sc.Save()", desktop, exe)]).status();
+                    }
+                    #[cfg(not(windows))] { tracing::info!("[Shortcut] 创建快捷方式 - 仅在 Windows 支持"); }
+                }))
+                .item(PopupMenuItem::new(s_reinit_player).on_click({
+                    let weak = weak.clone();
+                    let p = player_eq.clone();
+                    move |_, _, cx| {
+                        let _ = p.stop(); p.playlist_mut().clear(); p.eq_reset().ok();
+                        let _ = p.set_speed(1.0); let _ = p.set_pitch(0); p.eq_enable(false);
+                        weak.update(cx, |this, cx| {
+                            this.title.clear(); this.artist.clear(); this.album.clear();
+                            this.position = 0.0; this.duration = 0.0; this.is_playing = false;
+                            this.lyric_state.clear(); this.lyric_offset_ms = 0; this.playlist_selected.clear();
+                            cx.notify();
+                        }).ok();
+                    }
+                }))
+                .separator()
+                .item(PopupMenuItem::new(s_settings).on_click(|_, _, _| { ACTIVE_PANEL.store(5, Ordering::Relaxed); }))
+            })
+    }
+
+    // ─── Help menu
+
+    fn render_help_menu(
+        &self,
+        _c: &UiColors,
+        tr: &Tr,
+        _cx: &mut Context<Self>,
+        weak: Entity<Self>,
+    ) -> impl IntoElement {
+        let s_help_label = tr.menu_help;
+        let s_help_content = tr.menu_help_content;
+        let s_about = tr.menu_about;
+        let s_online_help = tr.menu_online_help;
+        let s_check_update = tr.menu_check_update;
+        let s_supported_formats = tr.menu_supported_formats;
+        layout::menu_dropdown(s_help_label, IconName::Info, move |menu, _, _| {
+            menu.item(PopupMenuItem::new(s_help_content).on_click(|_, _, _| {
+                #[cfg(windows)] { let _ = std::process::Command::new("cmd").args(&["/c", "start", "https://github.com/zhongyang219/MusicPlayer2/wiki"]).spawn(); }
+                #[cfg(not(windows))] { let _ = std::process::Command::new("xdg-open").arg("https://github.com/zhongyang219/MusicPlayer2/wiki").spawn(); }
+            }))
+            .item(PopupMenuItem::new(s_online_help).on_click(|_, _, _| {
+                #[cfg(windows)] { let _ = std::process::Command::new("cmd").args(&["/c", "start", "https://github.com/zhongyang219/MusicPlayer2"]).spawn(); }
+                #[cfg(not(windows))] { let _ = std::process::Command::new("xdg-open").arg("https://github.com/zhongyang219/MusicPlayer2").spawn(); }
+            }))
+            .item(PopupMenuItem::new(s_check_update).on_click(|_, _, _| { crate::commands::system::check_update_background(); }))
+            .separator()
+            .item(PopupMenuItem::new(s_supported_formats).on_click(|_, _, _| { let formats = crate::audio_common::supported_extensions(); tracing::info!("Supported formats: {:?}", formats); }))
+            .item(PopupMenuItem::new(s_about).on_click({
+                let weak = weak.clone();
+                move |_, _, cx| { weak.update(cx, |this, cx| { this.modal = Some(ModalKind::About); cx.notify(); }).ok(); }
+            }))
+        })
+    }
 
     /// Render a modal dialog overlay (About / Song Info / Format Convert).
     fn render_modal(
