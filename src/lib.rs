@@ -4,6 +4,7 @@
 #![allow(dead_code)]
 #![recursion_limit = "1024"]
 
+pub mod ai;
 pub mod audio_common;
 pub mod bass;
 pub mod charset;
@@ -30,6 +31,7 @@ pub mod hotkey;
 pub mod rpc;
 pub mod util;
 pub mod tag;
+pub mod vecdb;
 pub mod play_stats;
 pub mod smtc;
 #[cfg(target_os = "windows")]
