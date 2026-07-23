@@ -667,10 +667,14 @@ impl MusicPlayer {
     /// Reads position/duration/volume/state directly from engine (atomic-fast),
     /// and track info / spectrum / peaks from the lock-free `EngineStatus` snapshot.
     fn poll_player_state_inner(&mut self) {
+        tracing::trace!("[GUI] poll_player_state_inner start");
         // Process pending download events
         self.poll_download_events();
 
         let snap = self.player.status.load();
+
+        tracing::trace!("[GUI] poll_player_state_inner: position={}, duration={}, volume={}, is_playing={}",
+            snap.position_secs, snap.duration_secs, snap.volume, snap.state == crate::core::engine_trait::EngineState::Playing);
 
         // Read ALL state from the EngineStatus snapshot (single source of truth).
         // This avoids the race between reading position/duration/volume from the engine
@@ -989,10 +993,12 @@ impl MusicPlayer {
 
 impl Render for MusicPlayer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        tracing::trace!("[GUI] render() called");
         // Poll player state directly in render (no thread contention since this
         // runs on the main thread). Heavy I/O (lyrics, cover extraction) is
         // deferred to the background timer via pending_track_path.
         self.poll_player_state_inner();
+        tracing::trace!("[GUI] render() poll_player_state_inner done");
         let tr = self.tr;
         let c = &self.colours;
 
@@ -1808,7 +1814,9 @@ impl MusicPlayer {
     ) -> impl IntoElement {
         // Weak handle to self so menu callbacks (which only receive &mut App)
         // can rebuild colors and request a repaint after toggling theme/dark mode.
+        tracing::trace!("[GUI] render_menu_bar: start");
         let weak = _cx.entity().downgrade();
+        tracing::trace!("[GUI] render_menu_bar: weak created");
         let weak_file = weak.clone();
         let weak_playlist = weak.clone();
         let weak_lyric = weak.clone();

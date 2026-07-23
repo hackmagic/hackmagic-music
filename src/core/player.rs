@@ -960,6 +960,7 @@ mod tests {
     use super::*;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
+    use crate::core::engine_trait::EngineCapabilities;
 
     /// A mock engine that tracks calls without real audio hardware.
     struct MockEngine {
@@ -989,6 +990,7 @@ mod tests {
             self.play_called.store(true, Ordering::SeqCst);
             Ok(())
         }
+        fn capabilities(&self) -> EngineCapabilities { EngineCapabilities::all() }
         fn pause(&self) -> Result<()> { Ok(()) }
         fn stop(&self) -> Result<()> { Ok(()) }
         fn state(&self) -> EngineState { EngineState::Stopped }
