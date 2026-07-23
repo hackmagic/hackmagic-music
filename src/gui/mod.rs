@@ -993,12 +993,11 @@ impl MusicPlayer {
 
 impl Render for MusicPlayer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        tracing::trace!("[GUI] render() called");
+        eprintln!("[RENDER_DEBUG] render() called");
         // Poll player state directly in render (no thread contention since this
         // runs on the main thread). Heavy I/O (lyrics, cover extraction) is
         // deferred to the background timer via pending_track_path.
         self.poll_player_state_inner();
-        tracing::trace!("[GUI] render() poll_player_state_inner done");
         let tr = self.tr;
         let c = &self.colours;
 
