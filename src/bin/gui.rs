@@ -40,7 +40,7 @@ fn main() {
     let writer = FileAndStdoutWriter { file: std::sync::Mutex::new(file) };
 
     let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info,sqlx=warn,wgpu=warn,gpui=warn"));
+        .unwrap_or_else(|_| EnvFilter::new("trace"));
 
     tracing_subscriber::registry()
         .with(filter)
