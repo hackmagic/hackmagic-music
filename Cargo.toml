@@ -71,8 +71,8 @@ rustfft = "6"
 
 # Local vector database (for similarity search and semantic retrieval)
 lancedb = "0.31"
-arrow-array = "53"
-arrow-schema = "53"
+arrow-array = "58"
+arrow-schema = "58"
 
 # Test utilities
 tempfile = "3"

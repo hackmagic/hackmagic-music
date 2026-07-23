@@ -59,7 +59,7 @@ impl Default for GeneralConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PlayConfig {
-    pub engine: String,               // "bass", "mci", "ffmpeg"
+    pub engine: String,               // "bass", "mci", "ffmpeg", "rodio", "symphonia"
     pub stop_when_error: bool,
     pub auto_play_when_start: bool,
     pub output_device: String,

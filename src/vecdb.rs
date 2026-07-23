@@ -1,10 +1,13 @@
 //! Local vector database (LanceDB) for audio embedding similarity search.
-//! ponytail: single table "tracks", 256-dim F32 vectors, L2 distance.
-//! Upgrade: add metadata columns, IVF-PQ index when scale demands it.
+//! ponytail: single "tracks" table, 256-dim F32 vectors, L2 distance.
 
-use lancedb::{connect, Connection, Table};
-use lancedb::query::Executable;
+use arrow_array::{Array, ArrayRef, FixedSizeListArray, Float32Array, RecordBatch, StringArray};
+use arrow_schema::{DataType, Field, Schema, SchemaRef};
+use lancedb::query::{ExecutableQuery, IntoQueryVector, QueryBase};
+use lancedb::Table;
 use std::sync::Arc;
+
+use lancedb::data::scannable::Scannable;
 
 /// Vector search result.
 #[derive(Debug, Clone)]
@@ -13,156 +16,154 @@ pub struct SearchHit {
     pub distance: f32,
 }
 
-/// Local LanceDB wrapper for track embedding search.
-pub struct VecDb {
-    conn: Connection,
-    /// Cache the table handle after first access.
-    table: Option<Arc<Table>>,
+const TABLE_NAME: &str = "tracks";
+const EMBEDDING_DIM: i32 = 256;
+
+fn track_schema() -> SchemaRef {
+    Arc::new(Schema::new(vec![
+        Field::new("path", DataType::Utf8, false),
+        Field::new(
+            "embedding",
+            DataType::FixedSizeList(
+                Arc::new(Field::new("item", DataType::Float32, true)),
+                EMBEDDING_DIM,
+            ),
+            false,
+        ),
+    ]))
 }
 
-impl VecDb {
-    /// Open or create a vector database at the given directory path.
-    pub async fn open(db_path: &str) -> Result<Self, Box<dyn std::error::Error>> {
-        let conn = connect(db_path).execute().await?;
-        Ok(Self { conn, table: None })
-    }
+/// Open or create a local LanceDB database at the given directory path.
+pub async fn open_db(db_path: &str) -> Result<lancedb::Connection, Box<dyn std::error::Error>> {
+    let conn = lancedb::connect(db_path).execute().await?;
+    Ok(conn)
+}
 
-    /// Ensure the tracks table exists with the right schema.
-    async fn ensure_table(&mut self) -> Result<Arc<Table>, Box<dyn std::error::Error>> {
-        if let Some(ref t) = self.table {
-            return Ok(t.clone());
-        }
-        let names = self.conn.table_names().execute().await?;
-        let table = if names.iter().any(|n| n == "tracks") {
-            self.conn.open_table("tracks").execute().await?
-        } else {
-            // Create with empty schema — first insert defines the columns
-            self.conn
-                .create_empty_table("tracks")
-                .execute()
-                .await?
-        };
-        let table = Arc::new(table);
-        self.table = Some(table.clone());
-        Ok(table)
-    }
-
-    /// Index a track's embedding. Creates or replaces the row by `path`.
-    pub async fn index_track(
-        &mut self,
-        path: &str,
-        embedding: &[f32],
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let table = self.ensure_table().await?;
-
-        // ponytail: naive delete-then-insert for upsert.
-        // Upgrade: use native merge when lancedb supports it.
-        let _ = table.delete(format!("path = '{}'", path.replace('\'', "''"))).await;
-
-        // Build a RecordBatch manually via arrow
-        let path_arr = arrow_array::StringArray::from(vec![path]);
-        let emb_arr = arrow_array::Float32Array::from(
-            embedding.iter().copied().collect::<Vec<f32>>(),
-        );
-        let emb_len = embedding.len() as i64;
-        let emb_fixed = arrow_array::FixedSizeListArray::new(
-            arrow_array::types::Float32Type::as_ref(),
-            arrow_array::DataType::Float32,
-            Some(emb_len),
-            vec![Arc::new(emb_arr)],
-            None,
-        );
-
-        let batch = arrow_array::RecordBatch::try_new(
-            arrow_schema::Schema::new(vec![
-                arrow_schema::Field::new("path", arrow_schema::DataType::Utf8, false),
-                arrow_schema::Field::new(
-                    "embedding",
-                    arrow_schema::DataType::FixedSizeList(
-                        Arc::new(arrow_schema::Field::new("item", arrow_schema::DataType::Float32, true)),
-                        embedding.len() as i32,
-                    ),
-                    false,
-                ),
-            ]).into(),
-            vec![Arc::new(path_arr), Arc::new(emb_fixed)],
-        )?;
-
-        table.add(vec![batch]).execute().await?;
-        Ok(())
-    }
-
-    /// Remove a track's embedding by path.
-    pub async fn remove_track(&mut self, path: &str) -> Result<(), Box<dyn std::error::Error>> {
-        let table = self.ensure_table().await?;
-        table
-            .delete(format!("path = '{}'", path.replace('\'', "''")))
-            .await?;
-        Ok(())
-    }
-
-    /// Search for `k` nearest neighbors by embedding similarity (L2).
-    pub async fn search(
-        &self,
-        embedding: &[f32],
-        k: usize,
-    ) -> Result<Vec<SearchHit>, Box<dyn std::error::Error>> {
-        let Some(ref table) = self.table else {
-            return Ok(vec![]);
-        };
-        let results = table
-            .search(&arrow_array::Float32Array::from(embedding.to_vec()))
-            .limit(k as u32)
+/// Get or create the tracks table.
+pub async fn ensure_table(
+    conn: &lancedb::Connection,
+) -> Result<Arc<Table>, Box<dyn std::error::Error>> {
+    let names = conn.table_names().execute().await?;
+    let table = if names.iter().any(|n| n == TABLE_NAME) {
+        conn.open_table(TABLE_NAME).execute().await?
+    } else {
+        let empty = make_batch(&[], &[])?;
+        conn.create_table(TABLE_NAME, vec![empty])
             .execute()
-            .await?;
+            .await?
+    };
+    Ok(Arc::new(table))
+}
 
-        let mut hits = Vec::new();
-        while let Some(batch) = results.next().await {
-            let batch = batch?;
-            if let Some(paths) = batch.column_by_name("path") {
-                let paths = paths.as_any().downcast_ref::<arrow_array::StringArray>().unwrap();
-                // LanceDB returns distance in _distance column
-                let dists = batch
-                    .column_by_name("_distance")
-                    .and_then(|c| c.as_any().downcast_ref::<arrow_array::Float32Array>());
-                for i in 0..paths.len() {
-                    hits.push(SearchHit {
-                        path: paths.value(i).to_string(),
-                        distance: dists.map(|d| d.value(i)).unwrap_or(0.0),
-                    });
-                }
+fn make_batch(
+    paths: &[&str],
+    embeddings: &[&[f32]],
+) -> Result<RecordBatch, Box<dyn std::error::Error>> {
+    let path_arr = StringArray::from(paths.to_vec());
+
+    let values: Vec<f32> = embeddings.iter().flat_map(|e| e.iter().copied()).collect();
+    let value_arr = Arc::new(Float32Array::from(values)) as ArrayRef;
+    let emb_arr = FixedSizeListArray::new(
+        Arc::new(Field::new("item", DataType::Float32, true)),
+        EMBEDDING_DIM,
+        value_arr,
+        None,
+    );
+
+    let batch =
+        RecordBatch::try_new(track_schema(), vec![Arc::new(path_arr), Arc::new(emb_arr)])?;
+    Ok(batch)
+}
+
+/// Index a track's embedding (upsert by path).
+pub async fn index_track(
+    conn: &lancedb::Connection,
+    path: &str,
+    embedding: &[f32],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let table = ensure_table(conn).await?;
+    let _ = table
+        .delete(format!("path = '{}'", path.replace('\'', "''")).as_str())
+        .await;
+    let batch = make_batch(&[path], &[embedding])?;
+    table.add(vec![batch]).execute().await?;
+    Ok(())
+}
+
+/// Remove a track's embedding by path.
+pub async fn remove_track(
+    conn: &lancedb::Connection,
+    path: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let table = ensure_table(conn).await?;
+    table
+        .delete(format!("path = '{}'", path.replace('\'', "''")).as_str())
+        .await?;
+    Ok(())
+}
+
+/// Search for `k` nearest neighbors by embedding similarity (L2).
+pub async fn search(
+    conn: &lancedb::Connection,
+    embedding: &[f32],
+    k: usize,
+) -> Result<Vec<SearchHit>, Box<dyn std::error::Error>> {
+    let table = ensure_table(conn).await?;
+    let query = table.query().nearest_to(embedding)?.limit(k);
+    let mut stream = query.execute().await?;
+
+    let mut hits = Vec::new();
+    use futures_util::TryStreamExt;
+    while let Some(batch) = stream.try_next().await? {
+        let paths = batch
+            .column_by_name("path")
+            .and_then(|c| c.as_any().downcast_ref::<StringArray>());
+        let dists = batch
+            .column_by_name("_distance")
+            .and_then(|c| c.as_any().downcast_ref::<Float32Array>());
+        if let Some(paths) = paths {
+            for i in 0..paths.len() {
+                hits.push(SearchHit {
+                    path: paths.value(i).to_string(),
+                    distance: dists.map(|d| d.value(i)).unwrap_or(0.0),
+                });
             }
         }
-        Ok(hits)
     }
+    Ok(hits)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn embedding(v: f32) -> Vec<f32> {
+        vec![v; EMBEDDING_DIM as usize]
+    }
+
     #[tokio::test]
-    async fn test_open_db() {
+    async fn test_index_and_search() {
         let dir = tempfile::tempdir().unwrap();
-        let mut db = VecDb::open(dir.path().to_str().unwrap()).await.unwrap();
-        let path = "/test/song.flac";
-        let emb = vec![0.1f32; 256];
-        db.index_track(path, &emb).await.unwrap();
-        let hits = db.search(&emb, 5).await.unwrap();
+        let conn = open_db(dir.path().to_str().unwrap()).await.unwrap();
+
+        index_track(&conn, "/a.flac", &embedding(0.1)).await.unwrap();
+        index_track(&conn, "/b.flac", &embedding(0.9)).await.unwrap();
+
+        let hits = search(&conn, &embedding(0.1), 5).await.unwrap();
         assert!(!hits.is_empty());
-        assert_eq!(hits[0].path, path);
-        // Same vector should have distance ~0
+        assert_eq!(hits[0].path, "/a.flac");
         assert!(hits[0].distance.abs() < 0.01);
     }
 
     #[tokio::test]
-    async fn test_remove_track() {
+    async fn test_remove() {
         let dir = tempfile::tempdir().unwrap();
-        let mut db = VecDb::open(dir.path().to_str().unwrap()).await.unwrap();
-        let path = "/test/song.flac";
-        db.index_track(path, &vec![0.2f32; 256]).await.unwrap();
-        db.remove_track(path).await.unwrap();
-        let hits = db.search(&vec![0.2f32; 256], 5).await.unwrap();
+        let conn = open_db(dir.path().to_str().unwrap()).await.unwrap();
+
+        index_track(&conn, "/x.flac", &embedding(0.5)).await.unwrap();
+        remove_track(&conn, "/x.flac").await.unwrap();
+
+        let hits = search(&conn, &embedding(0.5), 5).await.unwrap();
         assert!(hits.is_empty());
     }
 }

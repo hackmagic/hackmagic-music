@@ -256,7 +256,7 @@ fn main() {
 
     // Initialize engine — fallback to FFmpeg if BASS fails
     if let Err(e) = player.init() {
-        if cfg.play.engine == "bass" {
+        if EngineType::from_str(&cfg.play.engine) == EngineType::Bass {
             tracing::warn!("BASS init failed ({}), trying FFmpeg engine", e);
             let engine_type = EngineType::Ffmpeg;
             let fallback_player = Arc::new(Player::new(engine_type));

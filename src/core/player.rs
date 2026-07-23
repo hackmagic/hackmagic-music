@@ -85,9 +85,6 @@ pub struct Player {
     pub status: ArcSwap<EngineStatus>,
 }
 
-unsafe impl Send for Player {}
-unsafe impl Sync for Player {}
-
 impl Player {
     /// Create a new player with the specified engine
     pub fn new(engine_type: EngineType) -> Self {
