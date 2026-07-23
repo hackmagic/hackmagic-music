@@ -737,7 +737,7 @@ impl MusicPlayer {
     /// Results are LRU-cached by track path to avoid repeated extraction.
     fn extract_cover(&self, file_path: &str) -> Option<PathBuf> {
         {
-            let mut cache = self.cover_cache.lock().unwrap();
+            let cache = self.cover_cache.lock().unwrap();
             if let Some(cached) = cache.peek(file_path) {
                 return Some(cached.clone());
             }
@@ -1698,7 +1698,7 @@ impl MusicPlayer {
                         let w = weak.clone();
                         let w2 = weak.clone();
                         move |_, _, cx| {
-                            let _ = w.update(cx, |this, cx| {
+                            let _ = w.update(cx, |_this, cx| {
                                 let weak_ = w2.clone();
                                 run_blocking_dialog_app(cx, &weak_,
                                     || rfd::FileDialog::new()
@@ -2190,8 +2190,8 @@ impl MusicPlayer {
                     .item(PopupMenuItem::new(s_repair_paths).on_click({
                         let weak = weak.clone();
                         let player = player.clone();
-                        move |_, _, cx| {
-                            let weak3 = weak.clone();
+                        move |_, _, _cx| {
+                            let _weak3 = weak.clone();
                             let player2 = player.clone();
                             runtime().spawn_blocking(move || {
                                 let pl = player2.playlist();
@@ -2305,8 +2305,8 @@ impl MusicPlayer {
                     let weak = weak.clone();
                     let player = player.clone();
                     move |menu, _, _| {
-                    let p1 = player.clone();
-                    let p2 = player.clone();
+                    let _p1 = player.clone();
+                    let _p2 = player.clone();
                     let p3 = player.clone();
                     let p4 = player.clone();
                     menu.item(PopupMenuItem::new(if lyric_visible_now { "隐藏歌词" } else { "显示歌词" }.to_string()).on_click({
@@ -2404,7 +2404,7 @@ impl MusicPlayer {
                         }
                     }))
                     .item(PopupMenuItem::new(s_show_desktop).on_click({
-                        let weak = weak.clone();
+                        let _weak = weak.clone();
                         let player = player.clone();
                         move |_, _, cx| {
                             let already_open = DESKTOP_LYRICS_WINDOW_OPEN.load(Ordering::Relaxed);
@@ -2481,7 +2481,7 @@ impl MusicPlayer {
                     }))
                     .item(PopupMenuItem::new(s_assoc_lyric).on_click({
                         let weak = weak.clone();
-                        move |_, window, cx| {
+                        move |_, _window, cx| {
                             // Pick a .lrc file, then copy/rename it next to the
                             // current track so it gets auto-loaded.
                             run_blocking_dialog_app(cx, &weak,
@@ -2553,7 +2553,7 @@ impl MusicPlayer {
         let s_cover_info = tr.cover_info;
         let s_cover_none = tr.cover_none;
         let s_cover_error = tr.cover_error;
-        let s_format_unsupported = tr.format_unsupported;
+        let _s_format_unsupported = tr.format_unsupported;
         layout::menu_dropdown(s_tools_label, IconName::Settings, move |menu, _, _| {
             let player_eq = player.clone();
             menu.item(PopupMenuItem::new(s_media_lib).on_click(|_, _, _| { ACTIVE_PANEL.store(2, Ordering::Relaxed); }))
@@ -2879,14 +2879,14 @@ impl MusicPlayer {
                 .label(format!("转为 .{}", fmt))
                 .compact()
                 .ghost()
-                .on_click(cx.listener(move |this, _, _window, cx| {
+                .on_click(cx.listener(move |_this, _, _window, cx| {
                     let weak = cx.entity().downgrade();
                     let fmt = fmt;
                     run_blocking_dialog_app(cx, &weak,
                         || rfd::FileDialog::new()
                             .add_filter("音频文件", &["mp3", "flac", "wav", "ogg", "aac", "m4a", "wma", "ape"])
                             .pick_file(),
-                        move |file, this, cx| {
+                        move |file, _this, cx| {
                             if let Some(file) = file {
                                 let src = file.to_string_lossy().to_string();
                                 let dst = std::path::Path::new(&src).with_extension(fmt).to_string_lossy().to_string();
@@ -3020,7 +3020,7 @@ impl MusicPlayer {
                     }
                 })))
             .child(Button::new("lyr_save_as").label("另存为...").compact()
-                .on_click(cx.listener(|this, _, _window, cx| {
+                .on_click(cx.listener(|_this, _, _window, cx| {
                     run_blocking_dialog(cx,
                         || rfd::FileDialog::new()
                             .set_file_name("lyric.lrc")
@@ -3037,7 +3037,7 @@ impl MusicPlayer {
                         });
                 })))
             .child(Button::new("lyr_open").label("打开").compact()
-                .on_click(cx.listener(|this, _, _window, cx| {
+                .on_click(cx.listener(|_this, _, _window, cx| {
                     run_blocking_dialog(cx,
                         || rfd::FileDialog::new()
                             .add_filter("LRC", &["lrc"])
@@ -3174,7 +3174,7 @@ impl MusicPlayer {
                     c.panel_alt
                 };
 
-                let row_id = format!("lyr_row_{}", i);
+                let _row_id = format!("lyr_row_{}", i);
                 list = list.child(
                     h_flex()
                         .id(("lyr_row", i as u64))
@@ -3922,7 +3922,7 @@ impl MusicPlayer {
                             .child(
                                 h_flex().gap_1()
                                     .child(Button::new("pl_add").icon(IconName::Plus).compact().ghost()
-                                        .on_click(cx.listener(|this, _, _window, cx| {
+                                        .on_click(cx.listener(|_this, _, _window, cx| {
                                             run_blocking_dialog(cx,
                                                 || -> Option<std::path::PathBuf> {
                                                     rfd::FileDialog::new()
@@ -3937,7 +3937,7 @@ impl MusicPlayer {
                                                 });
                                         })))
                                     .child(Button::new("pl_import").icon(IconName::ArrowDown).compact().ghost()
-                                        .on_click(cx.listener(|this, _, _window, cx| {
+                                        .on_click(cx.listener(|_this, _, _window, cx| {
                                             run_blocking_dialog(cx,
                                                 || -> Option<std::path::PathBuf> {
                                                     rfd::FileDialog::new()
@@ -4308,7 +4308,7 @@ impl MusicPlayer {
                                 let p_r5 = ctx_player.clone();
                                 let p_r0 = ctx_player.clone();
                                 let fp_loc = file_path.clone();
-                                let fp_copy = file_path.clone();
+                                let _fp_copy = file_path.clone();
                                 let dn = display_name.clone();
                                 let fav = is_fav;
                                 let idx = i;
@@ -4361,8 +4361,8 @@ impl MusicPlayer {
                                 .separator()
                                 .item(PopupMenuItem::new(s_open_location).on_click({
                                     let fp_loc2 = fp_loc.clone();
-                                    let dn2 = dn.clone();
-                                    let fav2 = fav;
+                                    let _dn2 = dn.clone();
+                                    let _fav2 = fav;
                                     move |_, _, _| {
                                     let path = std::path::Path::new(&fp_loc2);
                                     if let Some(_parent) = path.parent() {
@@ -4394,7 +4394,7 @@ impl MusicPlayer {
                                 }))
                                 .item(PopupMenuItem::new(s_properties).on_click({
                                 let fp_loc2 = fp_loc.clone();
-                                let idx2 = idx;
+                                let _idx2 = idx;
                                 let dn2 = dn.clone();
                                 let fav2 = fav;
                                 move |_, _, _| {
@@ -4444,7 +4444,7 @@ impl MusicPlayer {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let player = self.player.clone();
+        let _player = self.player.clone();
         v_flex()
             .flex_grow()
             .h_full()
@@ -4454,7 +4454,7 @@ impl MusicPlayer {
                     .child(layout::txt("文件浏览器", 14.0, c.text_title))
                     .child(
                         Button::new("fb_open_folder").label("打开文件夹").compact().ghost()
-                            .on_click(cx.listener(|this, _, _w, cx| {
+                            .on_click(cx.listener(|_this, _, _w, cx| {
                                 run_blocking_dialog(cx,
                                     || rfd::FileDialog::new().pick_folder(),
                                     |folder, this, cx| {
@@ -4641,7 +4641,7 @@ impl MusicPlayer {
                     .child(
                         Button::new("ml_refresh_btn").label("刷新").compact().ghost()
                             .on_click(cx.listener(move |_this, _e: &gpui::ClickEvent, _w, cx| {
-                                let weak = cx.entity().downgrade();
+                                let _weak = cx.entity().downgrade();
                                 let (tx, rx) = async_channel::unbounded();
                                 runtime().spawn_blocking(move || {
                                     let cfg = crate::config::Config::load();
@@ -5090,7 +5090,7 @@ impl FloatingPlaylistView {
 }
 
 impl Render for FloatingPlaylistView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         let cfg = Config::load();
         let c = UiColors::build(cfg.appearance.dark_mode, &theme::ThemeName::from_config(&cfg.appearance.theme));
         let tracks = self.player.playlist().tracks().to_vec();
@@ -5295,7 +5295,7 @@ impl DesktopLyricsView {
 }
 
 impl Render for DesktopLyricsView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         // Poll player state
         self.poll();
 

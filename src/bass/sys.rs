@@ -248,27 +248,27 @@ pub fn load_bass(bass_path: Option<&str>, bass_fx_path: Option<&str>) -> bool {
                         loop {
                             match dir {
                                 Some(ref d) if d.as_os_str().is_empty() || d == std::path::Path::new("") => {
-                                    break unsafe { Library::new("") };
+                                    break Library::new("");
                                 }
                                 Some(ref d) => {
                                     let dll_path = d.join(format!("{}.dll", bass_name));
                                     if dll_path.exists() {
-                                        break unsafe { Library::new(dll_path) };
+                                        break Library::new(dll_path);
                                     }
                                     // Walk up to parent
                                     dir = d.parent().map(|p| p.to_path_buf());
                                 }
                                 None => {
-                                    break unsafe { Library::new("") };
+                                    break Library::new("");
                                 }
                             }
                         }
                     } else {
-                        unsafe { Library::new("") }
+                        Library::new("")
                     }
                 }
                 #[cfg(not(target_os = "windows"))]
-                { unsafe { Library::new("") } }
+                { Library::new("") }
             })
             .or_else(|_| Library::new("libbass"))
             .or_else(|_| Library::new("libbass.so"))

@@ -3,11 +3,10 @@
 
 use arrow_array::{Array, ArrayRef, FixedSizeListArray, Float32Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
-use lancedb::query::{ExecutableQuery, IntoQueryVector, QueryBase};
+use lancedb::query::{ExecutableQuery, QueryBase};
 use lancedb::Table;
 use std::sync::Arc;
 
-use lancedb::data::scannable::Scannable;
 use std::sync::OnceLock;
 
 static VECDB: OnceLock<lancedb::Connection> = OnceLock::new();

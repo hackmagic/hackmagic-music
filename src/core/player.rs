@@ -576,20 +576,20 @@ impl Player {
 
     pub fn ab_set_a(&self) -> Result<()> {
         let pos = self.engine.position();
-        let mut ab = self.settings.lock().unwrap().ab_repeat;
-        ab.a = pos;
-        ab.mode = ABRepeatMode::ASelected;
+        let mut s = self.settings.lock().unwrap();
+        s.ab_repeat.a = pos;
+        s.ab_repeat.mode = ABRepeatMode::ASelected;
         tracing::info!("AB repeat A point set: {:.1}s", pos.as_secs_f64());
         Ok(())
     }
 
     pub fn ab_set_b(&self) -> Result<()> {
         let pos = self.engine.position();
-        let mut ab = self.settings.lock().unwrap().ab_repeat;
-        ab.b = pos;
-        if ab.a < ab.b {
-            ab.mode = ABRepeatMode::ABRepeat;
-            tracing::info!("AB repeat: {:.1}s -> {:.1}s", ab.a.as_secs_f64(), ab.b.as_secs_f64());
+        let mut s = self.settings.lock().unwrap();
+        s.ab_repeat.b = pos;
+        if s.ab_repeat.a < s.ab_repeat.b {
+            s.ab_repeat.mode = ABRepeatMode::ABRepeat;
+            tracing::info!("AB repeat: {:.1}s -> {:.1}s", s.ab_repeat.a.as_secs_f64(), s.ab_repeat.b.as_secs_f64());
         } else {
             tracing::warn!("B point must be after A point");
         }
@@ -597,16 +597,16 @@ impl Player {
     }
 
     pub fn ab_reset(&self) {
-        let mut ab = self.settings.lock().unwrap().ab_repeat;
-        ab.mode = ABRepeatMode::None;
+        let mut s = self.settings.lock().unwrap();
+        s.ab_repeat.mode = ABRepeatMode::None;
         tracing::info!("AB repeat cleared");
     }
 
     pub fn ab_continue(&self) -> Result<()> {
         // Set next AB repeat start to current B point
-        let mut ab = self.settings.lock().unwrap().ab_repeat;
-        ab.a = ab.b;
-        ab.mode = ABRepeatMode::ASelected;
+        let mut s = self.settings.lock().unwrap();
+        s.ab_repeat.a = s.ab_repeat.b;
+        s.ab_repeat.mode = ABRepeatMode::ASelected;
         Ok(())
     }
 

@@ -2,9 +2,8 @@
 //! Both engines follow the same pattern: decode to f32 buffer, play via rodio::Sink.
 //! This module extracts the common parts to eliminate code duplication.
 
-use crate::core::engine_trait::{EngineState, PlayerEngine};
+use crate::core::engine_trait::EngineState;
 use crate::error::Result;
-use rodio::Source;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
