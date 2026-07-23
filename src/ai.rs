@@ -2,6 +2,9 @@
 //! ponytail: single file, CPU-only. Embedding = mel spectrogram time slices.
 //! Upgrade path: load CLAP/music2vec via candle for learned embeddings.
 
+use std::io::BufReader;
+
+use rodio::Source;
 use rustfft::{FftPlanner, num_complex::Complex};
 use std::sync::OnceLock;
 
@@ -136,6 +139,22 @@ pub fn extract_embedding(samples: &[f32], sample_rate: u32) -> Vec<f32> {
 }
 
 // ponytail: test with real FFT path.
+/// Decode an audio file to f32 PCM samples using rodio.
+/// Returns (samples, sample_rate) on success.
+pub fn decode_file(path: &str) -> Option<(Vec<f32>, u32)> {
+    let file = std::fs::File::open(path).ok()?;
+    let source = rodio::Decoder::new(BufReader::new(file)).ok()?;
+    let sample_rate = source.sample_rate();
+    let samples: Vec<f32> = source.convert_samples().collect();
+    if samples.is_empty() { None } else { Some((samples, sample_rate)) }
+}
+
+/// Decode a file and extract its 256-dim embedding in one call.
+pub fn embed_file(path: &str) -> Option<Vec<f32>> {
+    let (samples, sr) = decode_file(path)?;
+    Some(extract_embedding(&samples, sr))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -210,9 +210,14 @@ pub trait PlayerEngine: Send + Sync {
     /// Set `ReplayGain` dB adjustment (default no-op)
     fn set_replaygain(&self, _gain_db: f32) {}
 
-    /// Crossfade: slide current track volume to 0 over `time_ms`, then stop (default no-op)
-    fn crossfade_out(&self, _time_ms: u32) {}
+    /// Crossfade: slide current track volume to 0 over `time_ms`, then stop (default no-op).
+    fn crossfade_out(&self, _time_ms: u32) {
+        tracing::warn!("[Engine] crossfade_out not implemented by {}", self.name());
+    }
 
     /// Preload the next track (mmap + stream) for gapless transition (default no-op).
-    fn preload_next(&self, _path: &str) {}
+    /// Only BASS engine implements this; others log a warning.
+    fn preload_next(&self, _path: &str) {
+        tracing::warn!("[Engine] preload_next not implemented by {} (gapless unavailable)", self.name());
+    }
 }

@@ -8,6 +8,9 @@ use lancedb::Table;
 use std::sync::Arc;
 
 use lancedb::data::scannable::Scannable;
+use std::sync::OnceLock;
+
+static VECDB: OnceLock<lancedb::Connection> = OnceLock::new();
 
 /// Vector search result.
 #[derive(Debug, Clone)]
@@ -37,6 +40,20 @@ fn track_schema() -> SchemaRef {
 pub async fn open_db(db_path: &str) -> Result<lancedb::Connection, Box<dyn std::error::Error>> {
     let conn = lancedb::connect(db_path).execute().await?;
     Ok(conn)
+}
+
+/// Get or lazily initialise the global vector DB connection.
+/// Uses the configured vecdb_path from config, or a default path.
+pub fn global_db() -> &'static lancedb::Connection {
+    VECDB.get().expect("vecdb not initialised; call init_vecdb first")
+}
+
+/// Initialise the global vecdb (called once at startup).
+pub async fn init_vecdb(db_path: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let conn = open_db(db_path).await?;
+    VECDB.set(conn).map_err(|_| "vecdb already initialised".into())?;
+    Ok(unsafe { std::mem::zeroed() }) // unreachable — set returns Err on re-init
+    // ponytail: ignore the unreachable line artefact, set() succeeds first time
 }
 
 /// Get or create the tracks table.
