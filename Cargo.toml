@@ -59,6 +59,9 @@ cpal = "0.15"
 # Pure Rust audio playback (for Rodio engine)
 rodio = { version = "0.19", features = ["mp3", "flac", "vorbis"] }
 
+# Pure Rust audio decoding (for Symphonia engine — broader codec support)
+symphonia = { version = "0.5", default-features = false, features = ["all-codecs", "all-formats", "pcm"] }
+
 # FFmpeg subprocess decoding
 # playa-ffmpeg = { version = "8", features = ["build", "static"] }
 

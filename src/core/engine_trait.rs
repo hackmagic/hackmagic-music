@@ -12,6 +12,7 @@ pub enum EngineType {
     Mci,
     Ffmpeg,
     Rodio,
+    Symphonia,
 }
 
 impl EngineType {
@@ -20,6 +21,7 @@ impl EngineType {
             "mci" => EngineType::Mci,
             "ffmpeg" => EngineType::Ffmpeg,
             "rodio" => EngineType::Rodio,
+            "symphonia" => EngineType::Symphonia,
             _ => EngineType::Bass,
         }
     }
@@ -31,6 +33,7 @@ impl EngineType {
             EngineType::Mci => "mci",
             EngineType::Ffmpeg => "ffmpeg",
             EngineType::Rodio => "rodio",
+            EngineType::Symphonia => "symphonia",
         }
     }
 }

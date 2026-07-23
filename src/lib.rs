@@ -17,6 +17,7 @@ pub mod ffmpeg_engine;
 #[cfg(target_os = "windows")]
 pub mod mci_engine;
 pub mod rodio_engine;
+pub mod symphonia_engine;
 pub mod lyric;
 pub mod lastfm;
 pub mod media;

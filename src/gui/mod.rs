@@ -40,6 +40,12 @@ static SLEEP_TIMER_ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::At
 static ALWAYS_ON_TOP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static DESKTOP_LYRICS_WINDOW_OPEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+fn runtime() -> &'static tokio::runtime::Runtime {
+    use std::sync::OnceLock;
+    static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+    RUNTIME.get_or_init(|| tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime"))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Panel {
     Playlist,
@@ -342,7 +348,7 @@ fn run_blocking_dialog_app<T, F, A>(
 {
     let weak_clone = weak.clone();
     let (tx, rx) = unbounded::<T>();
-    std::thread::spawn(move || {
+    runtime().spawn_blocking(move || {
         let _ = tx.send(build());
     });
     cx.spawn(async move |cx| {
@@ -375,7 +381,7 @@ fn run_blocking_dialog<T, F, A>(
     A: FnOnce(T, &mut MusicPlayer, &mut Context<MusicPlayer>) + 'static,
 {
     let (tx, rx) = unbounded::<T>();
-    std::thread::spawn(move || {
+    runtime().spawn_blocking(move || {
         let _ = tx.send(build());
     });
     cx.spawn(async move |this, cx| {
@@ -464,7 +470,7 @@ impl MusicPlayer {
                 // Capture a weak handle to self so the background scan can
                 // refresh `media_lib_cache` and trigger a repaint when done.
                 let _weak = cx.weak_entity();
-                std::thread::spawn(move || {
+                runtime().spawn_blocking(move || {
                     let total = dirs.len();
                     for (i, dir) in dirs.iter().enumerate() {
                         tracing::info!("[MediaLib] 扫描进度: {}/{} 目录", i + 1, total);
@@ -1048,7 +1054,7 @@ impl Render for MusicPlayer {
                         // Center: prev/play/next + repeat + play_time + showPlaylist
                         .child(
                             h_flex().flex_1().items_center().justify_center().gap_1()
-                                .child(Button::new("mini_prev").label("◀").ghost().compact().on_click(move |_, _, _| { let p = player_p.clone(); std::thread::spawn(move || { let _ = p.prev(); }); }))
+                                .child(Button::new("mini_prev").label("◀").ghost().compact().on_click(move |_, _, _| { let p = player_p.clone(); runtime().spawn_blocking(move || { let _ = p.prev(); }); }))
                                 .child(Button::new("mini_play").label(play_label).primary().compact().on_click(move |_, _, _| {
                                     if player_n.is_playing() {
                                         let _ = player_n.toggle_pause();
@@ -1057,10 +1063,10 @@ impl Render for MusicPlayer {
                                     } else {
                                         let p = player_n.clone();
                                         let idx = p.playlist().current_index().unwrap_or(0);
-                                        std::thread::spawn(move || { let _ = p.play_at_index(idx); });
+                                        runtime().spawn_blocking(move || { let _ = p.play_at_index(idx); });
                                     }
                                 }))
-                                .child(Button::new("mini_next").label("▶").ghost().compact().on_click(move |_, _, _| { let p = player_s.clone(); std::thread::spawn(move || { let _ = p.next(); }); }))
+                                .child(Button::new("mini_next").label("▶").ghost().compact().on_click(move |_, _, _| { let p = player_s.clone(); runtime().spawn_blocking(move || { let _ = p.next(); }); }))
                                 .child(Button::new("mini_repeat").label(repeat_label_m).ghost().compact().on_click(move |_, _, _| {
                                     use crate::core::playlist::RepeatMode;
                                     let modes = [RepeatMode::PlayOrder, RepeatMode::LoopPlaylist, RepeatMode::LoopTrack, RepeatMode::PlayShuffle, RepeatMode::PlayRandom];
@@ -1253,7 +1259,7 @@ impl Render for MusicPlayer {
             .child(
                 h_flex().w_full().px_4().py_2().gap_3().items_center().justify_center()
                     .child(Button::new("stop").label("⏹").ghost().compact().on_click(move |_, _, _| { let _ = player_stop.stop(); }))
-                    .child(Button::new("prev").label("⏮").ghost().compact().on_click(move |_, _, _| { let p = player_prev.clone(); std::thread::spawn(move || { let _ = p.prev(); }); }))
+                    .child(Button::new("prev").label("⏮").ghost().compact().on_click(move |_, _, _| { let p = player_prev.clone(); runtime().spawn_blocking(move || { let _ = p.prev(); }); }))
                     .child(Button::new("rew").label("⏪").ghost().compact().on_click(move |_, _, _| {
                         let pos = player_rew.position();
                         let _ = player_rew.seek(pos.saturating_sub(std::time::Duration::from_secs(5)));
@@ -1267,7 +1273,7 @@ impl Render for MusicPlayer {
                                 let _ = p.toggle_pause();
                             } else if p.playlist().is_empty() {
                                 let p_clone = p.clone();
-                                std::thread::spawn(move || {
+                                runtime().spawn_blocking(move || {
                                     if let Some(file) = rfd::FileDialog::new()
                                         .add_filter("音频文件", &["mp3", "flac", "wav", "ogg", "aac", "m4a", "wma", "ape", "cue"])
                                         .pick_file()
@@ -1279,7 +1285,7 @@ impl Render for MusicPlayer {
                             } else {
                                 let idx = p.playlist().current_index().unwrap_or(0);
                                 let p2 = p.clone();
-                                std::thread::spawn(move || { let _ = p2.play_at_index(idx); });
+                                runtime().spawn_blocking(move || { let _ = p2.play_at_index(idx); });
                             }
                         }
                     }))
@@ -1288,7 +1294,7 @@ impl Render for MusicPlayer {
                         let pos = player_ff.position();
                         let _ = player_ff.seek((pos + std::time::Duration::from_secs(5)).min(dur));
                     }))
-                    .child(Button::new("next").label("⏭").ghost().compact().on_click(move |_, _, _| { let p = player_next.clone(); std::thread::spawn(move || { let _ = p.next(); }); }))
+                    .child(Button::new("next").label("⏭").ghost().compact().on_click(move |_, _, _| { let p = player_next.clone(); runtime().spawn_blocking(move || { let _ = p.next(); }); }))
                     .child(div().w(px(1.0)).h(px(20.0)).bg(c.border))
                     .child(layout::txt(&pos_str, 11.0, c.text_dim))
                     // Repeat mode
@@ -1401,8 +1407,8 @@ impl Render for MusicPlayer {
                     let p5 = p.clone();
                     menu.item(PopupMenuItem::new("播放/暂停").on_click(move |_, _, _| { let _ = p1.toggle_pause(); }))
                         .item(PopupMenuItem::new("停止").on_click(move |_, _, _| { let _ = p2.stop(); }))
-                        .item(PopupMenuItem::new("上一曲").on_click(move |_, _, _| { let p = p3.clone(); std::thread::spawn(move || { let _ = p.prev(); }); }))
-                        .item(PopupMenuItem::new("下一曲").on_click(move |_, _, _| { let p = p4.clone(); std::thread::spawn(move || { let _ = p.next(); }); }))
+                        .item(PopupMenuItem::new("上一曲").on_click(move |_, _, _| { let p = p3.clone(); runtime().spawn_blocking(move || { let _ = p.prev(); }); }))
+                        .item(PopupMenuItem::new("下一曲").on_click(move |_, _, _| { let p = p4.clone(); runtime().spawn_blocking(move || { let _ = p.next(); }); }))
                         .separator()
                         .item(PopupMenuItem::new("顺序播放").on_click({
                             let p = p5.clone();
@@ -1861,7 +1867,7 @@ impl MusicPlayer {
                                                 this.media_lib_cache_key = (MediaLibCategory::AllTracks, None);
                                                 if !entries.is_empty() {
                                                     let p = this.player.clone();
-                                                    std::thread::spawn(move || { let _ = p.play_at_index(first_idx); });
+                                                    runtime().spawn_blocking(move || { let _ = p.play_at_index(first_idx); });
                                                 }
                                                 tracing::info!("[Menu] Loaded {} tracks from folder", entries.len());
                                             }
@@ -1909,7 +1915,7 @@ impl MusicPlayer {
                                                 pl.clear();
                                                 pl.add_tracks(tracks);
                                                 let p = this.player.clone();
-                                                std::thread::spawn(move || { let _ = p.play_at_index(0); });
+                                                runtime().spawn_blocking(move || { let _ = p.play_at_index(0); });
                                                 tracing::info!("[Menu] Loaded playlist: {}", path);
                                             }
                                             Err(e) => tracing::error!("[Menu] Failed to load playlist: {}", e),
@@ -1964,8 +1970,8 @@ impl MusicPlayer {
                     let p14 = player.clone();
                     menu.item(PopupMenuItem::new("播放/暂停").on_click(move |_, _, _| { let _ = p1.toggle_pause(); }))
                         .item(PopupMenuItem::new("停止").on_click(move |_, _, _| { let _ = p2.stop(); }))
-                        .item(PopupMenuItem::new("上一曲").on_click(move |_, _, _| { let p = p3.clone(); std::thread::spawn(move || { let _ = p.prev(); }); }))
-                        .item(PopupMenuItem::new("下一曲").on_click(move |_, _, _| { let p = p4.clone(); std::thread::spawn(move || { let _ = p.next(); }); }))
+                        .item(PopupMenuItem::new("上一曲").on_click(move |_, _, _| { let p = p3.clone(); runtime().spawn_blocking(move || { let _ = p.prev(); }); }))
+                        .item(PopupMenuItem::new("下一曲").on_click(move |_, _, _| { let p = p4.clone(); runtime().spawn_blocking(move || { let _ = p.next(); }); }))
                         .separator()
                         .item(PopupMenuItem::new("快退5秒").on_click({
                             let p = p14.clone();
@@ -2142,7 +2148,7 @@ impl MusicPlayer {
                         move |_, _, cx| {
                             let weak3 = weak.clone();
                             let player2 = player.clone();
-                            std::thread::spawn(move || {
+                            runtime().spawn_blocking(move || {
                                 let pl = player2.playlist();
                                 let missing: Vec<(usize, String)> = (0..pl.len())
                                     .filter_map(|i| {
@@ -2655,7 +2661,7 @@ impl MusicPlayer {
                         if let Some(track) = p.playlist().current_track() {
                             tracing::info!("[OnlineTag] 在线获取标签: {}", track.file_path);
                             let path = track.file_path.clone();
-                            std::thread::spawn(move || {
+                            runtime().spawn_blocking(move || {
                                 let args = crate::cli::TagOnlineArgs {
                                     file: path,
                                     service: "netease".to_string(),
@@ -2703,7 +2709,7 @@ impl MusicPlayer {
                         tracing::info!("[SleepTimer] 已取消");
                     } else {
                         SLEEP_TIMER_ACTIVE.store(true, Ordering::Relaxed);
-                        std::thread::spawn(|| {
+                        runtime().spawn_blocking(|| {
                             std::thread::sleep(std::time::Duration::from_secs(3600)); // 1 hour default
                             if SLEEP_TIMER_ACTIVE.load(Ordering::Relaxed) {
                                 tracing::info!("[SleepTimer] 定时停止播放");
@@ -3495,22 +3501,9 @@ impl MusicPlayer {
                             let display_kw = keyword.clone();
                             let is_qq = source == "qqmusic";
 
-                            // Spawn background thread to perform search
-                            std::thread::spawn(move || {
-                                let rt = match tokio::runtime::Runtime::new() {
-                                    Ok(rt) => rt,
-                                    Err(e) => {
-                                        let _ = tx.send(
-                                            lyric_download::DownloadEvent::SearchComplete(
-                                                Err(format!("创建运行时失败: {}", e)),
-                                            ),
-                                        );
-                                        return;
-                                    }
-                                };
-                                let result = rt.block_on(async {
-                                    lyric_download::search_lyrics(&source, &keyword).await
-                                });
+                            // Spawn background async task to perform search
+                            runtime().spawn(async move {
+                                let result = lyric_download::search_lyrics(&source, &keyword).await;
                                 let _ = tx.send(
                                     lyric_download::DownloadEvent::SearchComplete(result),
                                 );
@@ -3774,27 +3767,13 @@ impl MusicPlayer {
                                     this.pending_download_rx = Some(rx);
                                     this.pending_download_tx = Some(tx.clone());
 
-                                    std::thread::spawn(move || {
-                                        let rt = match tokio::runtime::Runtime::new() {
-                                            Ok(rt) => rt,
-                                            Err(e) => {
-                                                let _ = tx.send(
-                                                    lyric_download::DownloadEvent::DownloadComplete {
-                                                        song_id: song_id.clone(),
-                                                        result: Err(format!("创建运行时失败: {}", e)),
-                                                    },
-                                                );
-                                                return;
-                                            }
-                                        };
-                                        let result = rt.block_on(async {
-                                            lyric_download::download_lyric(
-                                                &source,
-                                                &song_id,
-                                                include_translation,
-                                            )
-                                            .await
-                                        });
+                                    runtime().spawn(async move {
+                                        let result = lyric_download::download_lyric(
+                                            &source,
+                                            &song_id,
+                                            include_translation,
+                                        )
+                                        .await;
                                         let _ = tx.send(
                                             lyric_download::DownloadEvent::DownloadComplete {
                                                 song_id,
@@ -4424,7 +4403,7 @@ impl MusicPlayer {
                                             this.playlist_selected.insert(idx);
                                         });
                                         let p2 = p.clone();
-                                        std::thread::spawn(move || { let _ = p2.play_at_index(idx); });
+                                        runtime().spawn_blocking(move || { let _ = p2.play_at_index(idx); });
                                     }
                                 }
                             })
@@ -4458,7 +4437,7 @@ impl MusicPlayer {
 
                                 menu.item(PopupMenuItem::new("播放").on_click(move |_, _, _| {
                                     let p = p_play.clone();
-                                    std::thread::spawn(move || { let _ = p.play_at_index(idx); });
+                                    runtime().spawn_blocking(move || { let _ = p.play_at_index(idx); });
                                 }))
                                 .item(PopupMenuItem::new("下一首播放").on_click(move |_, _, _| {
                                     p_next.push_next_track(idx);
@@ -4599,7 +4578,7 @@ impl MusicPlayer {
                                                 }
                                                 if !entries.is_empty() {
                                                     let p = this.player.clone();
-                                                    std::thread::spawn(move || { let _ = p.play_at_index(first_idx); });
+                                                    runtime().spawn_blocking(move || { let _ = p.play_at_index(first_idx); });
                                                 }
                                                 tracing::info!("[FileBrowser] 打开文件夹: {} ({} 首)", dir, entries.len());
                                             }
@@ -4774,7 +4753,7 @@ impl MusicPlayer {
                             .on_click(cx.listener(move |_this, _e: &gpui::ClickEvent, _w, cx| {
                                 let weak = cx.entity().downgrade();
                                 let (tx, rx) = async_channel::unbounded();
-                                std::thread::spawn(move || {
+                                runtime().spawn_blocking(move || {
                                     let cfg = crate::config::Config::load();
                                     let mut lib = crate::media::MediaLib::load();
                                     for dir in &cfg.media_lib.media_dirs {
@@ -5252,7 +5231,7 @@ impl Render for FloatingPlaylistView {
                             .text_color(text_color)
                             .on_click(move |_, _, _| {
                                 let p = player.clone();
-                                std::thread::spawn(move || { let _ = p.play_at_index(i); });
+                                runtime().spawn_blocking(move || { let _ = p.play_at_index(i); });
                             })
                             .child(
                                 h_flex()

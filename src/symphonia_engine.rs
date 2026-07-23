@@ -1,12 +1,16 @@
 use crate::core::engine_trait::{EngineState, PlayerEngine};
 use crate::error::{PlayerError, Result};
 use rodio::Source;
-use std::io::BufReader;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use symphonia::core::audio::{AudioBufferRef, Signal};
+use symphonia::core::codecs::DecoderOptions;
+use symphonia::core::io::MediaSourceStream;
+use symphonia::core::meta::MetadataOptions;
+use symphonia::core::probe::Hint;
 
-struct RodioSource {
+struct SymphoniaSource {
     buffer: Arc<Vec<f32>>,
     channels: usize,
     sample_rate: u32,
@@ -15,7 +19,7 @@ struct RodioSource {
     finished: bool,
 }
 
-impl Iterator for RodioSource {
+impl Iterator for SymphoniaSource {
     type Item = f32;
     fn next(&mut self) -> Option<f32> {
         if self.finished {
@@ -36,7 +40,7 @@ impl Iterator for RodioSource {
     }
 }
 
-impl rodio::Source for RodioSource {
+impl rodio::Source for SymphoniaSource {
     fn current_frame_len(&self) -> Option<usize> {
         None
     }
@@ -52,7 +56,7 @@ impl rodio::Source for RodioSource {
     }
 }
 
-pub struct RodioEngine {
+pub struct SymphoniaEngine {
     buffer: Mutex<Arc<Vec<f32>>>,
     sample_rate: AtomicU32,
     channels: Mutex<usize>,
@@ -68,10 +72,10 @@ pub struct RodioEngine {
     paused: Mutex<bool>,
 }
 
-unsafe impl Send for RodioEngine {}
-unsafe impl Sync for RodioEngine {}
+unsafe impl Send for SymphoniaEngine {}
+unsafe impl Sync for SymphoniaEngine {}
 
-impl RodioEngine {
+impl SymphoniaEngine {
     pub fn new() -> Self {
         Self {
             buffer: Mutex::new(Arc::new(Vec::new())),
@@ -93,30 +97,143 @@ impl RodioEngine {
     fn decode_to_buffer(path: &str) -> Result<(Vec<f32>, u32, usize)> {
         let file = std::fs::File::open(path)
             .map_err(|e| PlayerError::CannotOpen(format!("{path}: {e}")))?;
-        let source = rodio::Decoder::new(BufReader::new(file))
-            .map_err(|e| PlayerError::CannotOpen(format!("rodio decode failed for {path}: {e}")))?;
-        let sample_rate = source.sample_rate();
-        let channels = source.channels() as usize;
-        let samples: Vec<f32> = source.convert_samples().collect();
-        let total_samples = samples.len();
+        let mss = MediaSourceStream::new(Box::new(file), Default::default());
+        let mut hint = Hint::new();
+        if let Some(ext) = std::path::Path::new(path).extension().and_then(|e| e.to_str()) {
+            hint.with_extension(ext);
+        }
+        let format_opts = symphonia::core::formats::FormatOptions::default();
+        let meta_opts = MetadataOptions::default();
+        let probed = symphonia::default::get_probe()
+            .format(&hint, mss, &format_opts, &meta_opts)
+            .map_err(|e| PlayerError::CannotOpen(format!("symphonia probe failed for {path}: {e}")))?;
+        let mut reader = probed.format;
+        let track = reader
+            .tracks()
+            .iter()
+            .find(|t| t.codec_params.codec != symphonia::core::codecs::CODEC_TYPE_NULL)
+            .ok_or_else(|| PlayerError::CannotOpen("No audio track found".into()))?;
+        let codec_params = track.codec_params.clone();
+        let sample_rate = codec_params.sample_rate.unwrap_or(44100);
+        let num_channels = codec_params
+            .channels
+            .map(|c| c.count() as usize)
+            .unwrap_or(2);
+        let mut decoder = symphonia::default::get_codecs()
+            .make(&codec_params, &DecoderOptions::default())
+            .map_err(|e| PlayerError::CannotOpen(format!("Cannot create decoder: {e}")))?;
+        let mut all_samples = Vec::new();
+        loop {
+            let packet = match reader.next_packet() {
+                Ok(pkt) => pkt,
+                Err(symphonia::core::errors::Error::IoError(ref e))
+                    if e.kind() == std::io::ErrorKind::UnexpectedEof =>
+                {
+                    break
+                }
+                Err(symphonia::core::errors::Error::ResetRequired) => continue,
+                Err(_) => break,
+            };
+            match decoder.decode(&packet) {
+                Ok(mut decoded) => {
+                    let num_frames = decoded.frames();
+                    let spec = *decoded.spec();
+                    let num_ch = spec.channels.count();
+                    match &decoded {
+                        AudioBufferRef::F32(buf) => {
+                            for f in 0..num_frames {
+                                for c in 0..num_ch {
+                                    all_samples.push(buf.chan(c)[f]);
+                                }
+                            }
+                        }
+                        AudioBufferRef::S16(buf) => {
+                            for f in 0..num_frames {
+                                for c in 0..num_ch {
+                                    all_samples.push(buf.chan(c)[f] as f32 / 32768.0);
+                                }
+                            }
+                        }
+                        AudioBufferRef::S32(buf) => {
+                            for f in 0..num_frames {
+                                for c in 0..num_ch {
+                                    all_samples.push(buf.chan(c)[f] as f32 / 2147483648.0);
+                                }
+                            }
+                        }
+                        AudioBufferRef::F64(buf) => {
+                            for f in 0..num_frames {
+                                for c in 0..num_ch {
+                                    all_samples.push(buf.chan(c)[f] as f32);
+                                }
+                            }
+                        }
+                        AudioBufferRef::U8(buf) => {
+                            for f in 0..num_frames {
+                                for c in 0..num_ch {
+                                    all_samples.push((buf.chan(c)[f] as f32 / 128.0) - 1.0);
+                                }
+                            }
+                        }
+                        AudioBufferRef::S24(buf) => {
+                            for f in 0..num_frames {
+                                for c in 0..num_ch {
+                                    all_samples.push(buf.chan(c)[f].inner() as f32 / 8388608.0);
+                                }
+                            }
+                        }
+                        AudioBufferRef::U16(buf) => {
+                            for f in 0..num_frames {
+                                for c in 0..num_ch {
+                                    all_samples.push((buf.chan(c)[f] as f32 / 32768.0) - 1.0);
+                                }
+                            }
+                        }
+                        AudioBufferRef::S8(buf) => {
+                            for f in 0..num_frames {
+                                for c in 0..num_ch {
+                                    all_samples.push(buf.chan(c)[f] as f32 / 128.0);
+                                }
+                            }
+                        }
+                        AudioBufferRef::U24(buf) => {
+                            for f in 0..num_frames {
+                                for c in 0..num_ch {
+                                    all_samples.push(buf.chan(c)[f].inner() as f32 / 8388608.0);
+                                }
+                            }
+                        }
+                        AudioBufferRef::U32(buf) => {
+                            for f in 0..num_frames {
+                                for c in 0..num_ch {
+                                    all_samples.push(buf.chan(c)[f] as f32 / 2147483648.0);
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(symphonia::core::errors::Error::DecodeError(_)) => continue,
+                Err(_) => break,
+            }
+        }
         tracing::info!(
-            "[RODIO] decoded {}: {} samples, {} Hz, {} ch",
+            "[SYMPHONIA] decoded {}: {} samples, {} Hz, {} ch",
             path,
-            total_samples,
+            all_samples.len(),
             sample_rate,
-            channels
+            num_channels
         );
-        Ok((samples, sample_rate, channels))
+        Ok((all_samples, sample_rate, num_channels))
     }
 }
 
-impl PlayerEngine for RodioEngine {
+impl PlayerEngine for SymphoniaEngine {
     fn name(&self) -> &'static str {
-        "Rodio"
+        "Symphonia"
     }
 
     fn init(&self) -> Result<()> {
-        tracing::info!("Rodio engine initialized");
+        tracing::info!("Symphonia engine initialized");
         Ok(())
     }
 
@@ -189,7 +306,7 @@ impl PlayerEngine for RodioEngine {
 
         let pos_shared = self.play_pos.clone();
 
-        let source = RodioSource {
+        let source = SymphoniaSource {
             buffer: buf,
             channels,
             sample_rate,

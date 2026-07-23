@@ -101,6 +101,7 @@ impl Player {
             }
             EngineType::Ffmpeg => Box::new(FfmpegEngine::new()),
             EngineType::Rodio => Box::new(RodioEngine::new()),
+            EngineType::Symphonia => Box::new(crate::symphonia_engine::SymphoniaEngine::new()),
         };
         let engine_name = engine.name();
 
