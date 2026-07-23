@@ -669,16 +669,20 @@ impl MusicPlayer {
     /// Reads position/duration/volume/state directly from engine (atomic-fast),
     /// and track info / spectrum / peaks from the lock-free `EngineStatus` snapshot.
     fn poll_player_state_inner(&mut self) {
-        self.position = self.player.position().as_secs_f64();
-        self.duration = self.player.duration().as_secs_f64();
-        self.volume = self.player.volume();
-        self.is_playing = self.player.state() == crate::core::engine_trait::EngineState::Playing;
-        self.is_muted = self.volume == 0;
-
         // Process pending download events
         self.poll_download_events();
 
         let snap = self.player.status.load();
+
+        // Read ALL state from the EngineStatus snapshot (single source of truth).
+        // This avoids the race between reading position/duration/volume from the engine
+        // vs track info from the snapshot — everything is now consistent.
+        self.position = snap.position_secs;
+        self.duration = snap.duration_secs;
+        self.volume = snap.volume;
+        self.is_playing = snap.state == crate::core::engine_trait::EngineState::Playing;
+        self.is_muted = snap.volume == 0;
+
         if snap.current_track_index.is_some() {
             let display = if !snap.current_track_title.is_empty() {
                 snap.current_track_title.clone()
@@ -5152,6 +5156,7 @@ impl MusicPlayer {
                     )
             )
             .child(sliders_row)
+            .into_any_element()
     }
 
     /// Render a spectrum visualization strip.
