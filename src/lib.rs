@@ -6,6 +6,14 @@
 
 pub mod ai;
 pub mod audio_common;
+
+use std::sync::OnceLock;
+
+/// Global Tokio runtime shared across the entire application.
+pub fn runtime() -> &'static tokio::runtime::Runtime {
+    static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+    RUNTIME.get_or_init(|| tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime"))
+}
 pub mod bass;
 pub mod charset;
 pub mod cli;

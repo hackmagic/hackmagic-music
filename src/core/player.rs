@@ -363,6 +363,15 @@ impl Player {
             }
         }
 
+        // Background: extract embedding and index for similarity search.
+        let ai_path = path.clone();
+        crate::runtime().spawn(async move {
+            if let Some(emb) = crate::ai::embed_file(&ai_path) {
+                let conn = crate::vecdb::global_db();
+                let _ = crate::vecdb::index_track(conn, &ai_path, &emb).await;
+            }
+        });
+
         self.refresh_status();
         Ok(())
     }
@@ -613,6 +622,19 @@ impl Player {
 
     pub fn playlist(&self) -> Playlist {
         self.playlist.lock().unwrap().clone()
+    }
+
+    /// Find similar tracks by vector similarity search (requires vecdb initialised).
+    pub fn find_similar(&self, path: &str, k: usize) -> Vec<crate::vecdb::SearchHit> {
+        let conn = crate::vecdb::global_db();
+        let rt = crate::runtime();
+        rt.block_on(async {
+            if let Some(emb) = crate::ai::embed_file(path) {
+                crate::vecdb::search(conn, &emb, k).await.unwrap_or_default()
+            } else {
+                vec![]
+            }
+        })
     }
 
     // === Repeat mode ===

@@ -41,9 +41,7 @@ static ALWAYS_ON_TOP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicB
 static DESKTOP_LYRICS_WINDOW_OPEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 fn runtime() -> &'static tokio::runtime::Runtime {
-    use std::sync::OnceLock;
-    static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
-    RUNTIME.get_or_init(|| tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime"))
+    crate::runtime()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -4373,6 +4371,7 @@ impl MusicPlayer {
                 let s_fav = self.tr.menu_favourite;
                 let s_unfav = self.tr.menu_unfavourite;
                 let s_clear_rating = self.tr.menu_clear_rating;
+                let s_find_similar = self.tr.menu_find_similar;
                 let s_r1 = self.tr.menu_rating_1;
                 let s_r2 = self.tr.menu_rating_2;
                 let s_r3 = self.tr.menu_rating_3;
@@ -4558,6 +4557,17 @@ impl MusicPlayer {
                                 }))
                                 .item(PopupMenuItem::new(s_clear_rating).on_click(move |_, _, _| {
                                     p_r0.playlist_mut().set_rating(idx, 0);
+                                }))
+                                .item(PopupMenuItem::new(s_find_similar).on_click({
+                                    let p = ctx_player.clone();
+                                    let fp = fp_loc.clone();
+                                    move |_, _, _| {
+                                        let hits = p.find_similar(&fp, 10);
+                                        tracing::info!("[Similar] Found {} similar tracks", hits.len());
+                                        for hit in &hits {
+                                            tracing::info!("[Similar]   {} (dist: {})", hit.path, hit.distance);
+                                        }
+                                    }
                                 }))
                                 .separator()
                                 .item(PopupMenuItem::new(s_open_location).on_click({
