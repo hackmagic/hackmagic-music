@@ -1913,7 +1913,7 @@ impl MusicPlayer {
                                                     Err(e) => Err(e.to_string()),
                                                 }
                                             }
-                                            _ => Err("不支持的格式".to_string()),
+                                            _ => Err(crate::gui::i18n::global_tr().format_unsupported.to_string()),
                                         };
                                         match result {
                                             Ok(tracks) => {
@@ -2640,6 +2640,10 @@ impl MusicPlayer {
                 let s_dev_progress = tr.menu_dev_progress;
                 let s_create_shortcut = tr.menu_create_shortcut;
                 let s_reinit_player = tr.menu_reinit_player;
+                let s_cover_info = tr.cover_info;
+                let s_cover_none = tr.cover_none;
+                let s_cover_error = tr.cover_error;
+                let s_format_unsupported = tr.format_unsupported;
                 layout::menu_dropdown(s_tools_label, IconName::Settings, move |menu, _, _| {
                 let player_eq = player.clone();
                 menu.item(PopupMenuItem::new(s_media_lib).on_click(|_, _, _| {
@@ -2746,10 +2750,12 @@ impl MusicPlayer {
                                 Ok(pics) => {
                                     let count = pics.len();
                                     let info = if count > 0 {
-                                        format!("该曲目包含 {} 张封面图片\n格式: {}\n大小: {} KB",
-                                            count, pics[0].0, pics[0].1.len() / 1024)
+                                        s_cover_info
+                                            .replace("{0}", &count.to_string())
+                                            .replace("{1}", &pics[0].0)
+                                            .replace("{2}", &(pics[0].1.len() / 1024).to_string())
                                     } else {
-                                        "该曲目没有内嵌封面".to_string()
+                                        s_cover_none.to_string()
                                     };
                                     let _ = rfd::MessageDialog::new()
                                         .set_title(s_cover_preview)
@@ -2759,7 +2765,7 @@ impl MusicPlayer {
                                 Err(e) => {
                                     let _ = rfd::MessageDialog::new()
                                         .set_title(s_cover_preview)
-                                        .set_description(&format!("读取封面失败: {}", e))
+                                        .set_description(&s_cover_error.replace("{0}", &e.to_string()))
                                         .show();
                                 }
                             }
@@ -4160,7 +4166,7 @@ impl MusicPlayer {
                                                                     Err(e) => Err(e.to_string()),
                                                                 }
                                                             }
-                                                            _ => Err("不支持的格式".to_string()),
+                                                            _ => Err(crate::gui::i18n::global_tr().format_unsupported.to_string()),
                                                         } {
                                                             let count = tracks.len();
                                                             this.player.playlist_mut().add_tracks(tracks);
@@ -4363,6 +4369,11 @@ impl MusicPlayer {
                 let s_fav = self.tr.menu_favourite;
                 let s_unfav = self.tr.menu_unfavourite;
                 let s_clear_rating = self.tr.menu_clear_rating;
+                let s_r1 = self.tr.menu_rating_1;
+                let s_r2 = self.tr.menu_rating_2;
+                let s_r3 = self.tr.menu_rating_3;
+                let s_r4 = self.tr.menu_rating_4;
+                let s_r5 = self.tr.menu_rating_5;
                 let s_open_location = self.tr.menu_open_file_location;
                 let s_copy_path = self.tr.menu_copy_path;
                 let s_properties = self.tr.menu_properties;
@@ -4526,19 +4537,19 @@ impl MusicPlayer {
                                     p_fav.playlist_mut().toggle_favourite(idx);
                                 }))
                                 .separator()
-                                .item(PopupMenuItem::new("评级: ★☆☆☆☆").on_click(move |_, _, _| {
+                                .item(PopupMenuItem::new(s_r1).on_click(move |_, _, _| {
                                     p_r1.playlist_mut().set_rating(idx, 1);
                                 }))
-                                .item(PopupMenuItem::new("评级: ★★☆☆☆").on_click(move |_, _, _| {
+                                .item(PopupMenuItem::new(s_r2).on_click(move |_, _, _| {
                                     p_r2.playlist_mut().set_rating(idx, 2);
                                 }))
-                                .item(PopupMenuItem::new("评级: ★★★☆☆").on_click(move |_, _, _| {
+                                .item(PopupMenuItem::new(s_r3).on_click(move |_, _, _| {
                                     p_r3.playlist_mut().set_rating(idx, 3);
                                 }))
-                                .item(PopupMenuItem::new("评级: ★★★★☆").on_click(move |_, _, _| {
+                                .item(PopupMenuItem::new(s_r4).on_click(move |_, _, _| {
                                     p_r4.playlist_mut().set_rating(idx, 4);
                                 }))
-                                .item(PopupMenuItem::new("评级: ★★★★★").on_click(move |_, _, _| {
+                                .item(PopupMenuItem::new(s_r5).on_click(move |_, _, _| {
                                     p_r5.playlist_mut().set_rating(idx, 5);
                                 }))
                                 .item(PopupMenuItem::new(s_clear_rating).on_click(move |_, _, _| {

@@ -450,6 +450,7 @@ pub fn render_about_dialog(tr: &Tr, c: &UiColors) -> impl IntoElement {
 
 /// Render the search panel with an editable search input field.
 pub fn render_search_panel(
+    tr: &Tr,
     c: &UiColors,
     query: &str,
     search_input: &Entity<InputState>,
@@ -518,31 +519,37 @@ pub fn render_search_panel(
                                 tracing::info!("[Search] 播放: {}", path2);
                             }
                         })
-                        .context_menu(move |menu, _w, _cx| {
-                            let p_play = path.clone();
-                            let p_open = path.clone();
-                            let p_add = path.clone();
-                            let p_copy = path.clone();
-                            menu.item(PopupMenuItem::new("播放").on_click(move |_, _, _| {
-                                tracing::info!("[Search] 播放: {}", p_play);
-                            }))
-                            .item(PopupMenuItem::new("添加到播放列表").on_click(move |_, _, _| {
-                                tracing::info!("[Search] 添加到播放列表: {}", p_add);
-                            }))
-                            .separator()
-                            .item(PopupMenuItem::new("打开文件位置").on_click(move |_, _, _| {
-                                let path = std::path::Path::new(&p_open);
-                                if let Some(_parent) = path.parent() {
-                                    #[cfg(windows)]
-                                    { let _ = std::process::Command::new("explorer").arg("/select,").arg(&p_open).spawn(); }
-                                    #[cfg(not(windows))]
-                                    { let _ = std::process::Command::new("xdg-open").arg(&p_open).spawn(); }
-                                }
-                                tracing::info!("[Search] 打开文件位置: {}", p_open);
-                            }))
-                            .item(PopupMenuItem::new("复制路径").on_click(move |_, _, _| {
-                                tracing::info!("[Search] 复制路径: {}", p_copy);
-                            }))
+                        .context_menu({
+                            let s_play = tr.ctrl_toggle_play;
+                            let s_add = tr.menu_add_to_playlist;
+                            let s_open = tr.menu_open_file_location;
+                            let s_copy = tr.menu_copy_path;
+                            move |menu, _w, _cx| {
+                             let p_play = path.clone();
+                             let p_open = path.clone();
+                             let p_add = path.clone();
+                             let p_copy = path.clone();
+                             menu.item(PopupMenuItem::new(s_play).on_click(move |_, _, _| {
+                                 tracing::info!("[Search] 播放: {}", p_play);
+                             }))
+                             .item(PopupMenuItem::new(s_add).on_click(move |_, _, _| {
+                                 tracing::info!("[Search] 添加到播放列表: {}", p_add);
+                             }))
+                             .separator()
+                             .item(PopupMenuItem::new(s_open).on_click(move |_, _, _| {
+                                 let path = std::path::Path::new(&p_open);
+                                 if let Some(_parent) = path.parent() {
+                                     #[cfg(windows)]
+                                     { let _ = std::process::Command::new("explorer").arg("/select,").arg(&p_open).spawn(); }
+                                     #[cfg(not(windows))]
+                                     { let _ = std::process::Command::new("xdg-open").arg(&p_open).spawn(); }
+                                 }
+                                 tracing::info!("[Search] 打开文件位置: {}", p_open);
+                             }))
+                             .item(PopupMenuItem::new(s_copy).on_click(move |_, _, _| {
+                                 tracing::info!("[Search] 复制路径: {}", p_copy);
+                             }))
+                            }
                         })
                 }))
         )

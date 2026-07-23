@@ -368,23 +368,30 @@ pub fn render_lyrics_overlay(
                     }
                 })
         )
-        .context_menu(move |menu, _w, _cx| {
-            menu.item(PopupMenuItem::new(tr.menu_reload_lyric).on_click(|_, _, _| {
+        .context_menu({
+            let s_reload = tr.menu_reload_lyric;
+            let s_edit = tr.menu_edit_lyric;
+            let s_download = tr.menu_download_lyric;
+            let s_lock = tr.menu_desktop_lock;
+            let s_close = tr.menu_close_desktop_lyric;
+            move |menu, _w, _cx| {
+            menu.item(PopupMenuItem::new(s_reload).on_click(|_, _, _| {
                 tracing::info!("[DesktopLyric] 重新加载歌词");
             }))
-            .item(PopupMenuItem::new(tr.menu_edit_lyric).on_click(|_, _, _| {
+            .item(PopupMenuItem::new(s_edit).on_click(|_, _, _| {
                 tracing::info!("[DesktopLyric] 编辑歌词");
             }))
-            .item(PopupMenuItem::new(tr.menu_download_lyric).on_click(|_, _, _| {
+            .item(PopupMenuItem::new(s_download).on_click(|_, _, _| {
                 tracing::info!("[DesktopLyric] 下载歌词");
             }))
             .separator()
-            .item(PopupMenuItem::new(tr.menu_desktop_lock).on_click(|_, _, _| {
+            .item(PopupMenuItem::new(s_lock).on_click(|_, _, _| {
                 tracing::info!("[DesktopLyric] 锁定/解锁位置");
             }))
-            .item(PopupMenuItem::new(tr.menu_close_desktop_lyric).on_click(|_, _, _| {
+            .item(PopupMenuItem::new(s_close).on_click(|_, _, _| {
                 tracing::info!("[DesktopLyric] 关闭桌面歌词");
             }))
+            }
         })
         .into_any_element()
 }

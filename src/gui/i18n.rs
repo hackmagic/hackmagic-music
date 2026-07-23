@@ -47,8 +47,8 @@ pub fn global_tr() -> &'static Tr {
     static EN: OnceLock<&'static Tr> = OnceLock::new();
     static ZH: OnceLock<&'static Tr> = OnceLock::new();
     match GLOBAL_LANG.load(Ordering::Relaxed) {
-        1 => *ZH.get_or_init(|| Tr::en()),
-        _ => *EN.get_or_init(|| Tr::en()),
+        1 => *ZH.get_or_init(|| Tr::ZH),
+        _ => *EN.get_or_init(|| Tr::EN),
     }
 }
 
@@ -206,6 +206,17 @@ pub struct Tr {
     pub menu_unfavourite: &'static str,
     pub menu_properties: &'static str,
     pub menu_clear_rating: &'static str,
+    pub menu_rating_1: &'static str,
+    pub menu_rating_2: &'static str,
+    pub menu_rating_3: &'static str,
+    pub menu_rating_4: &'static str,
+    pub menu_rating_5: &'static str,
+
+    // -- Dialog content texts --
+    pub cover_info: &'static str,         // "This track has {} cover image(s)\nFormat: {}\nSize: {} KB"
+    pub cover_none: &'static str,         // "No embedded cover"
+    pub cover_error: &'static str,        // "Failed to read cover: {}"
+    pub format_unsupported: &'static str,// "Unsupported format"
 
     // -- Desktop lyric --
     pub menu_close_desktop_lyric: &'static str,
@@ -500,6 +511,15 @@ impl Tr {
         menu_unfavourite: "Unfavorite",
         menu_properties: "Properties",
         menu_clear_rating: "Clear Rating",
+        menu_rating_1: "Rating: ★☆☆☆☆",
+        menu_rating_2: "Rating: ★★☆☆☆",
+        menu_rating_3: "Rating: ★★★☆☆",
+        menu_rating_4: "Rating: ★★★★☆",
+        menu_rating_5: "Rating: ★★★★★",
+    cover_info: "This track has {0} cover image(s)\nFormat: {1}\nSize: {2} KB",
+    cover_none: "No embedded cover",
+    cover_error: "Failed to read cover: {0}",
+    format_unsupported: "Unsupported format",
         menu_close_desktop_lyric: "Close Desktop Lyrics",
         lyrics_empty: "No lyrics",
         lyrics_hint: "Open a music file to show lyrics",
@@ -703,6 +723,15 @@ impl Tr {
         menu_unfavourite: "取消收藏",
         menu_properties: "属性",
         menu_clear_rating: "清除评级",
+        menu_rating_1: "评级: ★☆☆☆☆",
+        menu_rating_2: "评级: ★★☆☆☆",
+        menu_rating_3: "评级: ★★★☆☆",
+        menu_rating_4: "评级: ★★★★☆",
+        menu_rating_5: "评级: ★★★★★",
+    cover_info: "该曲目包含 {0} 张封面图片\n格式: {1}\n大小: {2} KB",
+    cover_none: "该曲目没有内嵌封面",
+    cover_error: "读取封面失败: {0}",
+    format_unsupported: "不支持的格式",
         menu_close_desktop_lyric: "关闭桌面歌词",
         lyrics_empty: "暂无歌词",
         lyrics_hint: "打开音乐文件以显示歌词",
