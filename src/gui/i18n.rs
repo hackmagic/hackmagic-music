@@ -38,6 +38,24 @@ pub struct Locale {
     pub tr: &'static Tr,
 }
 
+use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::OnceLock;
+
+static GLOBAL_LANG: AtomicU8 = AtomicU8::new(0);
+
+pub fn global_tr() -> &'static Tr {
+    static EN: OnceLock<&'static Tr> = OnceLock::new();
+    static ZH: OnceLock<&'static Tr> = OnceLock::new();
+    match GLOBAL_LANG.load(Ordering::Relaxed) {
+        1 => *ZH.get_or_init(|| Tr::en()),
+        _ => *EN.get_or_init(|| Tr::en()),
+    }
+}
+
+pub fn set_global_lang(lang: Lang) {
+    GLOBAL_LANG.store(match lang { Lang::EnUs => 0, Lang::ZhCn => 1 }, Ordering::Relaxed);
+}
+
 /// Static translation table (one per language).
 #[derive(Clone)]
 pub struct Tr {
@@ -98,6 +116,7 @@ pub struct Tr {
     pub menu_mini_mode: &'static str,
     pub menu_fullscreen: &'static str,
     pub menu_toggle_dark_mode: &'static str,
+    pub menu_toggle_light_mode: &'static str,
     // -- Tools menu items --
     pub menu_find: &'static str,
     pub menu_equalizer: &'static str,
@@ -136,6 +155,85 @@ pub struct Tr {
     pub ctrl_next: &'static str,
     pub ctrl_vol_down: &'static str,
     pub ctrl_vol_up: &'static str,
+    pub ctrl_toggle_play: &'static str,
+
+    // -- Playback menu (extended) --
+    pub menu_rewind_5s: &'static str,
+    pub menu_forward_5s: &'static str,
+    pub menu_pitch_up: &'static str,
+    pub menu_pitch_down: &'static str,
+    pub menu_original_pitch: &'static str,
+    pub menu_ab_set_a: &'static str,
+    pub menu_ab_set_b: &'static str,
+    pub menu_ab_continue: &'static str,
+    pub menu_ab_clear: &'static str,
+
+    // -- Playlist menu (extended) --
+    pub menu_add_from_lib: &'static str,
+    pub menu_remove_selected: &'static str,
+    pub menu_repair_paths: &'static str,
+    pub menu_save_playlist: &'static str,
+    pub menu_sort: &'static str,
+    pub menu_sort_artist: &'static str,
+    pub menu_sort_album: &'static str,
+    pub menu_sort_duration: &'static str,
+    pub menu_sort_filename: &'static str,
+    pub menu_sort_random: &'static str,
+    pub menu_sort_reverse: &'static str,
+
+    // -- Lyric menu (extended) --
+    pub menu_show_lyric: &'static str,
+    pub menu_hide_lyric: &'static str,
+    pub menu_desktop_lock: &'static str,
+    pub menu_lyric_advance: &'static str,
+    pub menu_lyric_retreat: &'static str,
+    pub menu_save_lyric_edit: &'static str,
+    pub menu_associate_lyric: &'static str,
+    pub menu_embed_lyric: &'static str,
+
+    // -- Tools menu (extended) --
+    pub menu_browse_dir: &'static str,
+    pub menu_song_info: &'static str,
+    pub menu_switch_theme: &'static str,
+
+    // -- Context menu --
+    pub menu_add_to_playlist: &'static str,
+    pub menu_open_file_location: &'static str,
+    pub menu_copy_path: &'static str,
+    pub menu_play_next: &'static str,
+    pub menu_remove_track: &'static str,
+    pub menu_favourite: &'static str,
+    pub menu_unfavourite: &'static str,
+    pub menu_properties: &'static str,
+    pub menu_clear_rating: &'static str,
+
+    // -- Desktop lyric --
+    pub menu_close_desktop_lyric: &'static str,
+    pub lyrics_empty: &'static str,
+    pub lyrics_hint: &'static str,
+    pub lyrics_file_empty: &'static str,
+
+    // -- Tools menu (more) --
+    pub menu_format_convert: &'static str,
+    pub menu_charset_convert: &'static str,
+    pub menu_online_tags: &'static str,
+    pub menu_cover_preview: &'static str,
+    pub menu_timer_shutdown: &'static str,
+    pub menu_file_association: &'static str,
+    pub menu_listen_stats: &'static str,
+    pub menu_dev_progress: &'static str,
+    pub menu_create_shortcut: &'static str,
+    pub menu_reinit_player: &'static str,
+
+    // -- Help menu (more) --
+    pub menu_online_help: &'static str,
+    pub menu_check_update: &'static str,
+    pub menu_supported_formats: &'static str,
+
+    // -- About dialog --
+    pub about_original: &'static str,
+    pub about_platforms: &'static str,
+    pub about_copyright: &'static str,
 
     // -- Repeat mode labels (displayed in status bar) --
     pub repeat_loop_pl: &'static str,
@@ -272,6 +370,7 @@ impl Tr {
         menu_mini_mode: "Mini Mode",
         menu_fullscreen: "Fullscreen",
         menu_toggle_dark_mode: "Toggle Dark Mode",
+        menu_toggle_light_mode: "Light Mode",
         menu_find: "Find",
         menu_equalizer: "Equalizer",
         menu_help_content: "Help",
@@ -359,6 +458,68 @@ impl Tr {
         dlg_folder_title: "Select Music Folder",
 
         fmt_track: "{}. {}",
+
+        ctrl_toggle_play: "Play / Pause",
+        menu_rewind_5s: "Rewind 5s",
+        menu_forward_5s: "Forward 5s",
+        menu_pitch_up: "Pitch Up",
+        menu_pitch_down: "Pitch Down",
+        menu_original_pitch: "Original Pitch",
+        menu_ab_set_a: "Set Point A",
+        menu_ab_set_b: "Set Point B",
+        menu_ab_continue: "AB Repeat Continue",
+        menu_ab_clear: "Clear AB Loop",
+        menu_add_from_lib: "Add from Library",
+        menu_remove_selected: "Remove Selected",
+        menu_repair_paths: "Repair Paths",
+        menu_save_playlist: "Save Playlist",
+        menu_sort: "Sort",
+        menu_sort_artist: "By Artist",
+        menu_sort_album: "By Album",
+        menu_sort_duration: "By Duration",
+        menu_sort_filename: "By Filename",
+        menu_sort_random: "Randomize",
+        menu_sort_reverse: "Reverse Order",
+        menu_show_lyric: "Show Lyrics",
+        menu_hide_lyric: "Hide Lyrics",
+        menu_desktop_lock: "Lock Desktop Lyrics",
+        menu_lyric_advance: "Advance +0.5s",
+        menu_lyric_retreat: "Retreat -0.5s",
+        menu_save_lyric_edit: "Save Lyric Changes",
+        menu_associate_lyric: "Associate Local Lyric",
+        menu_embed_lyric: "Embed Lyrics into File",
+        menu_browse_dir: "Browse File Path",
+        menu_song_info: "Song Info",
+        menu_switch_theme: "Switch Theme Color",
+        menu_add_to_playlist: "Add to Playlist",
+        menu_open_file_location: "Open File Location",
+        menu_copy_path: "Copy Path",
+        menu_play_next: "Play Next",
+        menu_remove_track: "Remove",
+        menu_favourite: "Favorite",
+        menu_unfavourite: "Unfavorite",
+        menu_properties: "Properties",
+        menu_clear_rating: "Clear Rating",
+        menu_close_desktop_lyric: "Close Desktop Lyrics",
+        lyrics_empty: "No lyrics",
+        lyrics_hint: "Open a music file to show lyrics",
+        lyrics_file_empty: "Lyrics file is empty",
+        menu_format_convert: "Format Convert",
+        menu_charset_convert: "SC/TC Convert",
+        menu_online_tags: "Get Tags Online",
+        menu_cover_preview: "Cover Preview",
+        menu_timer_shutdown: "Sleep Timer",
+        menu_file_association: "File Association",
+        menu_listen_stats: "Listening Stats",
+        menu_dev_progress: "Dev Progress",
+        menu_create_shortcut: "Create Shortcut",
+        menu_reinit_player: "Reinitialize Player",
+        menu_online_help: "Online Help",
+        menu_check_update: "Check Update",
+        menu_supported_formats: "Supported Formats",
+        about_original: "Original: MusicPlayer2 by zhongyang219",
+        about_platforms: "Platforms: Windows / macOS / Linux",
+        about_copyright: "© 2026 HackMagic Team",
     };
 
     const ZH: &'static Tr = &Tr {
@@ -412,6 +573,7 @@ impl Tr {
         menu_mini_mode: "迷你模式",
         menu_fullscreen: "全屏",
         menu_toggle_dark_mode: "深色模式",
+        menu_toggle_light_mode: "浅色模式",
         menu_find: "查找",
         menu_equalizer: "均衡器",
         menu_help_content: "帮助",
@@ -499,5 +661,67 @@ impl Tr {
         dlg_folder_title: "选择音乐文件夹",
 
         fmt_track: "{}. {}",
+
+        ctrl_toggle_play: "播放/暂停",
+        menu_rewind_5s: "快退5秒",
+        menu_forward_5s: "快进5秒",
+        menu_pitch_up: "升高音调",
+        menu_pitch_down: "降低音调",
+        menu_original_pitch: "原始音调",
+        menu_ab_set_a: "设置 A 点",
+        menu_ab_set_b: "设置 B 点",
+        menu_ab_continue: "AB复读继续",
+        menu_ab_clear: "清除 AB 循环",
+        menu_add_from_lib: "从媒体库添加",
+        menu_remove_selected: "删除选中",
+        menu_repair_paths: "修复路径错误",
+        menu_save_playlist: "保存播放列表",
+        menu_sort: "排序",
+        menu_sort_artist: "按艺术家排序",
+        menu_sort_album: "按专辑排序",
+        menu_sort_duration: "按时长排序",
+        menu_sort_filename: "按文件名排序",
+        menu_sort_random: "随机排序",
+        menu_sort_reverse: "倒序排列",
+        menu_show_lyric: "显示歌词",
+        menu_hide_lyric: "隐藏歌词",
+        menu_desktop_lock: "桌面歌词锁定",
+        menu_lyric_advance: "歌词前进0.5秒",
+        menu_lyric_retreat: "歌词后退0.5秒",
+        menu_save_lyric_edit: "保存歌词改动",
+        menu_associate_lyric: "关联本地歌词",
+        menu_embed_lyric: "内嵌歌词到文件",
+        menu_browse_dir: "探索文件路径",
+        menu_song_info: "歌曲信息",
+        menu_switch_theme: "切换主题颜色",
+        menu_add_to_playlist: "添加到播放列表",
+        menu_open_file_location: "打开文件位置",
+        menu_copy_path: "复制路径",
+        menu_play_next: "下一首播放",
+        menu_remove_track: "移除",
+        menu_favourite: "收藏",
+        menu_unfavourite: "取消收藏",
+        menu_properties: "属性",
+        menu_clear_rating: "清除评级",
+        menu_close_desktop_lyric: "关闭桌面歌词",
+        lyrics_empty: "暂无歌词",
+        lyrics_hint: "打开音乐文件以显示歌词",
+        lyrics_file_empty: "歌词文件为空",
+        menu_format_convert: "格式转换",
+        menu_charset_convert: "繁简转换",
+        menu_online_tags: "在线获取标签",
+        menu_cover_preview: "封面预览",
+        menu_timer_shutdown: "定时停止",
+        menu_file_association: "文件关联",
+        menu_listen_stats: "收听统计",
+        menu_dev_progress: "开发进度",
+        menu_create_shortcut: "创建快捷方式",
+        menu_reinit_player: "重新初始化播放器",
+        menu_online_help: "在线帮助",
+        menu_check_update: "检查更新",
+        menu_supported_formats: "支持的格式",
+        about_original: "原始项目: MusicPlayer2 by zhongyang219",
+        about_platforms: "支持: Windows / macOS / Linux",
+        about_copyright: "© 2026 HackMagic Team",
     };
 }

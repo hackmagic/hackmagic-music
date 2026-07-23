@@ -8,6 +8,7 @@ use gpui_component::menu::{ContextMenuExt, PopupMenuItem};
 use gpui_component::input::{Input, InputState};
 
 use crate::gui::theme::UiColors;
+use crate::gui::i18n::Tr;
 use crate::gui::layout::txt;
 
 /// Settings dialog tabs.
@@ -404,7 +405,7 @@ fn render_lyrics_settings(
 }
 
 /// Render the about dialog.
-pub fn render_about_dialog(c: &UiColors) -> impl IntoElement {
+pub fn render_about_dialog(tr: &Tr, c: &UiColors) -> impl IntoElement {
     v_flex()
         .items_center()
         .justify_center()
@@ -430,20 +431,20 @@ pub fn render_about_dialog(c: &UiColors) -> impl IntoElement {
                 .mt_4()
                 .text_size(px(11.0))
                 .text_color(c.text_dim)
-                .child("原始项目: MusicPlayer2 by zhongyang219")
+                .child(tr.about_original)
         )
         .child(
             div()
                 .text_size(px(11.0))
                 .text_color(c.text_dim)
-                .child("支持: Windows / macOS / Linux")
+                .child(tr.about_platforms)
         )
         .child(
             div()
                 .mt_4()
                 .text_size(px(10.0))
                 .text_color(c.text_dim)
-                .child("© 2026 HackMagic Team")
+                .child(tr.about_copyright)
         )
 }
 

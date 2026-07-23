@@ -6,6 +6,7 @@ use gpui_component::{h_flex, v_flex};
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::menu::{ContextMenuExt, PopupMenuItem};
 use crate::gui::theme::UiColors;
+use crate::gui::i18n::Tr;
 use crate::lyric::{Lyrics, TranslateMode};
 
 /// Lyrics display state tracked by the GUI.
@@ -66,14 +67,15 @@ impl Default for LyricsState {
 /// Render a desktop lyrics panel showing karaoke-highlighted synced lyrics.
 pub fn render_lyrics_panel(
     state: &LyricsState,
+    tr: &Tr,
     c: &UiColors,
 ) -> impl IntoElement {
     if !state.visible {
         return v_flex().size_full().into_any_element();
     }
 
-    let empty_text = "暂无歌词";
-    let hint_text = "打开音乐文件以显示歌词";
+    let empty_text = tr.lyrics_empty;
+    let hint_text = tr.lyrics_hint;
 
     let Some(ref lyrics) = state.lyrics else {
         return v_flex()
@@ -105,7 +107,7 @@ pub fn render_lyrics_panel(
                 div()
                     .text_size(px(14.0))
                     .text_color(c.text_dim)
-                    .child("歌词文件为空".to_string())
+                    .child(tr.lyrics_file_empty.to_string())
             )
             .into_any_element();
     }
@@ -209,23 +211,30 @@ pub fn render_lyrics_panel(
         .p_4()
         .gap_1()
         .children(line_elements)
-        .context_menu(|menu, _w, _cx| {
-            menu.item(PopupMenuItem::new("重新加载歌词").on_click(|_, _, _| {
+        .context_menu({
+            let s_reload = tr.menu_reload_lyric;
+            let s_edit = tr.menu_edit_lyric;
+            let s_download = tr.menu_download_lyric;
+            let s_adv = tr.menu_lyric_advance;
+            let s_retreat = tr.menu_lyric_retreat;
+            move |menu, _w, _cx| {
+            menu.item(PopupMenuItem::new(s_reload).on_click(|_, _, _| {
                 tracing::info!("[Lyric] 重新加载歌词");
             }))
-            .item(PopupMenuItem::new("编辑歌词").on_click(|_, _, _| {
+            .item(PopupMenuItem::new(s_edit).on_click(|_, _, _| {
                 tracing::info!("[Lyric] 编辑歌词");
             }))
-            .item(PopupMenuItem::new("下载歌词").on_click(|_, _, _| {
+            .item(PopupMenuItem::new(s_download).on_click(|_, _, _| {
                 tracing::info!("[Lyric] 下载歌词");
             }))
             .separator()
-            .item(PopupMenuItem::new("歌词偏移 +0.5秒").on_click(|_, _, _| {
+            .item(PopupMenuItem::new(s_adv).on_click(|_, _, _| {
                 tracing::info!("[Lyric] 歌词前进0.5秒");
             }))
-            .item(PopupMenuItem::new("歌词偏移 -0.5秒").on_click(|_, _, _| {
+            .item(PopupMenuItem::new(s_retreat).on_click(|_, _, _| {
                 tracing::info!("[Lyric] 歌词后退0.5秒");
             }))
+            }
         })
         .into_any_element()
 }
@@ -294,6 +303,7 @@ fn span(text: String, font_size: f32, color: Hsla) -> impl IntoElement {
 /// Render a compact lyrics overlay (used when desktop lyrics is toggled in BIG mode).
 pub fn render_lyrics_overlay(
     state: &LyricsState,
+    tr: &Tr,
     c: &UiColors,
 ) -> impl IntoElement {
     if !state.visible {
@@ -358,21 +368,21 @@ pub fn render_lyrics_overlay(
                     }
                 })
         )
-        .context_menu(|menu, _w, _cx| {
-            menu.item(PopupMenuItem::new("重新加载歌词").on_click(|_, _, _| {
+        .context_menu(move |menu, _w, _cx| {
+            menu.item(PopupMenuItem::new(tr.menu_reload_lyric).on_click(|_, _, _| {
                 tracing::info!("[DesktopLyric] 重新加载歌词");
             }))
-            .item(PopupMenuItem::new("编辑歌词").on_click(|_, _, _| {
+            .item(PopupMenuItem::new(tr.menu_edit_lyric).on_click(|_, _, _| {
                 tracing::info!("[DesktopLyric] 编辑歌词");
             }))
-            .item(PopupMenuItem::new("下载歌词").on_click(|_, _, _| {
+            .item(PopupMenuItem::new(tr.menu_download_lyric).on_click(|_, _, _| {
                 tracing::info!("[DesktopLyric] 下载歌词");
             }))
             .separator()
-            .item(PopupMenuItem::new("锁定位置").on_click(|_, _, _| {
+            .item(PopupMenuItem::new(tr.menu_desktop_lock).on_click(|_, _, _| {
                 tracing::info!("[DesktopLyric] 锁定/解锁位置");
             }))
-            .item(PopupMenuItem::new("关闭桌面歌词").on_click(|_, _, _| {
+            .item(PopupMenuItem::new(tr.menu_close_desktop_lyric).on_click(|_, _, _| {
                 tracing::info!("[DesktopLyric] 关闭桌面歌词");
             }))
         })

@@ -1217,7 +1217,7 @@ impl Render for MusicPlayer {
             .child(
                 if has_track {
                     v_flex().flex_grow().h(px(120.0)).child(
-                        desktop_lyrics::render_lyrics_panel(&self.lyric_state, c).into_any_element()
+                        desktop_lyrics::render_lyrics_panel(&self.lyric_state, self.tr, c).into_any_element()
                     ).into_any_element()
                 } else {
                     div().into_any_element()
@@ -1399,34 +1399,40 @@ impl Render for MusicPlayer {
         div().child(main_layout)
             .context_menu({
                 let p = self.player.clone();
+                let tr = self.tr;
                 move |menu, _w, _cx| {
                     let p1 = p.clone();
                     let p2 = p.clone();
                     let p3 = p.clone();
                     let p4 = p.clone();
                     let p5 = p.clone();
-                    menu.item(PopupMenuItem::new("播放/暂停").on_click(move |_, _, _| { let _ = p1.toggle_pause(); }))
-                        .item(PopupMenuItem::new("停止").on_click(move |_, _, _| { let _ = p2.stop(); }))
-                        .item(PopupMenuItem::new("上一曲").on_click(move |_, _, _| { let p = p3.clone(); runtime().spawn_blocking(move || { let _ = p.prev(); }); }))
-                        .item(PopupMenuItem::new("下一曲").on_click(move |_, _, _| { let p = p4.clone(); runtime().spawn_blocking(move || { let _ = p.next(); }); }))
+                    let s_repeat_order = tr.repeat_order;
+                    let s_repeat_random = tr.repeat_random;
+                    let s_repeat_loop_pl = tr.repeat_loop_pl;
+                    let s_repeat_loop_trk = tr.repeat_loop_trk;
+                    let s_repeat_single = tr.repeat_single;
+                    menu.item(PopupMenuItem::new(tr.ctrl_toggle_play).on_click(move |_, _, _| { let _ = p1.toggle_pause(); }))
+                        .item(PopupMenuItem::new(tr.ctrl_stop).on_click(move |_, _, _| { let _ = p2.stop(); }))
+                        .item(PopupMenuItem::new(tr.ctrl_prev).on_click(move |_, _, _| { let p = p3.clone(); runtime().spawn_blocking(move || { let _ = p.prev(); }); }))
+                        .item(PopupMenuItem::new(tr.ctrl_next).on_click(move |_, _, _| { let p = p4.clone(); runtime().spawn_blocking(move || { let _ = p.next(); }); }))
                         .separator()
-                        .item(PopupMenuItem::new("顺序播放").on_click({
+                        .item(PopupMenuItem::new(s_repeat_order).on_click({
                             let p = p5.clone();
                             move |_, _, _| { p.set_repeat_mode(crate::core::playlist::RepeatMode::PlayOrder); }
                         }))
-                        .item(PopupMenuItem::new("随机播放").on_click({
+                        .item(PopupMenuItem::new(s_repeat_random).on_click({
                             let p = p5.clone();
                             move |_, _, _| { p.set_repeat_mode(crate::core::playlist::RepeatMode::PlayRandom); }
                         }))
-                        .item(PopupMenuItem::new("列表循环").on_click({
+                        .item(PopupMenuItem::new(s_repeat_loop_pl).on_click({
                             let p = p5.clone();
                             move |_, _, _| { p.set_repeat_mode(crate::core::playlist::RepeatMode::LoopPlaylist); }
                         }))
-                        .item(PopupMenuItem::new("单曲循环").on_click({
+                        .item(PopupMenuItem::new(s_repeat_loop_trk).on_click({
                             let p = p5.clone();
                             move |_, _, _| { p.set_repeat_mode(crate::core::playlist::RepeatMode::LoopTrack); }
                         }))
-                        .item(PopupMenuItem::new("单曲播放一次").on_click({
+                        .item(PopupMenuItem::new(s_repeat_single).on_click({
                             let p = p5.clone();
                             move |_, _, _| { p.set_repeat_mode(crate::core::playlist::RepeatMode::PlayTrack); }
                         }))
@@ -1601,7 +1607,7 @@ impl MusicPlayer {
                 // Bottom: synced lyrics (flex_grow fills remaining space)
                 v_flex().flex_grow().h_full().child(
                     if has_track {
-                        desktop_lyrics::render_lyrics_panel(&self.lyric_state, c).into_any_element()
+                        desktop_lyrics::render_lyrics_panel(&self.lyric_state, self.tr, c).into_any_element()
                     } else {
                         v_flex().size_full().justify_center().items_center().gap_2()
                             .child(div().text_size(px(16.0)).text_color(c.text_dim).child("未打开音乐文件"))
@@ -1953,6 +1959,7 @@ impl MusicPlayer {
             // Playback menu
             .child({
                 let player = self.player.clone();
+                let tr = self.tr;
                 layout::menu_dropdown(s_playback, IconName::ChevronRight, move |menu, _w, _cx| {
                     let p1 = player.clone();
                     let p2 = player.clone();
@@ -1968,46 +1975,82 @@ impl MusicPlayer {
                     let p12 = player.clone();
                     let p13 = player.clone();
                     let p14 = player.clone();
-                    menu.item(PopupMenuItem::new("播放/暂停").on_click(move |_, _, _| { let _ = p1.toggle_pause(); }))
-                        .item(PopupMenuItem::new("停止").on_click(move |_, _, _| { let _ = p2.stop(); }))
-                        .item(PopupMenuItem::new("上一曲").on_click(move |_, _, _| { let p = p3.clone(); runtime().spawn_blocking(move || { let _ = p.prev(); }); }))
-                        .item(PopupMenuItem::new("下一曲").on_click(move |_, _, _| { let p = p4.clone(); runtime().spawn_blocking(move || { let _ = p.next(); }); }))
+                    let s_toggle = tr.ctrl_toggle_play;
+                    let s_stop = tr.ctrl_stop;
+                    let s_prev = tr.ctrl_prev;
+                    let s_next = tr.ctrl_next;
+                    let s_rewind5 = tr.menu_rewind_5s;
+                    let s_forward5 = tr.menu_forward_5s;
+                    let s_speed_up = tr.menu_speed_up;
+                    let s_slow_down = tr.menu_slow_down;
+                    let s_orig_speed = tr.menu_original_speed;
+                    let s_pitch_up = tr.menu_pitch_up;
+                    let s_pitch_down = tr.menu_pitch_down;
+                    let s_orig_pitch = tr.menu_original_pitch;
+                    let s_ab_a = tr.menu_ab_set_a;
+                    let s_ab_b = tr.menu_ab_set_b;
+                    let s_ab_cont = tr.menu_ab_continue;
+                    let s_ab_clear = tr.menu_ab_clear;
+                    menu.item(PopupMenuItem::new(s_toggle).on_click(move |_, _, _| { let _ = p1.toggle_pause(); }))
+                        .item(PopupMenuItem::new(s_stop).on_click(move |_, _, _| { let _ = p2.stop(); }))
+                        .item(PopupMenuItem::new(s_prev).on_click(move |_, _, _| { let p = p3.clone(); runtime().spawn_blocking(move || { let _ = p.prev(); }); }))
+                        .item(PopupMenuItem::new(s_next).on_click(move |_, _, _| { let p = p4.clone(); runtime().spawn_blocking(move || { let _ = p.next(); }); }))
                         .separator()
-                        .item(PopupMenuItem::new("快退5秒").on_click({
+                        .item(PopupMenuItem::new(s_rewind5).on_click({
                             let p = p14.clone();
                             move |_, _, _| {
                                 let pos = p.position();
                                 let _ = p.seek(std::time::Duration::from_secs_f64((pos.as_secs_f64() - 5.0).max(0.0)));
                             }
                         }))
-                        .item(PopupMenuItem::new("快进5秒").on_click(move |_, _, _| {
+                        .item(PopupMenuItem::new(s_forward5).on_click(move |_, _, _| {
                             let pos = p14.position();
                             let _ = p14.seek(std::time::Duration::from_secs_f64(pos.as_secs_f64() + 5.0));
                         }))
                         .separator()
-                        .item(PopupMenuItem::new("加速").on_click(move |_, _, _| { let _ = p5.speed_up(); }))
-                        .item(PopupMenuItem::new("减速").on_click(move |_, _, _| { let _ = p6.speed_down(); }))
-                        .item(PopupMenuItem::new("原始速度").on_click(move |_, _, _| { let _ = p7.set_speed(1.0); }))
+                        .item(PopupMenuItem::new(s_speed_up).on_click(move |_, _, _| { let _ = p5.speed_up(); }))
+                        .item(PopupMenuItem::new(s_slow_down).on_click(move |_, _, _| { let _ = p6.speed_down(); }))
+                        .item(PopupMenuItem::new(s_orig_speed).on_click(move |_, _, _| { let _ = p7.set_speed(1.0); }))
                         .separator()
-                        .item(PopupMenuItem::new("升高音调").on_click(move |_, _, _| { let _ = p8.pitch_up(); }))
-                        .item(PopupMenuItem::new("降低音调").on_click(move |_, _, _| { let _ = p9.pitch_down(); }))
-                        .item(PopupMenuItem::new("原始音调").on_click(move |_, _, _| { let _ = p10.set_pitch(0); }))
+                        .item(PopupMenuItem::new(s_pitch_up).on_click(move |_, _, _| { let _ = p8.pitch_up(); }))
+                        .item(PopupMenuItem::new(s_pitch_down).on_click(move |_, _, _| { let _ = p9.pitch_down(); }))
+                        .item(PopupMenuItem::new(s_orig_pitch).on_click(move |_, _, _| { let _ = p10.set_pitch(0); }))
                         .separator()
-                        .item(PopupMenuItem::new("设置 A 点").on_click(move |_, _, _| { let _ = p11.ab_set_a(); }))
-                        .item(PopupMenuItem::new("设置 B 点").on_click(move |_, _, _| { let _ = p12.ab_set_b(); }))
-                        .item(PopupMenuItem::new("AB复读继续").on_click({
+                        .item(PopupMenuItem::new(s_ab_a).on_click(move |_, _, _| { let _ = p11.ab_set_a(); }))
+                        .item(PopupMenuItem::new(s_ab_b).on_click(move |_, _, _| { let _ = p12.ab_set_b(); }))
+                        .item(PopupMenuItem::new(s_ab_cont).on_click({
                             let p = p13.clone();
                             move |_, _, _| { let _ = p.ab_continue(); }
                         }))
-                        .item(PopupMenuItem::new("清除 AB 循环").on_click(move |_, _, _| { p13.ab_reset(); }))
+                        .item(PopupMenuItem::new(s_ab_clear).on_click(move |_, _, _| { p13.ab_reset(); }))
                 })
             })
             // Playlist menu
             .child({
                 let player = self.player.clone();
                 let weak = weak_playlist;
+                let tr = self.tr;
                 layout::menu_dropdown(s_playlist, IconName::SquareTerminal, move |menu, _, _| {
-                    menu                    .item(PopupMenuItem::new("添加文件").on_click({
+                    let s_add_file = tr.menu_add_file;
+                    let s_add_folder = tr.menu_add_folder;
+                    let s_add_from_lib = tr.menu_add_from_lib;
+                    let s_add_url = tr.menu_add_url;
+                    let s_remove_sel = tr.menu_remove_selected;
+                    let s_delete_disk = tr.menu_delete_from_disk;
+                    let s_clear_list = tr.menu_clear_list;
+                    let s_remove_dups = tr.menu_remove_duplicates;
+                    let s_remove_invalid = tr.menu_remove_invalid;
+                    let s_repair_paths = tr.menu_repair_paths;
+                    let s_save_pl = tr.menu_save_playlist;
+                    let s_save_as_new = tr.menu_save_as_new;
+                    let s_sort = tr.menu_sort;
+                    let s_sort_artist = tr.menu_sort_artist;
+                    let s_sort_album = tr.menu_sort_album;
+                    let s_sort_duration = tr.menu_sort_duration;
+                    let s_sort_filename = tr.menu_sort_filename;
+                    let s_sort_random = tr.menu_sort_random;
+                    let s_sort_reverse = tr.menu_sort_reverse;
+                    menu                    .item(PopupMenuItem::new(s_add_file).on_click({
                         let weak = weak.clone();
                         move |_, _, cx| {
                             run_blocking_dialog_app(cx, &weak,
@@ -2025,7 +2068,7 @@ impl MusicPlayer {
                                 });
                         }
                     }))
-                    .item(PopupMenuItem::new("添加文件夹").on_click({
+                    .item(PopupMenuItem::new(s_add_folder).on_click({
                         let weak = weak.clone();
                         move |_, _, cx| {
                             run_blocking_dialog_app(cx, &weak,
@@ -2043,7 +2086,7 @@ impl MusicPlayer {
                                 });
                         }
                     }))
-                    .item(PopupMenuItem::new("从媒体库添加").on_click({
+                    .item(PopupMenuItem::new(s_add_from_lib).on_click({
                         let p = player.clone();
                         move |_, _, _| {
                             let lib = crate::media::MediaLib::load();
@@ -2055,10 +2098,10 @@ impl MusicPlayer {
                             tracing::info!("[Playlist] 从媒体库添加 {} 首", count);
                         }
                     }))
-                    .item(PopupMenuItem::new("添加URL").on_click(move |_, _, _| {
+                    .item(PopupMenuItem::new(s_add_url).on_click(move |_, _, _| {
                         tracing::info!("[Playlist] 添加URL - 打开URL对话框");
                     }))
-                    .item(PopupMenuItem::new("删除选中").on_click({
+                    .item(PopupMenuItem::new(s_remove_sel).on_click({
                         let weak = weak.clone();
                         move |_, _, cx| {
                             weak.update(cx, |this, cx| {
@@ -2081,7 +2124,7 @@ impl MusicPlayer {
                             }).ok();
                         }
                     }))
-                    .item(PopupMenuItem::new("从磁盘删除").on_click({
+                    .item(PopupMenuItem::new(s_delete_disk).on_click({
                         let weak = weak.clone();
                         move |_, _, cx| {
                             weak.update(cx, |this, cx| {
@@ -2121,28 +2164,28 @@ impl MusicPlayer {
                             }).ok();
                         }
                     }))
-                    .item(PopupMenuItem::new("清空播放列表").on_click({
+                    .item(PopupMenuItem::new(s_clear_list).on_click({
                         let p = player.clone();
                         move |_, _, _| {
                             p.playlist_mut().clear();
                         }
                     }))
                     .separator()
-                    .item(PopupMenuItem::new("移除重复").on_click({
+                    .item(PopupMenuItem::new(s_remove_dups).on_click({
                         let p = player.clone();
                         move |_, _, _| {
                             let removed = p.playlist_mut().dedup();
                             tracing::info!("Removed {} duplicate tracks", removed);
                         }
                     }))
-                    .item(PopupMenuItem::new("移除失效文件").on_click({
+                    .item(PopupMenuItem::new(s_remove_invalid).on_click({
                         let p = player.clone();
                         move |_, _, _| {
                             let removed = p.playlist_mut().clean();
                             tracing::info!("Removed {} missing tracks", removed);
                         }
                     }))
-                    .item(PopupMenuItem::new("修复路径错误").on_click({
+                    .item(PopupMenuItem::new(s_repair_paths).on_click({
                         let weak = weak.clone();
                         let player = player.clone();
                         move |_, _, cx| {
@@ -2170,7 +2213,7 @@ impl MusicPlayer {
                         }
                     }))
                     .separator()
-                    .item(PopupMenuItem::new("保存播放列表").on_click({
+                    .item(PopupMenuItem::new(s_save_pl).on_click({
                         let p = player.clone();
                         move |_, _, _| {
                             if let Err(e) = p.save_current_playlist() {
@@ -2178,13 +2221,13 @@ impl MusicPlayer {
                             }
                         }
                     }))
-                    .item(PopupMenuItem::new("另存为新播放列表").on_click(move |_, _, _| {
+                    .item(PopupMenuItem::new(s_save_as_new).on_click(move |_, _, _| {
                         // Would need dialog for name input
                         tracing::info!("Save as new playlist");
                     }))
                     .separator()
                     // Sort submenu
-                    .item(PopupMenuItem::new("排序").on_click({
+                    .item(PopupMenuItem::new(s_sort).on_click({
                         let p = player.clone();
                         move |_, _, _| {
                             // Default sort by title ascending
@@ -2192,42 +2235,42 @@ impl MusicPlayer {
                             tracing::info!("Playlist sorted by title");
                         }
                     }))
-                    .item(PopupMenuItem::new("按艺术家排序").on_click({
+                    .item(PopupMenuItem::new(s_sort_artist).on_click({
                         let p = player.clone();
                         move |_, _, _| {
                             p.playlist_mut().sort(crate::core::playlist::SortMode::Artist, false);
                             tracing::info!("Playlist sorted by artist");
                         }
                     }))
-                    .item(PopupMenuItem::new("按专辑排序").on_click({
+                    .item(PopupMenuItem::new(s_sort_album).on_click({
                         let p = player.clone();
                         move |_, _, _| {
                             p.playlist_mut().sort(crate::core::playlist::SortMode::Album, false);
                             tracing::info!("Playlist sorted by album");
                         }
                     }))
-                    .item(PopupMenuItem::new("按时长排序").on_click({
+                    .item(PopupMenuItem::new(s_sort_duration).on_click({
                         let p = player.clone();
                         move |_, _, _| {
                             p.playlist_mut().sort(crate::core::playlist::SortMode::Time, false);
                             tracing::info!("Playlist sorted by duration");
                         }
                     }))
-                    .item(PopupMenuItem::new("按文件名排序").on_click({
+                    .item(PopupMenuItem::new(s_sort_filename).on_click({
                         let p = player.clone();
                         move |_, _, _| {
                             p.playlist_mut().sort(crate::core::playlist::SortMode::FileName, false);
                             tracing::info!("Playlist sorted by filename");
                         }
                     }))
-                    .item(PopupMenuItem::new("随机排序").on_click({
+                    .item(PopupMenuItem::new(s_sort_random).on_click({
                         let p = player.clone();
                         move |_, _, _| {
                             p.playlist_mut().sort(crate::core::playlist::SortMode::Random, false);
                             tracing::info!("Playlist shuffled");
                         }
                     }))
-                    .item(PopupMenuItem::new("倒序排列").on_click({
+                    .item(PopupMenuItem::new(s_sort_reverse).on_click({
                         let p = player.clone();
                         move |_, _, _| {
                             p.playlist_mut().reverse();
@@ -2249,6 +2292,12 @@ impl MusicPlayer {
                 let s_batch_download = tr.menu_batch_download_lyric;
                 let s_show_trans = tr.menu_show_translation;
                 let s_show_desktop = tr.menu_show_desktop_lyric;
+                let s_desktop_lock = tr.menu_desktop_lock;
+                let s_lyric_adv = tr.menu_lyric_advance;
+                let s_lyric_ret = tr.menu_lyric_retreat;
+                let s_save_lyric = tr.menu_save_lyric_edit;
+                let s_assoc_lyric = tr.menu_associate_lyric;
+                let s_embed_lyric = tr.menu_embed_lyric;
                 let lyric_visible_now = self.lyric_visible;
                 layout::menu_dropdown(s_lyric_label, IconName::BookOpen, {
                     let weak = weak.clone();
@@ -2381,11 +2430,11 @@ impl MusicPlayer {
                             }
                         }
                     }))
-                    .item(PopupMenuItem::new("桌面歌词锁定").on_click(|_, _, _| {
+                    .item(PopupMenuItem::new(s_desktop_lock).on_click(|_, _, _| {
                         tracing::info!("Lock/unlock desktop lyrics position");
                     }))
                     .separator()
-                    .item(PopupMenuItem::new("歌词前进0.5秒").on_click({
+                    .item(PopupMenuItem::new(s_lyric_adv).on_click({
                         let weak = weak.clone();
                         move |_, _, cx| {
                             weak.update(cx, |this, cx| {
@@ -2395,7 +2444,7 @@ impl MusicPlayer {
                             }).ok();
                         }
                     }))
-                    .item(PopupMenuItem::new("歌词后退0.5秒").on_click({
+                    .item(PopupMenuItem::new(s_lyric_ret).on_click({
                         let weak = weak.clone();
                         move |_, _, cx| {
                             weak.update(cx, |this, cx| {
@@ -2406,7 +2455,7 @@ impl MusicPlayer {
                         }
                     }))
                     .separator()
-                    .item(PopupMenuItem::new("保存歌词改动").on_click({
+                    .item(PopupMenuItem::new(s_save_lyric).on_click({
                         let weak = weak.clone();
                         move |_, _, cx| {
                             weak.update(cx, |this, _cx| {
@@ -2428,7 +2477,7 @@ impl MusicPlayer {
                             }).ok();
                         }
                     }))
-                    .item(PopupMenuItem::new("关联本地歌词").on_click({
+                    .item(PopupMenuItem::new(s_assoc_lyric).on_click({
                         let weak = weak.clone();
                         move |_, window, cx| {
                             // Pick a .lrc file, then copy/rename it next to the
@@ -2451,7 +2500,7 @@ impl MusicPlayer {
                                 });
                         }
                     }))
-                    .item(PopupMenuItem::new("内嵌歌词到文件").on_click({
+                    .item(PopupMenuItem::new(s_embed_lyric).on_click({
                         let weak = weak.clone();
                         move |_, _, cx| {
                             weak.update(cx, |this, _cx| {
@@ -2482,6 +2531,8 @@ impl MusicPlayer {
                 let s_fullscreen = tr.menu_fullscreen;
                 let s_toggle_dark = tr.menu_toggle_dark_mode;
                 let s_always_on_top = tr.menu_always_on_top;
+                let s_switch_theme = tr.menu_switch_theme;
+                let s_toggle_light = tr.menu_toggle_light_mode;
                 let pl = self.player.clone();
                 layout::menu_dropdown(s_view_label, IconName::LayoutDashboard, move |menu, _, _| {
                 let cfg = crate::config::Config::load();
@@ -2524,7 +2575,7 @@ impl MusicPlayer {
                     window.toggle_fullscreen();
                 }))
                 .separator()
-                .item(PopupMenuItem::new(if dark_mode { "浅色模式" } else { s_toggle_dark }).on_click({
+                .item(PopupMenuItem::new(if dark_mode { s_toggle_light } else { s_toggle_dark }).on_click({
                     let weak = weak.clone();
                     move |_, _, cx| {
                         let mut cfg = crate::config::Config::load();
@@ -2539,7 +2590,7 @@ impl MusicPlayer {
                         tracing::info!("Dark mode toggled to: {}", cfg.appearance.dark_mode);
                     }
                 }))
-                .item(PopupMenuItem::new("切换主题颜色").on_click({
+                .item(PopupMenuItem::new(s_switch_theme).on_click({
                     let weak = weak.clone();
                     move |_, _, cx| {
                         let mut cfg = crate::config::Config::load();
@@ -2577,6 +2628,18 @@ impl MusicPlayer {
                 let s_find = tr.menu_find;
                 let s_equalizer = tr.menu_equalizer;
                 let s_settings = tr.menu_settings;
+                let s_browse_dir = tr.menu_browse_dir;
+                let s_song_info = tr.menu_song_info;
+                let s_format_convert = tr.menu_format_convert;
+                let s_charset_convert = tr.menu_charset_convert;
+                let s_online_tags = tr.menu_online_tags;
+                let s_cover_preview = tr.menu_cover_preview;
+                let s_timer_shutdown = tr.menu_timer_shutdown;
+                let s_file_assoc = tr.menu_file_association;
+                let s_listen_stats = tr.menu_listen_stats;
+                let s_dev_progress = tr.menu_dev_progress;
+                let s_create_shortcut = tr.menu_create_shortcut;
+                let s_reinit_player = tr.menu_reinit_player;
                 layout::menu_dropdown(s_tools_label, IconName::Settings, move |menu, _, _| {
                 let player_eq = player.clone();
                 menu.item(PopupMenuItem::new(s_media_lib).on_click(|_, _, _| {
@@ -2585,10 +2648,10 @@ impl MusicPlayer {
                 .item(PopupMenuItem::new(s_find).on_click(|_, _, _| {
                     ACTIVE_PANEL.store(3, Ordering::Relaxed);
                 }))
-                .item(PopupMenuItem::new("探索文件路径").on_click(|_, _, _| {
+                .item(PopupMenuItem::new(s_browse_dir).on_click(|_, _, _| {
                     ACTIVE_PANEL.store(1, Ordering::Relaxed);
                 }))
-                .item(PopupMenuItem::new("歌曲信息").on_click({
+                .item(PopupMenuItem::new(s_song_info).on_click({
                     let weak = weak.clone();
                     move |_, _, cx| {
                         weak.update(cx, |this, cx| {
@@ -2607,7 +2670,7 @@ impl MusicPlayer {
                         tracing::info!("[Tools] Open equalizer panel");
                     }
                 }))
-                .item(PopupMenuItem::new("格式转换").on_click({
+                .item(PopupMenuItem::new(s_format_convert).on_click({
                     let weak = weak.clone();
                     move |_, _, cx| {
                         weak.update(cx, |this, cx| {
@@ -2616,7 +2679,7 @@ impl MusicPlayer {
                         }).ok();
                     }
                 }))
-                .item(PopupMenuItem::new("繁简转换").on_click({
+                .item(PopupMenuItem::new(s_charset_convert).on_click({
                     let weak = weak.clone();
                     let p = player_eq.clone();
                     move |_, _, cx| {
@@ -2655,7 +2718,7 @@ impl MusicPlayer {
                         }
                     }
                 }))
-                .item(PopupMenuItem::new("在线获取标签").on_click({
+                .item(PopupMenuItem::new(s_online_tags).on_click({
                     let p = player_eq.clone();
                     move |_, _, _| {
                         if let Some(track) = p.playlist().current_track() {
@@ -2675,7 +2738,7 @@ impl MusicPlayer {
                         }
                     }
                 }))
-                .item(PopupMenuItem::new("封面预览").on_click({
+                .item(PopupMenuItem::new(s_cover_preview).on_click({
                     let p = player_eq.clone();
                     move |_, _, _| {
                         if let Some(track) = p.playlist().current_track() {
@@ -2689,13 +2752,13 @@ impl MusicPlayer {
                                         "该曲目没有内嵌封面".to_string()
                                     };
                                     let _ = rfd::MessageDialog::new()
-                                        .set_title("封面预览")
+                                        .set_title(s_cover_preview)
                                         .set_description(&info)
                                         .show();
                                 }
                                 Err(e) => {
                                     let _ = rfd::MessageDialog::new()
-                                        .set_title("封面预览")
+                                        .set_title(s_cover_preview)
                                         .set_description(&format!("读取封面失败: {}", e))
                                         .show();
                                 }
@@ -2703,7 +2766,7 @@ impl MusicPlayer {
                         }
                     }
                 }))
-                .item(PopupMenuItem::new("定时停止").on_click(|_, _, _| {
+                .item(PopupMenuItem::new(s_timer_shutdown).on_click(|_, _, _| {
                     if SLEEP_TIMER_ACTIVE.load(Ordering::Relaxed) {
                         SLEEP_TIMER_ACTIVE.store(false, Ordering::Relaxed);
                         tracing::info!("[SleepTimer] 已取消");
@@ -2720,12 +2783,12 @@ impl MusicPlayer {
                         tracing::info!("[SleepTimer] 已设置1小时后停止播放");
                     }
                 }))
-                .item(PopupMenuItem::new("文件关联").on_click(|_, _, _| {
+                .item(PopupMenuItem::new(s_file_assoc).on_click(|_, _, _| {
                     crate::commands::system::cmd_file_assoc(&crate::cli::FileAssocArgs {
                         action: crate::cli::FileAssocAction::Register,
                     }).ok();
                 }))
-                .item(PopupMenuItem::new("收听统计").on_click({
+                .item(PopupMenuItem::new(s_listen_stats).on_click({
                     let weak = weak.clone();
                     move |_, _, cx| {
                         let stats = crate::play_stats::top_stats(20);
@@ -2746,14 +2809,14 @@ impl MusicPlayer {
                         }
                     }
                 }))
-                .item(PopupMenuItem::new("开发进度").on_click(|_, _, _| {
+                .item(PopupMenuItem::new(s_dev_progress).on_click(|_, _, _| {
                     #[cfg(windows)]
                     let _ = std::process::Command::new("cmd").args(&["/c", "start", "docs\\缺陷分析与改进计划.md"]).spawn();
                     #[cfg(not(windows))]
                     let _ = std::process::Command::new("xdg-open").arg("docs/缺陷分析与改进计划.md").spawn();
                     tracing::info!("[Dev] 打开开发进度文档");
                 }))
-                .item(PopupMenuItem::new("创建快捷方式").on_click(|_, _, _| {
+                .item(PopupMenuItem::new(s_create_shortcut).on_click(|_, _, _| {
                     #[cfg(windows)]
                     {
                         use std::process::Command;
@@ -2770,7 +2833,7 @@ impl MusicPlayer {
                         tracing::info!("[Shortcut] 创建快捷方式 - 仅在 Windows 支持");
                     }
                 }))
-                .item(PopupMenuItem::new("重新初始化播放器").on_click({
+                .item(PopupMenuItem::new(s_reinit_player).on_click({
                     let weak = weak.clone();
                     let p = player_eq.clone();
                     move |_, _, cx| {
@@ -2808,6 +2871,9 @@ impl MusicPlayer {
                 let s_help_label = tr.menu_help;
                 let s_help_content = tr.menu_help_content;
                 let s_about = tr.menu_about;
+                let s_online_help = tr.menu_online_help;
+                let s_check_update = tr.menu_check_update;
+                let s_supported_formats = tr.menu_supported_formats;
                 layout::menu_dropdown(s_help_label, IconName::Info, move |menu, _, _| {
                 menu.item(PopupMenuItem::new(s_help_content).on_click(|_, _, _| {
                     tracing::info!("Open local help documentation");
@@ -2818,18 +2884,18 @@ impl MusicPlayer {
                     #[cfg(all(not(windows), not(target_os = "macos")))]
                     let _ = std::process::Command::new("xdg-open").arg("https://github.com/zhongyang219/MusicPlayer2/wiki").spawn();
                 }))
-                .item(PopupMenuItem::new("在线帮助").on_click(|_, _, _| {
+                .item(PopupMenuItem::new(s_online_help).on_click(|_, _, _| {
                     tracing::info!("Opening online help");
                     #[cfg(windows)]
                     let _ = std::process::Command::new("cmd").args(&["/c", "start", "https://github.com/zhongyang219/MusicPlayer2"]).spawn();
                     #[cfg(not(windows))]
                     let _ = std::process::Command::new("xdg-open").arg("https://github.com/zhongyang219/MusicPlayer2").spawn();
                 }))
-                .item(PopupMenuItem::new("检查更新").on_click(|_, _, _| {
+                .item(PopupMenuItem::new(s_check_update).on_click(|_, _, _| {
                     crate::commands::system::check_update_background();
                 }))
                 .separator()
-                .item(PopupMenuItem::new("支持的格式").on_click(|_, _, _| {
+                .item(PopupMenuItem::new(s_supported_formats).on_click(|_, _, _| {
                     let formats = crate::audio_common::supported_extensions();
                     tracing::info!("Supported formats: {:?}", formats);
                 }))
@@ -2855,7 +2921,7 @@ impl MusicPlayer {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let close_btn = Button::new("modal_close")
-            .label("关闭")
+            .label(self.tr.ctrl_stop)
             .ghost()
             .on_click(cx.listener(|this, _, _window, _cx| {
                 this.modal = None;
@@ -2870,7 +2936,7 @@ impl MusicPlayer {
                     .bg(c.bg)
                     .p_6()
                     .gap_4()
-                    .child(dialogs::render_about_dialog(c))
+                    .child(dialogs::render_about_dialog(self.tr, c))
                     .child(h_flex().w_full().justify_end().child(close_btn))
                     .into_any_element()
             }
@@ -2883,7 +2949,7 @@ impl MusicPlayer {
                     .bg(c.bg)
                     .p_6()
                     .gap_3()
-                    .child(layout::txt("歌曲信息", 16.0, c.text_title))
+                    .child(layout::txt(self.tr.menu_song_info, 16.0, c.text_title))
                     .child(div().w_full().h(px(1.0)).bg(c.divider))
                     .child(
                         v_flex().w_full().gap_1()
@@ -4291,6 +4357,15 @@ impl MusicPlayer {
                 let scroll_handle = self.playlist_scroll_handle.clone();
                 let indices = filtered_indices;
                 let tracks2 = tracks.to_vec();
+                let s_play = self.tr.ctrl_play;
+                let s_play_next = self.tr.menu_play_next;
+                let s_remove = self.tr.menu_remove_track;
+                let s_fav = self.tr.menu_favourite;
+                let s_unfav = self.tr.menu_unfavourite;
+                let s_clear_rating = self.tr.menu_clear_rating;
+                let s_open_location = self.tr.menu_open_file_location;
+                let s_copy_path = self.tr.menu_copy_path;
+                let s_properties = self.tr.menu_properties;
 
                 uniform_list("playlist_list", n, move |range, _window, _cx| {
                     range.map(|rel_i| {
@@ -4434,19 +4509,20 @@ impl MusicPlayer {
                                 let dn = display_name.clone();
                                 let fav = is_fav;
                                 let idx = i;
+                                let s_fav_label = if fav { s_unfav } else { s_fav };
 
-                                menu.item(PopupMenuItem::new("播放").on_click(move |_, _, _| {
+                                menu.item(PopupMenuItem::new(s_play).on_click(move |_, _, _| {
                                     let p = p_play.clone();
                                     runtime().spawn_blocking(move || { let _ = p.play_at_index(idx); });
                                 }))
-                                .item(PopupMenuItem::new("下一首播放").on_click(move |_, _, _| {
+                                .item(PopupMenuItem::new(s_play_next).on_click(move |_, _, _| {
                                     p_next.push_next_track(idx);
                                 }))
                                 .separator()
-                                .item(PopupMenuItem::new("移除").on_click(move |_, _, _| {
+                                .item(PopupMenuItem::new(s_remove).on_click(move |_, _, _| {
                                     p_remove.playlist_mut().remove(idx);
                                 }))
-                                .item(PopupMenuItem::new(if fav { "取消收藏" } else { "收藏" }).on_click(move |_, _, _| {
+                                .item(PopupMenuItem::new(s_fav_label).on_click(move |_, _, _| {
                                     p_fav.playlist_mut().toggle_favourite(idx);
                                 }))
                                 .separator()
@@ -4465,11 +4541,11 @@ impl MusicPlayer {
                                 .item(PopupMenuItem::new("评级: ★★★★★").on_click(move |_, _, _| {
                                     p_r5.playlist_mut().set_rating(idx, 5);
                                 }))
-                                .item(PopupMenuItem::new("清除评级").on_click(move |_, _, _| {
+                                .item(PopupMenuItem::new(s_clear_rating).on_click(move |_, _, _| {
                                     p_r0.playlist_mut().set_rating(idx, 0);
                                 }))
                                 .separator()
-                                .item(PopupMenuItem::new("打开文件位置").on_click({
+                                .item(PopupMenuItem::new(s_open_location).on_click({
                                     let fp_loc2 = fp_loc.clone();
                                     let dn2 = dn.clone();
                                     let fav2 = fav;
@@ -4500,9 +4576,9 @@ impl MusicPlayer {
                                         }
                                     }
                                 }}))
-                                .item(PopupMenuItem::new("复制路径").on_click(move |_, _, _| {
+                                .item(PopupMenuItem::new(s_copy_path).on_click(move |_, _, _| {
                                 }))
-                                .item(PopupMenuItem::new("属性").on_click({
+                                .item(PopupMenuItem::new(s_properties).on_click({
                                 let fp_loc2 = fp_loc.clone();
                                 let idx2 = idx;
                                 let dn2 = dn.clone();
@@ -4534,13 +4610,13 @@ impl MusicPlayer {
                                     dn2, "", "", "", fp_loc2, "", if fav2 { "是" } else { "否" }, "", "--", "--", file_size, mod_time,
                                 );
                                 let _ = rfd::MessageDialog::new()
-                                    .set_title("歌曲属性")
+                                    .set_title(s_properties)
                                     .set_description(&info)
                                     .show();
                             }}))
                             })
                             .into_any_element()
-                    }).collect::<Vec<_>>()
+                     }).collect::<Vec<_>>()
                 })
                 .track_scroll(scroll_handle)
                 .flex_grow()
@@ -5290,6 +5366,7 @@ struct DesktopLyricsView {
     last_track_path: String,
     locked: bool,
     double_line: bool,
+    tr: &'static crate::gui::i18n::Tr,
 }
 
 impl DesktopLyricsView {
@@ -5319,6 +5396,7 @@ impl DesktopLyricsView {
             last_track_path: String::new(),
             locked: false,
             double_line: true,
+            tr: crate::gui::i18n::global_tr(),
         }
     }
 
@@ -5407,6 +5485,6 @@ impl Render for DesktopLyricsView {
                 .into_any_element();
         }
 
-        desktop_lyrics::render_lyrics_overlay(&self.state, &c).into_any_element()
+        desktop_lyrics::render_lyrics_overlay(&self.state, self.tr, &c).into_any_element()
     }
 }
