@@ -8,10 +8,14 @@ use crate::core::player::Player;
 static PLAYER: OnceLock<std::sync::Arc<Player>> = OnceLock::new();
 
 pub fn init(player: std::sync::Arc<Player>) {
+    tracing::info!("[Hotkey] init() entered");
     let _ = PLAYER.set(player.clone());
+    tracing::info!("[Hotkey] PLAYER set, calling commands::init_player...");
     crate::commands::init_player(player);
+    tracing::info!("[Hotkey] commands::init_player done");
     #[cfg(target_os = "windows")]
     {
+        tracing::info!("[Hotkey] Windows: creating mutex and starting message thread");
         extern "system" {
             fn CreateMutexW(
                 lpMutexAttributes: *const std::ffi::c_void,
@@ -25,8 +29,11 @@ pub fn init(player: std::sync::Arc<Player>) {
         unsafe {
             CreateMutexW(std::ptr::null(), 1, name.as_ptr());
         }
+        tracing::info!("[Hotkey] Mutex created, starting message thread...");
         start_message_thread();
+        tracing::info!("[Hotkey] Message thread spawned");
     }
+    tracing::info!("[Hotkey] init() done");
 }
 
 #[cfg(not(target_os = "windows"))]

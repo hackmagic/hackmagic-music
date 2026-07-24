@@ -111,19 +111,34 @@ pub struct Player {
 impl Player {
     /// Create a new player with the specified engine
     pub fn new(engine_type: EngineType) -> Self {
+        tracing::info!("[Player] Creating player with engine {:?}", engine_type);
         let engine: Box<dyn PlayerEngine> = match engine_type {
-            EngineType::Bass => Box::new(BassEngine::new()),
+            EngineType::Bass => {
+                tracing::info!("[Player] Instantiating BASS engine...");
+                Box::new(BassEngine::new())
+            }
             EngineType::Mci => {
+                tracing::info!("[Player] Instantiating MCI engine...");
                 #[cfg(target_os = "windows")]
                 { Box::new(MciEngine::new()) }
                 #[cfg(not(target_os = "windows"))]
                 { Box::new(RodioEngine::new()) }
             }
-            EngineType::Ffmpeg => Box::new(FfmpegEngine::new()),
-            EngineType::Rodio => Box::new(RodioEngine::new()),
-            EngineType::Symphonia => Box::new(crate::symphonia_engine::SymphoniaEngine::new()),
+            EngineType::Ffmpeg => {
+                tracing::info!("[Player] Instantiating FFmpeg engine...");
+                Box::new(FfmpegEngine::new())
+            }
+            EngineType::Rodio => {
+                tracing::info!("[Player] Instantiating Rodio engine...");
+                Box::new(RodioEngine::new())
+            }
+            EngineType::Symphonia => {
+                tracing::info!("[Player] Instantiating Symphonia engine...");
+                Box::new(crate::symphonia_engine::SymphoniaEngine::new())
+            }
         };
         let engine_name = engine.name();
+        tracing::info!("[Player] Engine '{}' instantiated, building Player struct", engine_name);
 
         Self {
             engine,
@@ -141,16 +156,21 @@ impl Player {
 
     /// Initialize the player
     pub fn init(&self) -> Result<()> {
+        tracing::info!("[Player] init() calling engine.init()...");
         self.engine.init()?;
         tracing::info!("Player initialized with {} engine", self.engine.name());
+        tracing::info!("[Player] init() calling refresh_status()...");
         self.refresh_status();
+        tracing::info!("[Player] init() done");
         Ok(())
     }
 
     /// Publish a lock-free snapshot of current state so the GUI can read it
     /// without touching any Mutex.
     pub fn refresh_status(&self) {
+        tracing::info!("[Player] refresh_status() enter");
         let pl = self.playlist.lock().unwrap();
+        tracing::info!("[Player] refresh_status() playlist locked");
         let (track_path, track_title, track_artist, track_album, track_is_fav, track_idx) = pl
             .current_index()
             .and_then(|i| pl.get(i))
@@ -165,14 +185,31 @@ impl Player {
                 )
             })
             .unwrap_or_default();
+        tracing::info!("[Player] refresh_status() playlist read done, dropping lock");
         drop(pl);
+        tracing::info!("[Player] refresh_status() calling engine methods...");
+        let state = self.engine.state();
+        tracing::info!("[Player] refresh_status() engine.state() done");
+        let pos = self.engine.position().as_secs_f64();
+        tracing::info!("[Player] refresh_status() engine.position() done");
+        let dur = self.engine.duration().as_secs_f64();
+        tracing::info!("[Player] refresh_status() engine.duration() done");
+        let vol = self.engine.volume();
+        let spd = self.engine.speed();
+        let song_over = self.engine.song_is_over();
+        tracing::info!("[Player] refresh_status() engine.vol/spd/over done");
+        let spectrum = self.calculate_spectrum();
+        tracing::info!("[Player] refresh_status() calculate_spectrum() done, len={}", spectrum.len());
+        let spectrum_peaks = self.spectrum.lock().unwrap().peaks.clone();
+        let fft = self.fft_data();
+        tracing::info!("[Player] refresh_status() fft_data() done, len={}", fft.len());
         self.status.store(Arc::new(EngineStatus {
-            state: self.engine.state(),
-            position_secs: self.engine.position().as_secs_f64(),
-            duration_secs: self.engine.duration().as_secs_f64(),
-            volume: self.engine.volume(),
-            speed: self.engine.speed(),
-            song_is_over: self.engine.song_is_over(),
+            state,
+            position_secs: pos,
+            duration_secs: dur,
+            volume: vol,
+            speed: spd,
+            song_is_over: song_over,
             loading: self.loading.load(std::sync::atomic::Ordering::Relaxed),
             engine_name: self.engine.name(),
             current_track_index: track_idx,
@@ -181,13 +218,11 @@ impl Player {
             current_track_artist: track_artist,
             current_track_album: track_album,
             current_track_is_favourite: track_is_fav,
-            spectrum: {
-                let s = self.calculate_spectrum();
-                s
-            },
-            spectrum_peaks: self.spectrum.lock().unwrap().peaks.clone(),
-            fft: self.fft_data(),
+            spectrum,
+            spectrum_peaks,
+            fft,
         }));
+        tracing::info!("[Player] refresh_status() done");
     }
 
     // === Engine info ===

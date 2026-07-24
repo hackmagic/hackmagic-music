@@ -104,12 +104,15 @@ impl PlayerEngine for BassEngine {
     }
 
     fn init(&self) -> Result<()> {
+        tracing::info!("[BASS] init() entered");
         // Load BASS library
         if !sys::is_bass_loaded() && !sys::load_bass(None, None) {
+            tracing::error!("[BASS] Failed to load BASS library");
             return Err(PlayerError::BassNotLoaded(
                 "Failed to load BASS library. Make sure bass.dll/bass.so is in PATH.".into()
             ));
         }
+        tracing::info!("[BASS] Library loaded");
 
         let version = sys::BASS_GetVersion();
         tracing::info!("BASS version: {}.{}.{}", 
@@ -118,9 +121,11 @@ impl PlayerEngine for BassEngine {
         let cfg = crate::config::Config::load();
         let use_wasapi = cfg.play.output_mode != "directsound";
         let wasapi_exclusive = cfg.play.output_mode == "wasapi_exclusive";
+        tracing::info!("[BASS] output_mode={}, use_wasapi={}", cfg.play.output_mode, use_wasapi);
 
         if use_wasapi {
             // Load BASSWASAPI plugin
+            tracing::info!("[BASS] Loading BASSWASAPI...");
             if sys::load_bass_wasapi(None) {
                 // Initialize with WASAPI
                 let device = if cfg.play.wasapi_device >= 0 { cfg.play.wasapi_device } else { -1 };
@@ -129,6 +134,7 @@ impl PlayerEngine for BassEngine {
                 let flags = if wasapi_exclusive { sys::BASS_WASAPI_EXCLUSIVE } else { 0 };
                 let buffer = 0.100f32;  // 100ms buffer
                 let period = 0.025f32;  // 25ms period
+                tracing::info!("[BASS] Calling BASS_WASAPI_Init...");
 
                 match sys::BASS_WASAPI_Init(device, freq, chans, flags, buffer, period, Some(wasapi_proc as sys::WASAPIPROC), std::ptr::null_mut()) {
                     Ok(()) => {
@@ -143,21 +149,24 @@ impl PlayerEngine for BassEngine {
             } else {
                 tracing::warn!("BASSWASAPI not available, falling back to DirectSound");
                 *self.wasapi_active.lock().unwrap() = false;
-                // Fall through to standard init
             }
         }
 
         if !*self.wasapi_active.lock().unwrap() {
             // Standard BASS initialization — match original MusicPlayer2 flags
+            tracing::info!("[BASS] Calling BASS_Init (DirectSound)...");
             sys::BASS_Init(-1, 44100, sys::BASS_DEVICE_CPSPEAKERS, std::ptr::null_mut(), std::ptr::null_mut())
                 .map_err(|e| PlayerError::BassError(format!("BASS_Init failed: {e}")))?;
+            tracing::info!("[BASS] Calling BASS_Start...");
             sys::BASS_Start()
                 .map_err(|e| PlayerError::BassError(format!("BASS_Start failed: {e}")))?;
             tracing::info!("BASS initialized successfully (DirectSound)");
         }
 
         // Try to load bassmidi.dll for MIDI playback
+        tracing::info!("[BASS] Loading bassmidi...");
         sys::load_bass_midi(None);
+        tracing::info!("[BASS] init() done");
 
         // Load SoundFont from config
         if cfg.midi.enabled && !cfg.midi.soundfont.is_empty() && sys::is_bass_midi_loaded() {

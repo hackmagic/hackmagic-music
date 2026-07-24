@@ -18,19 +18,24 @@ impl<'a> MakeWriter<'a> for FileAndStdoutWriter {
 }
 
 fn main() {
+    eprintln!("[BOOT] main() entered");
     hm::color::enable_ansi_support();
+    eprintln!("[BOOT] ANSI support enabled");
 
-    // Log panic to file for diagnosis
-    let panic_log = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir()).join("hm_panic.log");
+    // Log panic to file for diagnosis — use CWD (project dir when run via cargo run)
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
+    let panic_log = cwd.join("hm_panic.log");
     std::panic::set_hook(Box::new(move |info| {
         let msg = format!("[PANIC] {info}\nbacktrace:\n{}\n", std::backtrace::Backtrace::force_capture());
         let _ = std::fs::write(&panic_log, &msg);
         eprintln!("{msg}");
     }));
+    eprintln!("[BOOT] Panic hook set, log dir: {}", cwd.display());
 
-    // Configure tracing: write to a log file in temp dir AND stderr.
-    // Use env var RUST_LOG to override the default "info" level.
-    let log_path = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir()).join("hm_gui.log");
+    // Configure tracing: write to a log file in CWD AND stderr.
+    // Use env var RUST_LOG to override the default "trace" level.
+    let log_path = cwd.join("hm_gui.log");
+    eprintln!("[BOOT] Opening log file: {}", log_path.display());
     let file = std::fs::OpenOptions::new()
         .create(true)
         .write(true)
@@ -50,6 +55,7 @@ fn main() {
                 .with_ansi(false),
         )
         .init();
+    eprintln!("[BOOT] Tracing initialized");
 
     tracing::info!("=== HackMagic GUI starting, log file: {} ===", log_path.display());
     tracing::info!("[GUI] Starting HackMagic Music Player with GPUI Component");
@@ -57,16 +63,24 @@ fn main() {
     // GPUI render functions build deeply nested element trees that can overflow
     // the default 2MB main-thread stack on Windows. Run the whole app on a
     // worker thread with a larger stack (8MB) and let main wait for it.
+    tracing::info!("[GUI] Spawning GUI thread with 8MB stack...");
     let handle = std::thread::Builder::new()
         .stack_size(8 * 1024 * 1024)
         .name("hm-gui".into())
         .spawn(move || {
+            tracing::info!("[GUI] GUI thread entered, creating Application...");
             Application::new().run(|cx: &mut App| {
+                tracing::info!("[GUI] Application::run callback entered");
                 gpui_component::init(cx);
+                tracing::info!("[GUI] gpui_component::init done, calling hm::gui::run...");
                 hm::gui::run(cx);
+                tracing::info!("[GUI] hm::gui::run returned (should not happen — event loop)");
             });
+            tracing::info!("[GUI] Application::run exited");
         })
         .expect("failed to spawn GUI thread");
 
+    tracing::info!("[GUI] Waiting for GUI thread to finish...");
     let _ = handle.join();
+    tracing::info!("[GUI] GUI thread finished");
 }

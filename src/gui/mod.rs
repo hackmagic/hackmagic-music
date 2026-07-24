@@ -88,6 +88,7 @@ impl Panel {
 }
 
 pub fn run(cx: &mut App) {
+    tracing::info!("[GUI] run() entered — opening window");
     let _ = cx.open_window(WindowOptions {
         titlebar: Some(TitlebarOptions {
             title: Some("HackMagic Music Player".into()),
@@ -100,6 +101,7 @@ pub fn run(cx: &mut App) {
         window_min_size: Some(gpui::Size { width: px(480.0), height: px(360.0) }),
         ..Default::default()
     }, |window, cx| {
+        tracing::info!("[GUI] Window callback entered — creating InputStates");
         let url_state = cx.new(|c| InputState::new(window, c));
         let search_input = cx.new(|c| InputState::new(window, c).placeholder("搜索媒体库..."));
         let editor_title_input = cx.new(|c| InputState::new(window, c).placeholder("标题"));
@@ -109,12 +111,16 @@ pub fn run(cx: &mut App) {
         let editor_year_input = cx.new(|c| InputState::new(window, c).placeholder("年份"));
         let editor_track_num_input = cx.new(|c| InputState::new(window, c).placeholder("曲目号"));
         let editor_rating_input = cx.new(|c| InputState::new(window, c).placeholder("评分 (0-5)"));
+        tracing::info!("[GUI] InputStates created — creating MusicPlayer entity");
         let content = cx.new(|cx| MusicPlayer::new(cx, url_state, search_input,
             editor_title_input, editor_artist_input, editor_album_input,
             editor_genre_input, editor_year_input, editor_track_num_input,
             editor_rating_input));
+        tracing::info!("[GUI] MusicPlayer entity created — creating Root");
         cx.new(|c| {
-            Root::new(content, window, c)
+            let root = Root::new(content, window, c);
+            tracing::info!("[GUI] Root entity created — window callback returning");
+            root
         })
     });
 }
@@ -408,12 +414,16 @@ impl MusicPlayer {
         editor_track_num_input: Entity<InputState>,
         editor_rating_input: Entity<InputState>,
     ) -> Self {
+        tracing::info!("[GUI] MusicPlayer::new() entered");
         let cfg = Config::load();
+        tracing::info!("[GUI] Config loaded, engine={}", &cfg.play.engine);
         let engine = EngineType::from_str(&cfg.play.engine);
+        tracing::info!("[GUI] Creating Player with {:?} engine", engine);
         let player = Arc::new(Player::new(engine));
 
         // BASS init may fail (missing DLLs); fall back to FFmpeg and use that as
         // the active player so playback actually works.
+        tracing::info!("[GUI] Calling player.init()...");
         let player = if let Err(e) = player.init() {
             tracing::warn!("BASS init failed ({}), trying FFmpeg", e);
             let fallback = Arc::new(Player::new(EngineType::Ffmpeg));
@@ -422,9 +432,11 @@ impl MusicPlayer {
                 std::process::exit(1);
             }
             fallback.set_volume(cfg.play.default_volume).ok();
+            tracing::info!("[GUI] Fallback FFmpeg engine initialized");
             fallback
         } else {
             player.set_volume(cfg.play.default_volume).ok();
+            tracing::info!("[GUI] Primary engine initialized, volume set to {}", cfg.play.default_volume);
             player
         };
 
@@ -463,6 +475,7 @@ impl MusicPlayer {
         if cfg.media_lib.auto_scan && !cfg.media_lib.media_dirs.is_empty() {
             let dirs = cfg.media_lib.media_dirs.clone();
             // 只在媒体库为空时自动扫描，避免每次启动都扫描大量文件导致卡顿
+            tracing::info!("[GUI] Media lib auto_scan enabled, loading existing lib...");
             let existing = crate::media::MediaLib::load();
             if existing.entries.is_empty() {
                 // Capture a weak handle to self so the background scan can
@@ -488,6 +501,7 @@ impl MusicPlayer {
                 tracing::info!("[MediaLib] 跳过自动扫描（已有 {} 条记录）", existing.entries.len());
             }
         }
+        tracing::info!("[GUI] Media lib check done — setting up 30fps timer");
 
         // ── 30fps repaint loop: drives progress bar, spectrum, and lyrics
         //    updates during playback. Player state is polled from render() now,
@@ -576,8 +590,11 @@ impl MusicPlayer {
         }
 
         // Init hotkey message window so CLI commands can forward to us
+        tracing::info!("[GUI] Initializing hotkey system...");
         crate::hotkey::init(player.clone());
+        tracing::info!("[GUI] Hotkey system initialized — building MusicPlayer struct");
 
+        tracing::info!("[GUI] MusicPlayer::new() returning");
         Self {
             player,
             colours,
@@ -993,7 +1010,7 @@ impl MusicPlayer {
 
 impl Render for MusicPlayer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        eprintln!("[RENDER_DEBUG] render() called");
+        tracing::info!("[GUI] render() called");
         // Poll player state directly in render (no thread contention since this
         // runs on the main thread). Heavy I/O (lyrics, cover extraction) is
         // deferred to the background timer via pending_track_path.
