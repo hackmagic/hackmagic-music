@@ -13,12 +13,45 @@ target
 # Contains mutation testing data
 **/mutants.out*/
 
-# RustRover
-#  JetBrains specific template is maintained in a separate JetBrains.gitignore that can
-#  be found at https://github.com/github/gitignore/blob/main/Global/JetBrains.gitignore
-#  and can be added to the global gitignore or merged into this file.  For a more nuclear
-#  option (not recommended) you can uncomment the following to ignore the entire idea folder.
-#.idea/
+# JetBrains IDEs
+.idea/
+
+# AI assistant files
+.trae/
+.workbuddy/
+.anchored_summary.md
+
+# OpenCode
+.opencode/
+
+# Local config
+.atomcode/
+.uploads/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Test artifacts
+test_*.bat
+test_*.sh
+test_*.py
+test_*.wav
+hm_gui_pid.txt
+start.bat
+
+# Audio assets (too large for git)
+assets/*.flac
+assets/*.mp3
+assets/*.wav
+assets/*.ogg
+
+# Screenshots
+原播放器界面截图/
+
+# Models and vector DB data
+models/
+vecdb/
 
 # Electron
 node_modules
@@ -28,12 +61,3 @@ gui/dist
 
 # Tauri generated schemas (can be regenerated)
 gui/src-tauri/gen
-
-# AtomCode local config (not uploaded to git)
-.atomcode/
-.trae/
-.workbuddy/
-.uploads/
-# OS files
-.DS_Store
-Thumbs.db
