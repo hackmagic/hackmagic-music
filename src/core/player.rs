@@ -365,7 +365,7 @@ impl Player {
             (t.title.clone(), t.artist.clone(), t.album.clone())
         }).unwrap_or_default();
         crate::runtime().spawn(async move {
-            if let Some(emb) = crate::ai::embed_file(&ai_path) {
+            if let Some(emb) = crate::ai::embed_file_async(ai_path.clone()).await {
                 let conn = crate::vecdb::global_db();
                 let _ = crate::vecdb::index_track(conn, &ai_path, &ai_title, &ai_artist, &ai_album, &emb).await;
             }
