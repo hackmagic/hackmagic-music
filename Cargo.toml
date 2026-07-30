@@ -18,7 +18,7 @@ clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
 
 # Async runtime (for daemon mode, HTTP in future)
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["rt-multi-thread", "time", "net", "macros"] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
@@ -29,9 +29,6 @@ toml = "0.8"
 
 # Audio metadata (replaces TagLib)
 lofty = "0.22"
-
-# Image handling (for album art)
-image = "0.25"
 
 # LRU cache for album art
 lru = "0.13"
@@ -62,9 +59,8 @@ rodio = { version = "0.19", features = ["mp3", "flac", "vorbis"] }
 # Pure Rust audio decoding (for Symphonia engine — broader codec support)
 symphonia = { version = "0.5", default-features = false, features = ["all-codecs", "all-formats", "pcm"] }
 
-# ML inference (audio feature extraction for similarity search)
-candle-core = "0.8"
-candle-nn = "0.8"
+# ML inference (ONNX runtime for audio embedding model)
+tract-onnx = "0.21"
 
 # FFT for mel spectrogram computation
 rustfft = "6"
@@ -74,28 +70,18 @@ lancedb = "0.31"
 arrow-array = "58"
 arrow-schema = "58"
 
-# Test utilities
-tempfile = "3"
-
-# FFmpeg subprocess decoding
-# playa-ffmpeg = { version = "8", features = ["build", "static"] }
-
 # Logging
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Error handling
 thiserror = "2"
-anyhow = "1"
 
 # Time
 chrono = "0.4"
 
 # Random
 rand = "0.8"
-
-# File watching
-notify = "7"
 
 # Regex for filename parsing
 regex = "1"
@@ -123,16 +109,15 @@ gpui-component = "0.5.1"
 windows = { version = "0.61", features = [
     "Media",
     "Foundation",
-    "Storage_Streams",
     "Win32_Foundation",
-    "Win32_System_Com",
     "Win32_System_LibraryLoader",
-    "Win32_System_WinRT",
-
     "Win32_UI_WindowsAndMessaging",
     "Win32_UI_Shell",
     "Win32_Graphics_Gdi",
 ] }
+
+[dev-dependencies]
+tempfile = "3"
 
 [build-dependencies]
 embed-resource = "3"
