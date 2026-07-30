@@ -470,3 +470,61 @@ impl PlayerEngine for FfmpegEngine {
         false
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ffmpeg_new_defaults() {
+        let engine = FfmpegEngine::new();
+        assert_eq!(*engine.sample_rate.lock().unwrap(), 44100);
+        assert_eq!(*engine.channels.lock().unwrap(), 2);
+        assert_eq!(*engine.total_frames.lock().unwrap(), 0);
+        assert_eq!(*engine.volume.lock().unwrap(), 0.8);
+        assert_eq!(*engine.speed.lock().unwrap(), 1.0);
+        assert_eq!(*engine.pitch.lock().unwrap(), 0);
+        assert_eq!(*engine.eq_gains.lock().unwrap(), [0; 10]);
+    }
+
+    #[test]
+    fn ffmpeg_name() {
+        let engine = FfmpegEngine::new();
+        assert_eq!(engine.name(), "FFmpeg");
+    }
+
+    #[test]
+    fn ffmpeg_is_midi() {
+        let engine = FfmpegEngine::new();
+        assert!(!engine.is_midi());
+    }
+
+    #[test]
+    fn ffmpeg_song_is_over_initial() {
+        let engine = FfmpegEngine::new();
+        // total_frames = 0, so song_is_over should be false
+        assert!(!engine.song_is_over());
+    }
+
+    #[test]
+    fn ffmpeg_set_reverb() {
+        let engine = FfmpegEngine::new();
+        assert!(engine.set_reverb(50, 1000).is_ok());
+        assert!(engine.clear_reverb().is_ok());
+    }
+
+    #[test]
+    fn ffmpeg_fft_data_empty() {
+        let engine = FfmpegEngine::new();
+        let fft = engine.fft_data();
+        assert_eq!(fft.len(), 256); // 512/2
+        assert!(fft.iter().all(|&x| x == 0.0));
+    }
+
+    #[test]
+    fn ffmpeg_fft_data_with_size() {
+        let engine = FfmpegEngine::new();
+        let fft = engine.fft_data_with_size(1024);
+        assert_eq!(fft.len(), 512);
+    }
+}

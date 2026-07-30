@@ -282,3 +282,62 @@ impl PlayerEngine for MciEngine {
         false
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mci_new_defaults() {
+        let engine = MciEngine::new();
+        assert_eq!(*engine.state.lock().unwrap(), EngineState::Stopped);
+        assert_eq!(*engine.duration.lock().unwrap(), Duration::ZERO);
+        assert_eq!(*engine.volume.lock().unwrap(), 0.8);
+        assert_eq!(*engine.opened.lock().unwrap(), false);
+    }
+
+    #[test]
+    fn mci_name() {
+        let engine = MciEngine::new();
+        assert_eq!(engine.name(), "MCI");
+    }
+
+    #[test]
+    fn mci_capabilities() {
+        let engine = MciEngine::new();
+        let caps = engine.capabilities();
+        assert!(!caps.equalizer);
+        assert!(!caps.reverb);
+        assert!(!caps.fft);
+    }
+
+    #[test]
+    fn mci_speed_pitch_stubs() {
+        let engine = MciEngine::new();
+        assert!(engine.set_speed(1.5).is_ok());
+        assert_eq!(engine.speed(), 1.0);
+        assert!(engine.set_pitch(2).is_ok());
+        assert_eq!(engine.pitch(), 0);
+    }
+
+    #[test]
+    fn mci_equalizer_stub() {
+        let engine = MciEngine::new();
+        assert!(engine.set_equalizer(0, 5).is_ok());
+        assert_eq!(engine.equalizer(), [0; 10]);
+    }
+
+    #[test]
+    fn mci_fft_data_stub() {
+        let engine = MciEngine::new();
+        let fft = engine.fft_data();
+        assert_eq!(fft.len(), 256);
+        assert!(fft.iter().all(|&x| x == 0.0));
+    }
+
+    #[test]
+    fn mci_is_midi() {
+        let engine = MciEngine::new();
+        assert!(!engine.is_midi());
+    }
+}

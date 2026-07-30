@@ -937,3 +937,28 @@ fn print_conversion_progress(pct: f64) {
     print!("{line}");
     let _ = std::io::stdout().flush();
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn print_conversion_progress_boundaries() {
+        // Just verify it doesn't panic at boundary values
+        print_conversion_progress(0.0);
+        print_conversion_progress(25.0);
+        print_conversion_progress(50.0);
+        print_conversion_progress(75.0);
+        print_conversion_progress(90.0);
+        print_conversion_progress(100.0);
+    }
+
+    #[test]
+    fn print_conversion_progress_color_ranges() {
+        // Verify color matching logic covers all ranges without panicking
+        let test_cases = [0, 25, 26, 50, 51, 75, 76, 89, 90, 100];
+        for pct in test_cases {
+            print_conversion_progress(pct as f64);
+        }
+    }
+}

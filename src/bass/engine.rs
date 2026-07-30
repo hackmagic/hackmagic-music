@@ -104,69 +104,53 @@ impl PlayerEngine for BassEngine {
     }
 
     fn init(&self) -> Result<()> {
-        tracing::info!("[BASS] init() entered");
-        // Load BASS library
         if !sys::is_bass_loaded() && !sys::load_bass(None, None) {
             tracing::error!("[BASS] Failed to load BASS library");
             return Err(PlayerError::BassNotLoaded(
                 "Failed to load BASS library. Make sure bass.dll/bass.so is in PATH.".into()
             ));
         }
-        tracing::info!("[BASS] Library loaded");
-
         let version = sys::BASS_GetVersion();
-        tracing::info!("BASS version: {}.{}.{}", 
+        tracing::info!("[BASS] v{}.{}.{} loaded",
             (version >> 24) & 0xFF, (version >> 16) & 0xFF, (version >> 8) & 0xFF);
 
         let cfg = crate::config::Config::load();
         let use_wasapi = cfg.play.output_mode != "directsound";
         let wasapi_exclusive = cfg.play.output_mode == "wasapi_exclusive";
-        tracing::info!("[BASS] output_mode={}, use_wasapi={}", cfg.play.output_mode, use_wasapi);
 
         if use_wasapi {
-            // Load BASSWASAPI plugin
-            tracing::info!("[BASS] Loading BASSWASAPI...");
             if sys::load_bass_wasapi(None) {
-                // Initialize with WASAPI
                 let device = if cfg.play.wasapi_device >= 0 { cfg.play.wasapi_device } else { -1 };
                 let freq = 44100u32;
                 let chans = 2u32;
                 let flags = if wasapi_exclusive { sys::BASS_WASAPI_EXCLUSIVE } else { 0 };
-                let buffer = 0.100f32;  // 100ms buffer
-                let period = 0.025f32;  // 25ms period
-                tracing::info!("[BASS] Calling BASS_WASAPI_Init...");
-
+                let buffer = 0.100f32;
+                let period = 0.025f32;
                 match sys::BASS_WASAPI_Init(device, freq, chans, flags, buffer, period, Some(wasapi_proc as sys::WASAPIPROC), std::ptr::null_mut()) {
                     Ok(()) => {
-                        tracing::info!("BASSWASAPI initialized (exclusive={})", wasapi_exclusive);
+                        tracing::info!("[BASS] WASAPI initialized (exclusive={})", wasapi_exclusive);
                         *self.wasapi_active.lock().unwrap() = true;
                     }
                     Err(e) => {
-                        tracing::warn!("BASSWASAPI_Init failed: {}, falling back to DirectSound", e);
+                        tracing::warn!("[BASS] WASAPI_Init failed: {}, falling back to DirectSound", e);
                         *self.wasapi_active.lock().unwrap() = false;
                     }
                 }
             } else {
-                tracing::warn!("BASSWASAPI not available, falling back to DirectSound");
+                tracing::warn!("[BASS] WASAPI not available, falling back to DirectSound");
                 *self.wasapi_active.lock().unwrap() = false;
             }
         }
 
         if !*self.wasapi_active.lock().unwrap() {
-            // Standard BASS initialization — match original MusicPlayer2 flags
-            tracing::info!("[BASS] Calling BASS_Init (DirectSound)...");
             sys::BASS_Init(-1, 44100, sys::BASS_DEVICE_CPSPEAKERS, std::ptr::null_mut(), std::ptr::null_mut())
                 .map_err(|e| PlayerError::BassError(format!("BASS_Init failed: {e}")))?;
-            tracing::info!("[BASS] Calling BASS_Start...");
             sys::BASS_Start()
                 .map_err(|e| PlayerError::BassError(format!("BASS_Start failed: {e}")))?;
-            tracing::info!("BASS initialized successfully (DirectSound)");
+            tracing::info!("[BASS] DirectSound initialized");
         }
 
-        // Try to load bassmidi.dll for MIDI playback
-        tracing::info!("[BASS] Loading bassmidi...");
         sys::load_bass_midi(None);
-        tracing::info!("[BASS] init() done");
 
         // Load SoundFont from config
         if cfg.midi.enabled && !cfg.midi.soundfont.is_empty() && sys::is_bass_midi_loaded() {
@@ -204,15 +188,13 @@ impl PlayerEngine for BassEngine {
     }
 
     fn open(&self, path: &str) -> Result<()> {
-        tracing::info!("[BASS] open(\"{}\")", path);
+        tracing::debug!("[BASS] open(\"{}\")", path);
 
-        // Fast path: swap in a preloaded track (mmap + stream) if it matches.
         {
             let mut preload = self.preload.lock().unwrap();
             if let Some(p) = preload.take() {
                 if p.path == path {
-                    tracing::info!("[BASS] open: swapped preloaded track '{}'", path);
-                    // Free current streams without affecting mmap/preload state
+                    tracing::debug!("[BASS] swapped preloaded track");
                     let old_tempo = *self.tempo_stream.lock().unwrap();
                     let old_stream = *self.stream.lock().unwrap();
                     if old_tempo != 0 { let _ = sys::BASS_StreamFree(old_tempo); }
@@ -222,7 +204,6 @@ impl PlayerEngine for BassEngine {
                     *self.tempo_stream.lock().unwrap() = p.tempo_stream;
                     *self.eq_handles.lock().unwrap() = [0; 10];
                     *self.reverb_handle.lock().unwrap() = 0;
-                    // Apply volume, speed, pitch to the swapped stream.
                     let vol = *self.volume.lock().unwrap();
                     let _ = sys::BASS_ChannelSetAttribute(p.tempo_stream, sys::BASS_ATTRIB_VOL, vol / 100.0);
                     let speed = *self.speed.lock().unwrap();
@@ -231,7 +212,6 @@ impl PlayerEngine for BassEngine {
                     let _ = self.apply_pitch(p.tempo_stream, pitch);
                     return Ok(());
                 }
-                // Path doesn't match — free the preloaded resources.
                 let _ = sys::BASS_StreamFree(p.tempo_stream);
                 if p.stream != p.tempo_stream {
                     let _ = sys::BASS_StreamFree(p.stream);
@@ -244,7 +224,6 @@ impl PlayerEngine for BassEngine {
         let is_midi = path.ends_with(".mid") || path.ends_with(".midi") || path.ends_with(".rmi")
             || path.ends_with(".MID") || path.ends_with(".MIDI") || path.ends_with(".RMI");
         let is_url = path.starts_with("http://") || path.starts_with("https://") || path.starts_with("ftp://") || path.starts_with("mms://");
-        tracing::info!("[BASS] is_midi={}, is_url={}", is_midi, is_url);
 
         *self.is_midi_file.lock().unwrap() = is_midi && !is_url && sys::is_bass_midi_loaded();
 
@@ -322,12 +301,12 @@ impl PlayerEngine for BassEngine {
                 match sys::BASS_FX_TempoCreate(stream, tempo_flags) {
                     Ok(h) => h,
                     Err(e) => {
-                        tracing::warn!("[BASS] BASS_FX_TempoCreate 失败（{}），降级用原 stream", e);
+                tracing::warn!("[BASS] BASS_FX_TempoCreate failed ({}), using raw stream", e);
                         stream
                     }
                 }
             } else {
-                tracing::info!("[BASS] BASS_FX 未加载，使用普通流直接播放（不支持变速变调）");
+                tracing::debug!("[BASS] BASS_FX not loaded, using raw stream (no tempo/pitch)");
                 stream
             };
 
@@ -351,7 +330,7 @@ impl PlayerEngine for BassEngine {
             let _ = sys::BASS_ChannelSetAttribute(ch, sys::BASS_ATTRIB_DB_GAIN, rg_db);
         }
 
-        tracing::info!("Opened: {}", path);
+        tracing::debug!("[BASS] Opened: {}", path);
         Ok(())
     }
 
@@ -388,26 +367,18 @@ impl PlayerEngine for BassEngine {
     }
 
     fn play(&self) -> Result<()> {
-        tracing::info!("[BASS] play() called");
         let tempo = *self.tempo_stream.lock().unwrap();
-        tracing::info!("[BASS] tempo_stream handle = {}", tempo);
         if tempo == 0 {
-            tracing::warn!("[BASS] play() -> NoTrack (tempo_stream == 0, open not called?)");
             return Err(PlayerError::NoTrack);
         }
-        tracing::info!("[BASS] wasapi_active={}, fade_effect={}",
-            *self.wasapi_active.lock().unwrap(),
-            *self.fade_effect.lock().unwrap());
 
         if *self.wasapi_active.lock().unwrap() {
-            // WASAPI mode: set stream handle and start output
             WASAPI_STREAM.store(tempo, Ordering::SeqCst);
             sys::BASS_WASAPI_Start()
                 .map_err(|e| {
-                    tracing::error!("[BASS] BASS_WASAPI_Start failed: {}", e);
+                    tracing::error!("[BASS] WASAPI_Start failed: {}", e);
                     PlayerError::Playback(format!("Cannot start WASAPI: {e}"))
                 })?;
-            tracing::info!("[BASS] WASAPI started");
         } else if *self.fade_effect.lock().unwrap() {
             let fade_ms = *self.fade_time.lock().unwrap();
             let target_vol = *self.volume.lock().unwrap() / 100.0;
@@ -417,17 +388,15 @@ impl PlayerEngine for BassEngine {
                 .map_err(|e| PlayerError::Playback(format!("Cannot play: {e}")))?;
             sys::BASS_ChannelSlideAttribute(tempo, sys::BASS_ATTRIB_VOL, target_vol, fade_ms)
                 .map_err(|e| PlayerError::Playback(format!("Cannot fade in: {e}")))?;
-            tracing::info!("[BASS] fade-in play started ({} ms)", fade_ms);
+            tracing::debug!("[BASS] fade-in play ({} ms)", fade_ms);
         } else {
             sys::BASS_ChannelPlay(tempo, 0)
                 .map_err(|e| {
-                    tracing::error!("[BASS] BASS_ChannelPlay failed: {}", e);
+                    tracing::error!("[BASS] ChannelPlay failed: {}", e);
                     PlayerError::Playback(format!("Cannot play: {e}"))
                 })?;
-            tracing::info!("[BASS] BASS_ChannelPlay ok");
         }
         *self.state.lock().unwrap() = EngineState::Playing;
-        tracing::info!("[BASS] play() OK, state=Playing");
         Ok(())
     }
 
@@ -867,5 +836,61 @@ type Dword = u32;
 impl Drop for BassEngine {
     fn drop(&mut self) {
         let _ = self.uninit();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bass_engine_new_defaults() {
+        let engine = BassEngine::new();
+        assert_eq!(*engine.stream.lock().unwrap(), 0);
+        assert_eq!(*engine.tempo_stream.lock().unwrap(), 0);
+        assert_eq!(*engine.volume.lock().unwrap(), 80.0);
+        assert_eq!(*engine.speed.lock().unwrap(), 1.0);
+        assert_eq!(*engine.pitch.lock().unwrap(), 0);
+        assert_eq!(*engine.fade_time.lock().unwrap(), 500);
+        assert_eq!(*engine.replaygain_db.lock().unwrap(), 0.0);
+    }
+
+    #[test]
+    fn bass_engine_name() {
+        let engine = BassEngine::new();
+        assert_eq!(engine.name(), "BASS");
+    }
+
+    #[test]
+    fn bass_engine_set_fade() {
+        let engine = BassEngine::new();
+        engine.set_fade(false, 1000);
+        assert_eq!(*engine.fade_effect.lock().unwrap(), false);
+        assert_eq!(*engine.fade_time.lock().unwrap(), 1000);
+
+        engine.set_fade(true, 200);
+        assert_eq!(*engine.fade_effect.lock().unwrap(), true);
+        assert_eq!(*engine.fade_time.lock().unwrap(), 200);
+    }
+
+    #[test]
+    fn bass_engine_set_replaygain_stores_value() {
+        let engine = BassEngine::new();
+        engine.set_replaygain(3.5);
+        assert_eq!(*engine.replaygain_db.lock().unwrap(), 3.5);
+    }
+
+    #[test]
+    fn bass_engine_is_fallback_mode_no_stream() {
+        let engine = BassEngine::new();
+        // No streams opened, should not be fallback mode
+        assert!(!engine.is_fallback_mode());
+    }
+
+    #[test]
+    fn bass_engine_default_state() {
+        let engine = BassEngine::new();
+        let state = engine.state.lock().unwrap();
+        assert!(matches!(*state, EngineState::Stopped));
     }
 }

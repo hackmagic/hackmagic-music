@@ -268,3 +268,40 @@ impl PlayerEngine for SymphoniaEngine {
         self.backend.is_midi()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn symphonia_new() {
+        let engine = SymphoniaEngine::new();
+        assert_eq!(engine.name(), "Symphonia");
+    }
+
+    #[test]
+    fn symphonia_state_initial() {
+        let engine = SymphoniaEngine::new();
+        assert!(matches!(engine.state(), EngineState::Stopped));
+    }
+
+    #[test]
+    fn symphonia_position_initial() {
+        let engine = SymphoniaEngine::new();
+        assert_eq!(engine.position(), Duration::ZERO);
+    }
+
+    #[test]
+    fn symphonia_volume_initial() {
+        let engine = SymphoniaEngine::new();
+        // Default volume from RodioBackend
+        let vol = engine.volume();
+        assert!(vol <= 100);
+    }
+
+    #[test]
+    fn symphonia_is_midi() {
+        let engine = SymphoniaEngine::new();
+        assert!(!engine.is_midi());
+    }
+}
