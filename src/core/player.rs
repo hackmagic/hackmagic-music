@@ -111,35 +111,20 @@ pub struct Player {
 impl Player {
     /// Create a new player with the specified engine
     pub fn new(engine_type: EngineType) -> Self {
-        tracing::info!("[Player] Creating player with engine {:?}", engine_type);
+        tracing::info!("[Player] Creating with engine {:?}", engine_type);
         let engine: Box<dyn PlayerEngine> = match engine_type {
-            EngineType::Bass => {
-                tracing::info!("[Player] Instantiating BASS engine...");
-                Box::new(BassEngine::new())
-            }
+            EngineType::Bass => Box::new(BassEngine::new()),
             EngineType::Mci => {
-                tracing::info!("[Player] Instantiating MCI engine...");
                 #[cfg(target_os = "windows")]
                 { Box::new(MciEngine::new()) }
                 #[cfg(not(target_os = "windows"))]
                 { Box::new(RodioEngine::new()) }
             }
-            EngineType::Ffmpeg => {
-                tracing::info!("[Player] Instantiating FFmpeg engine...");
-                Box::new(FfmpegEngine::new())
-            }
-            EngineType::Rodio => {
-                tracing::info!("[Player] Instantiating Rodio engine...");
-                Box::new(RodioEngine::new())
-            }
-            EngineType::Symphonia => {
-                tracing::info!("[Player] Instantiating Symphonia engine...");
-                Box::new(crate::symphonia_engine::SymphoniaEngine::new())
-            }
+            EngineType::Ffmpeg => Box::new(FfmpegEngine::new()),
+            EngineType::Rodio => Box::new(RodioEngine::new()),
+            EngineType::Symphonia => Box::new(crate::symphonia_engine::SymphoniaEngine::new()),
         };
         let engine_name = engine.name();
-        tracing::info!("[Player] Engine '{}' instantiated, building Player struct", engine_name);
-
         Self {
             engine,
             engine_type,
@@ -156,21 +141,17 @@ impl Player {
 
     /// Initialize the player
     pub fn init(&self) -> Result<()> {
-        tracing::info!("[Player] init() calling engine.init()...");
         self.engine.init()?;
-        tracing::info!("Player initialized with {} engine", self.engine.name());
-        tracing::info!("[Player] init() calling refresh_status()...");
+        tracing::info!("[Player] Initialized with {} engine", self.engine.name());
         self.refresh_status();
-        tracing::info!("[Player] init() done");
         Ok(())
     }
 
     /// Publish a lock-free snapshot of current state so the GUI can read it
     /// without touching any Mutex.
     pub fn refresh_status(&self) {
-        tracing::info!("[Player] refresh_status() enter");
+        tracing::trace!("[Player] refresh_status() enter");
         let pl = self.playlist.lock().unwrap();
-        tracing::info!("[Player] refresh_status() playlist locked");
         let (track_path, track_title, track_artist, track_album, track_is_fav, track_idx) = pl
             .current_index()
             .and_then(|i| pl.get(i))
@@ -185,24 +166,16 @@ impl Player {
                 )
             })
             .unwrap_or_default();
-        tracing::info!("[Player] refresh_status() playlist read done, dropping lock");
         drop(pl);
-        tracing::info!("[Player] refresh_status() calling engine methods...");
         let state = self.engine.state();
-        tracing::info!("[Player] refresh_status() engine.state() done");
         let pos = self.engine.position().as_secs_f64();
-        tracing::info!("[Player] refresh_status() engine.position() done");
         let dur = self.engine.duration().as_secs_f64();
-        tracing::info!("[Player] refresh_status() engine.duration() done");
         let vol = self.engine.volume();
         let spd = self.engine.speed();
         let song_over = self.engine.song_is_over();
-        tracing::info!("[Player] refresh_status() engine.vol/spd/over done");
         let spectrum = self.calculate_spectrum();
-        tracing::info!("[Player] refresh_status() calculate_spectrum() done, len={}", spectrum.len());
         let spectrum_peaks = self.spectrum.lock().unwrap().peaks.clone();
         let fft = self.fft_data();
-        tracing::info!("[Player] refresh_status() fft_data() done, len={}", fft.len());
         self.status.store(Arc::new(EngineStatus {
             state,
             position_secs: pos,
@@ -222,7 +195,6 @@ impl Player {
             spectrum_peaks,
             fft,
         }));
-        tracing::info!("[Player] refresh_status() done");
     }
 
     // === Engine info ===
@@ -245,23 +217,19 @@ impl Player {
     /// If the file is already in the playlist, the existing entry is played
     /// instead of adding a duplicate.
     pub fn play_file(&self, path: &str) -> Result<()> {
-        tracing::info!("[PLAY] play_file(\"{}\") called", path);
+        tracing::debug!("[PLAY] play_file(\"{}\")", path);
         let idx = {
             let pl = self.playlist.lock().unwrap();
-            // Reuse existing entry if present to avoid duplicates on repeated opens
             pl.tracks().iter().position(|t| t.file_path == path)
         };
-        tracing::info!("[PLAY] play_file existing index={:?}", idx);
         let idx = match idx {
             Some(i) => i,
             None => {
                 let mut pl = self.playlist.lock().unwrap();
                 pl.add_track(Track::new(path));
-                tracing::info!("[PLAY] play_file added new track at index {}", pl.len() - 1);
                 pl.len() - 1
             }
         };
-        // play_at_index opens the engine and plays
         self.play_at_index(idx)
     }
 
@@ -340,21 +308,17 @@ impl Player {
 
     /// Play track at index
     pub fn play_at_index(&self, index: usize) -> Result<()> {
-        tracing::info!("[PLAY] play_at_index(index={}) called", index);
-        tracing::info!("[PLAY] backtrace:\n{}", std::backtrace::Backtrace::force_capture());
+        tracing::debug!("[PLAY] play_at_index({})", index);
         let playlist = self.playlist.lock().unwrap();
-        tracing::info!("[PLAY] playlist len={}, current_index={:?}", playlist.len(), playlist.current_index());
         let (path, is_cue, start_pos, end_pos, track_gain, album_gain) = playlist.get(index).map(|t| {
-            tracing::info!("[PLAY] track found: file_path={}, title={}, is_cue={}, start_pos={:?}, end_pos={:?}",
-                t.file_path, t.title, t.is_cue, t.start_pos, t.end_pos);
             (t.file_path.clone(), t.is_cue, t.start_pos, t.end_pos, t.track_gain, t.album_gain)
         }).unwrap_or_default();
         drop(playlist);
         if path.is_empty() {
-            tracing::warn!("[PLAY] play_at_index({}) -> NoTrack (get returned None)", index);
+            tracing::warn!("[PLAY] play_at_index({}) -> NoTrack", index);
             return Err(PlayerError::NoTrack);
         }
-        tracing::info!("[PLAY] engine.open(\"{}\") using {}", path, self.engine.name());
+        tracing::debug!("[PLAY] opening \"{}\" with {}", path, self.engine.name());
         self.loading.store(true, std::sync::atomic::Ordering::SeqCst);
         let open_result = self.engine.open(&path);
         self.loading.store(false, std::sync::atomic::Ordering::SeqCst);
@@ -362,7 +326,6 @@ impl Player {
             tracing::error!("[PLAY] engine.open failed for \"{}\": {}", path, e);
             e
         })?;
-        // Apply ReplayGain
         let cfg = crate::config::Config::load();
         let gain_db = match cfg.play.replaygain.as_str() {
             "track" if track_gain != 0.0 => track_gain,
@@ -371,11 +334,9 @@ impl Player {
         };
         self.engine.set_replaygain(gain_db);
         if is_cue && start_pos != Duration::ZERO {
-            tracing::info!("[PLAY] CUE seek to {:?}", start_pos);
             self.engine.seek(start_pos)?;
         }
         self.settings.lock().unwrap().cue_end_pos = if is_cue && end_pos != Duration::ZERO { Some(end_pos) } else { None };
-        tracing::info!("[PLAY] engine.play() calling");
         self.engine.play().map_err(|e| {
             tracing::error!("[PLAY] engine.play failed for \"{}\": {}", path, e);
             e
@@ -387,7 +348,7 @@ impl Player {
                 e
             })?;
         }
-        tracing::info!("[PLAY] play_at_index({}) OK, path=\"{}\"", index, path);
+        tracing::info!("[PLAY] Now playing: \"{}\"", path);
 
         // Preload the next track (mmap + stream) for gapless transition.
         let next_idx = { self.playlist.lock().unwrap().next_index() };
@@ -400,10 +361,13 @@ impl Player {
 
         // Background: extract embedding and index for similarity search.
         let ai_path = path.clone();
+        let (ai_title, ai_artist, ai_album) = self.playlist.lock().unwrap().get(index).map(|t| {
+            (t.title.clone(), t.artist.clone(), t.album.clone())
+        }).unwrap_or_default();
         crate::runtime().spawn(async move {
             if let Some(emb) = crate::ai::embed_file(&ai_path) {
                 let conn = crate::vecdb::global_db();
-                let _ = crate::vecdb::index_track(conn, &ai_path, &emb).await;
+                let _ = crate::vecdb::index_track(conn, &ai_path, &ai_title, &ai_artist, &ai_album, &emb).await;
             }
         });
 
