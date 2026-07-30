@@ -44,6 +44,9 @@ pub enum PlayerError {
     #[error("Network error: {0}")]
     Network(#[from] reqwest::Error),
 
+    #[error("Vector DB error: {0}")]
+    VecDb(String),
+
     #[error("{0}")]
     Other(String),
 }

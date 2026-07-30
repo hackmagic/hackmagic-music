@@ -1,6 +1,7 @@
 //! Local vector database (LanceDB) for audio embedding similarity search.
 //! ponytail: single "tracks" table, 256-dim F32 vectors, L2 distance.
 
+use crate::error::{PlayerError, Result};
 use arrow_array::{Array, ArrayRef, FixedSizeListArray, Float32Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use lancedb::query::{ExecutableQuery, QueryBase};
@@ -19,7 +20,7 @@ pub struct SearchHit {
 }
 
 const TABLE_NAME: &str = "tracks";
-const EMBEDDING_DIM: i32 = 256;
+const EMBEDDING_DIM: i32 = 512;
 
 fn track_schema() -> SchemaRef {
     Arc::new(Schema::new(vec![
@@ -35,10 +36,13 @@ fn track_schema() -> SchemaRef {
     ]))
 }
 
+fn map_err(e: impl std::fmt::Display) -> PlayerError {
+    PlayerError::VecDb(e.to_string())
+}
+
 /// Open or create a local LanceDB database at the given directory path.
-pub async fn open_db(db_path: &str) -> Result<lancedb::Connection, Box<dyn std::error::Error>> {
-    let conn = lancedb::connect(db_path).execute().await?;
-    Ok(conn)
+pub async fn open_db(db_path: &str) -> Result<lancedb::Connection> {
+    lancedb::connect(db_path).execute().await.map_err(map_err)
 }
 
 /// Get or lazily initialise the global vector DB connection.
@@ -48,24 +52,23 @@ pub fn global_db() -> &'static lancedb::Connection {
 }
 
 /// Initialise the global vecdb (called once at startup).
-pub async fn init_vecdb(db_path: &str) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn init_vecdb(db_path: &str) -> Result<()> {
     let conn = open_db(db_path).await?;
-    VECDB.set(conn).map_err(|_| Box::<dyn std::error::Error>::from("vecdb already initialised"))?;
+    VECDB.set(conn).map_err(|_| PlayerError::VecDb("vecdb already initialised".into()))?;
     Ok(())
 }
 
 /// Get or create the tracks table.
-pub async fn ensure_table(
-    conn: &lancedb::Connection,
-) -> Result<Arc<Table>, Box<dyn std::error::Error>> {
-    let names = conn.table_names().execute().await?;
+pub async fn ensure_table(conn: &lancedb::Connection) -> Result<Arc<Table>> {
+    let names = conn.table_names().execute().await.map_err(map_err)?;
     let table = if names.iter().any(|n| n == TABLE_NAME) {
-        conn.open_table(TABLE_NAME).execute().await?
+        conn.open_table(TABLE_NAME).execute().await.map_err(map_err)?
     } else {
         let empty = make_batch(&[], &[])?;
         conn.create_table(TABLE_NAME, vec![empty])
             .execute()
-            .await?
+            .await
+            .map_err(map_err)?
     };
     Ok(Arc::new(table))
 }
@@ -73,7 +76,7 @@ pub async fn ensure_table(
 fn make_batch(
     paths: &[&str],
     embeddings: &[&[f32]],
-) -> Result<RecordBatch, Box<dyn std::error::Error>> {
+) -> Result<RecordBatch> {
     let path_arr = StringArray::from(paths.to_vec());
 
     let values: Vec<f32> = embeddings.iter().flat_map(|e| e.iter().copied()).collect();
@@ -86,7 +89,8 @@ fn make_batch(
     );
 
     let batch =
-        RecordBatch::try_new(track_schema(), vec![Arc::new(path_arr), Arc::new(emb_arr)])?;
+        RecordBatch::try_new(track_schema(), vec![Arc::new(path_arr), Arc::new(emb_arr)])
+            .map_err(map_err)?;
     Ok(batch)
 }
 
@@ -95,25 +99,23 @@ pub async fn index_track(
     conn: &lancedb::Connection,
     path: &str,
     embedding: &[f32],
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<()> {
     let table = ensure_table(conn).await?;
     let _ = table
         .delete(format!("path = '{}'", path.replace('\'', "''")).as_str())
         .await;
     let batch = make_batch(&[path], &[embedding])?;
-    table.add(vec![batch]).execute().await?;
+    table.add(vec![batch]).execute().await.map_err(map_err)?;
     Ok(())
 }
 
 /// Remove a track's embedding by path.
-pub async fn remove_track(
-    conn: &lancedb::Connection,
-    path: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn remove_track(conn: &lancedb::Connection, path: &str) -> Result<()> {
     let table = ensure_table(conn).await?;
     table
         .delete(format!("path = '{}'", path.replace('\'', "''")).as_str())
-        .await?;
+        .await
+        .map_err(map_err)?;
     Ok(())
 }
 
@@ -122,14 +124,14 @@ pub async fn search(
     conn: &lancedb::Connection,
     embedding: &[f32],
     k: usize,
-) -> Result<Vec<SearchHit>, Box<dyn std::error::Error>> {
+) -> Result<Vec<SearchHit>> {
     let table = ensure_table(conn).await?;
-    let query = table.query().nearest_to(embedding)?.limit(k);
-    let mut stream = query.execute().await?;
+    let query = table.query().nearest_to(embedding).map_err(map_err)?.limit(k);
+    let mut stream = query.execute().await.map_err(map_err)?;
 
     let mut hits = Vec::new();
     use futures_util::TryStreamExt;
-    while let Some(batch) = stream.try_next().await? {
+    while let Some(batch) = stream.try_next().await.map_err(map_err)? {
         let paths = batch
             .column_by_name("path")
             .and_then(|c| c.as_any().downcast_ref::<StringArray>());
