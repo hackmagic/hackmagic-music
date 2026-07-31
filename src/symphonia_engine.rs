@@ -2,10 +2,8 @@
 //! playback via rodio Sink (shared RodioBackend).
 //! Only the `decode_to_buffer` method differs from `RodioEngine`.
 
-use crate::core::engine_trait::{EngineCapabilities, EngineState, PlayerEngine};
 use crate::error::{PlayerError, Result};
-use crate::rodio_common::RodioBackend;
-use std::time::Duration;
+use crate::rodio_common::{impl_rodio_backend_engine, RodioBackend};
 use symphonia::core::audio::{AudioBufferRef, Signal};
 use symphonia::core::codecs::DecoderOptions;
 use symphonia::core::io::MediaSourceStream;
@@ -163,121 +161,13 @@ impl SymphoniaEngine {
     }
 }
 
-impl PlayerEngine for SymphoniaEngine {
-    fn name(&self) -> &'static str {
-        "Symphonia"
-    }
-
-    fn capabilities(&self) -> EngineCapabilities {
-        EngineCapabilities::decode_only()
-    }
-
-    fn init(&self) -> Result<()> {
-        self.backend.init()
-    }
-
-    fn uninit(&self) -> Result<()> {
-        self.backend.uninit()
-    }
-
-    fn open(&self, path: &str) -> Result<()> {
-        let (samples, sample_rate, channels) = Self::decode_to_buffer(path)?;
-        self.backend.set_buffer(samples, sample_rate, channels);
-        Ok(())
-    }
-
-    fn close(&self) -> Result<()> {
-        self.backend.close()
-    }
-
-    fn play(&self) -> Result<()> {
-        self.backend.play()
-    }
-
-    fn pause(&self) -> Result<()> {
-        self.backend.pause()
-    }
-
-    fn stop(&self) -> Result<()> {
-        self.backend.stop()
-    }
-
-    fn state(&self) -> EngineState {
-        self.backend.state()
-    }
-
-    fn position(&self) -> Duration {
-        self.backend.position()
-    }
-
-    fn duration(&self) -> Duration {
-        self.backend.duration()
-    }
-
-    fn seek(&self, pos: Duration) -> Result<()> {
-        self.backend.seek(pos)
-    }
-
-    fn set_volume(&self, vol: u32) -> Result<()> {
-        self.backend.set_volume(vol)
-    }
-
-    fn volume(&self) -> u32 {
-        self.backend.volume()
-    }
-
-    fn set_speed(&self, speed: f32) -> Result<()> {
-        self.backend.set_speed(speed)
-    }
-
-    fn speed(&self) -> f32 {
-        self.backend.speed()
-    }
-
-    fn set_pitch(&self, pitch: i32) -> Result<()> {
-        self.backend.set_pitch(pitch)
-    }
-
-    fn pitch(&self) -> i32 {
-        self.backend.pitch()
-    }
-
-    fn set_equalizer(&self, band: usize, gain: i32) -> Result<()> {
-        self.backend.set_equalizer(band, gain)
-    }
-
-    fn equalizer(&self) -> [i32; 10] {
-        self.backend.equalizer()
-    }
-
-    fn set_reverb(&self, mix: u32, time: u32) -> Result<()> {
-        self.backend.set_reverb(mix, time)
-    }
-
-    fn clear_reverb(&self) -> Result<()> {
-        self.backend.clear_reverb()
-    }
-
-    fn fft_data(&self) -> Vec<f32> {
-        self.backend.fft_data_with_size(512)
-    }
-
-    fn fft_data_with_size(&self, fft_size: u32) -> Vec<f32> {
-        self.backend.fft_data_with_size(fft_size)
-    }
-
-    fn song_is_over(&self) -> bool {
-        self.backend.song_is_over()
-    }
-
-    fn is_midi(&self) -> bool {
-        self.backend.is_midi()
-    }
-}
+impl_rodio_backend_engine!(SymphoniaEngine, "Symphonia");
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::engine_trait::{EngineState, PlayerEngine};
+    use std::time::Duration;
 
     #[test]
     fn symphonia_new() {

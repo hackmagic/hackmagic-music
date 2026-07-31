@@ -5248,7 +5248,7 @@ impl MusicPlayer {
                                             SliderValue::Single(v) => v,
                                             _ => 0.0,
                                         };
-                                        let bar_h = ((val.abs()) / 12.0 * 30.0).max(1.0).min(30.0);
+                                        let bar_h = ((val.abs()) / 12.0 * 30.0).clamp(1.0, 30.0);
                                         let is_positive = val >= 0.0;
                                         let bar_color = if is_positive { c.accent } else { Hsla { h: 0.0, s: 0.8, l: 0.5, a: 1.0 } };
                                         div()

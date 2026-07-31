@@ -32,6 +32,9 @@ pub enum RepeatMode {
 }
 
 impl RepeatMode {
+    // Inherent `from_str` intentionally returns a default mode instead of
+    // `Result`; do not confuse with `std::str::FromStr`.
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Self {
         match s.to_lowercase().as_str() {
             "order" | "顺序" => RepeatMode::PlayOrder,
@@ -88,6 +91,9 @@ pub enum SortMode {
 }
 
 impl SortMode {
+    // Inherent `from_str` intentionally returns a default mode instead of
+    // `Result`; do not confuse with `std::str::FromStr`.
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Self {
         match s.to_lowercase().as_str() {
             "title" | "标题" => SortMode::Title,

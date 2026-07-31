@@ -16,6 +16,9 @@ pub enum EngineType {
 }
 
 impl EngineType {
+    // Inherent `from_str` intentionally returns a default engine instead of
+    // `Result`; do not confuse with `std::str::FromStr`.
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Self {
         match s.to_lowercase().as_str() {
             "mci" => EngineType::Mci,

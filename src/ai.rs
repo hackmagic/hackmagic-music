@@ -61,9 +61,18 @@ fn model() -> Option<&'static tract_onnx::prelude::TypedRunnableModel<tract_onnx
     }).as_ref()
 }
 
-fn fft_planner() -> &'static std::sync::Mutex<FftPlanner<f32>> {
-    static P: OnceLock<std::sync::Mutex<FftPlanner<f32>>> = OnceLock::new();
-    P.get_or_init(|| std::sync::Mutex::new(FftPlanner::new()))
+thread_local! {
+    /// Per-thread FFT planner. `plan_fft_forward` returns an owned `Arc<dyn Fft>`,
+    /// so the planner itself only needs to be alive while planning; keeping it
+    /// thread-local avoids serialising concurrent embedding computations on a
+    /// global `Mutex` (previously held for the entire log-mel loop).
+    static FFT_PLANNER: std::cell::RefCell<FftPlanner<f32>> =
+        std::cell::RefCell::new(FftPlanner::new());
+}
+
+/// Plan an FFT of `FFT_SIZE` on the current thread.
+fn plan_fft() -> std::sync::Arc<dyn rustfft::Fft<f32>> {
+    FFT_PLANNER.with(|p| p.borrow_mut().plan_fft_forward(FFT_SIZE))
 }
 
 fn hann(n: usize) -> Vec<f32> {
@@ -108,8 +117,7 @@ fn compute_log_mel(samples: &[f32], sample_rate: u32) -> (Vec<f32>, usize, usize
     let n_bins = FFT_SIZE / 2 + 1;
     let filterbank = mel_filterbank(FFT_SIZE, N_MELS, sample_rate);
 
-    let mut planner = fft_planner().lock().unwrap();
-    let fft = planner.plan_fft_forward(FFT_SIZE);
+    let fft = plan_fft();
 
     let mut mel_data = vec![0.0f32; N_MELS * n_frames];
 

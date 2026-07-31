@@ -320,3 +320,124 @@ impl RodioBackend {
         false
     }
 }
+
+/// Generate the `PlayerEngine` impl shared by rodio-based engines (Rodio,
+/// Symphonia). Only `name()` and `decode_to_buffer()` differ between them:
+/// everything else delegates to the common `RodioBackend`.
+macro_rules! impl_rodio_backend_engine {
+    ($engine:ident, $engine_name:literal) => {
+        impl crate::core::engine_trait::PlayerEngine for $engine {
+            fn name(&self) -> &'static str {
+                $engine_name
+            }
+
+            fn capabilities(&self) -> crate::core::engine_trait::EngineCapabilities {
+                crate::core::engine_trait::EngineCapabilities::decode_only()
+            }
+
+            fn init(&self) -> crate::error::Result<()> {
+                self.backend.init()
+            }
+
+            fn uninit(&self) -> crate::error::Result<()> {
+                self.backend.uninit()
+            }
+
+            fn open(&self, path: &str) -> crate::error::Result<()> {
+                let (samples, sample_rate, channels) = Self::decode_to_buffer(path)?;
+                self.backend.set_buffer(samples, sample_rate, channels);
+                Ok(())
+            }
+
+            fn close(&self) -> crate::error::Result<()> {
+                self.backend.close()
+            }
+
+            fn play(&self) -> crate::error::Result<()> {
+                self.backend.play()
+            }
+
+            fn pause(&self) -> crate::error::Result<()> {
+                self.backend.pause()
+            }
+
+            fn stop(&self) -> crate::error::Result<()> {
+                self.backend.stop()
+            }
+
+            fn state(&self) -> crate::core::engine_trait::EngineState {
+                self.backend.state()
+            }
+
+            fn position(&self) -> std::time::Duration {
+                self.backend.position()
+            }
+
+            fn duration(&self) -> std::time::Duration {
+                self.backend.duration()
+            }
+
+            fn seek(&self, pos: std::time::Duration) -> crate::error::Result<()> {
+                self.backend.seek(pos)
+            }
+
+            fn set_volume(&self, vol: u32) -> crate::error::Result<()> {
+                self.backend.set_volume(vol)
+            }
+
+            fn volume(&self) -> u32 {
+                self.backend.volume()
+            }
+
+            fn set_speed(&self, speed: f32) -> crate::error::Result<()> {
+                self.backend.set_speed(speed)
+            }
+
+            fn speed(&self) -> f32 {
+                self.backend.speed()
+            }
+
+            fn set_pitch(&self, pitch: i32) -> crate::error::Result<()> {
+                self.backend.set_pitch(pitch)
+            }
+
+            fn pitch(&self) -> i32 {
+                self.backend.pitch()
+            }
+
+            fn set_equalizer(&self, band: usize, gain: i32) -> crate::error::Result<()> {
+                self.backend.set_equalizer(band, gain)
+            }
+
+            fn equalizer(&self) -> [i32; 10] {
+                self.backend.equalizer()
+            }
+
+            fn set_reverb(&self, mix: u32, time: u32) -> crate::error::Result<()> {
+                self.backend.set_reverb(mix, time)
+            }
+
+            fn clear_reverb(&self) -> crate::error::Result<()> {
+                self.backend.clear_reverb()
+            }
+
+            fn fft_data(&self) -> Vec<f32> {
+                self.backend.fft_data_with_size(512)
+            }
+
+            fn fft_data_with_size(&self, fft_size: u32) -> Vec<f32> {
+                self.backend.fft_data_with_size(fft_size)
+            }
+
+            fn song_is_over(&self) -> bool {
+                self.backend.song_is_over()
+            }
+
+            fn is_midi(&self) -> bool {
+                self.backend.is_midi()
+            }
+        }
+    };
+}
+
+pub(crate) use impl_rodio_backend_engine;
