@@ -8,6 +8,9 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+/// Decoded PCM for a gapless-preloaded track: (path, samples, sample_rate, channels).
+pub type PreloadedBuffer = (String, Vec<f32>, u32, usize);
+
 /// Interleaved f32 audio source for rodio playback.
 struct SharedSource {
     buffer: Arc<Vec<f32>>,
@@ -61,8 +64,8 @@ pub struct RodioBackend {
     pub sample_rate: AtomicU32,
     pub channels: Mutex<usize>,
     pub total_frames: AtomicU64,
-    /// Decoded PCM for the next track (gapless preload): (path, samples, sample_rate, channels).
-    pub preloaded: Mutex<Option<(String, Vec<f32>, u32, usize)>>,
+    /// Decoded PCM for the next track (gapless preload).
+    pub preloaded: Mutex<Option<PreloadedBuffer>>,
     pub state: Mutex<EngineState>,
     pub play_pos: Arc<AtomicU64>,
     pub volume: Mutex<f32>,

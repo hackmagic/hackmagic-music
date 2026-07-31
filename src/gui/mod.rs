@@ -442,6 +442,9 @@ fn run_blocking_dialog<T, F, A>(
 }
 
 impl MusicPlayer {
+    // Many editor inputs are passed individually because they are created once
+    // in the GUI entry point; grouping them would ripple through src/bin/gui.rs.
+    #[allow(clippy::too_many_arguments)]
     fn new(
         cx: &mut Context<Self>,
         url_state: Entity<InputState>,

@@ -153,13 +153,21 @@ fn setting_row(c: &UiColors, label: &str, control: AnyElement) -> AnyElement {
         .into_any_element()
 }
 
+/// Callback invoked when a settings toggle changes.
+type ToggleCallback =
+    Box<dyn Fn(bool, &mut super::MusicPlayer, &mut Window, &mut Context<super::MusicPlayer>) + 'static>;
+
+/// Callback that formats a numeric setting value for display.
+type LabelFn = Box<dyn Fn(u32) -> String + 'static>;
+
 /// Create a toggle button that reads/writes a boolean config key.
+#[allow(clippy::too_many_arguments)]
 fn toggle_config(
     c: &UiColors,
     id: &'static str,
     enabled: bool,
     config_key: &'static str,
-    on_toggled: Option<Box<dyn Fn(bool, &mut super::MusicPlayer, &mut Window, &mut Context<super::MusicPlayer>) + 'static>>,
+    on_toggled: Option<ToggleCallback>,
     cx: &mut Context<super::MusicPlayer>,
 ) -> AnyElement {
     let entity = cx.entity().downgrade();
@@ -191,6 +199,7 @@ fn toggle_config(
 }
 
 /// A horizontal slider that reads/writes a numeric config key.
+#[allow(clippy::too_many_arguments)]
 fn slider_config(
     c: &UiColors,
     _id: &'static str,
@@ -199,7 +208,7 @@ fn slider_config(
     max: u32,
     step: u32,
     config_key: &'static str,
-    label_fn: Option<Box<dyn Fn(u32) -> String + 'static>>,
+    label_fn: Option<LabelFn>,
     cx: &mut Context<super::MusicPlayer>,
 ) -> AnyElement {
     let display = if let Some(ref f) = label_fn {
