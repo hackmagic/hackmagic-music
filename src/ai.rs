@@ -17,6 +17,9 @@ const HOP_SIZE: usize = 480;
 const SAMPLE_RATE: u32 = 48000;
 const EMBEDDING_DIM: usize = 512;
 
+/// Dimension of lyric text embeddings.
+pub const LYRICS_EMBEDDING_DIM: usize = 256;
+
 /// Resolve the model directory: looks for `models/` next to the executable,
 /// or in the current working directory.
 fn model_dir() -> PathBuf {
@@ -246,6 +249,108 @@ pub async fn embed_file_async(path: String) -> Option<Vec<f32>> {
     tokio::task::spawn_blocking(task).await.unwrap_or(None)
 }
 
+fn is_cjk(ch: char) -> bool {
+    matches!(ch as u32,
+        0x4E00..=0x9FFF   // CJK Unified Ideographs
+        | 0x3400..=0x4DBF // Extension A
+        | 0x3040..=0x30FF // Hiragana + Katakana
+        | 0xAC00..=0xD7AF // Hangul
+    )
+}
+
+fn fnv1a(bytes: &[u8]) -> u64 {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for &b in bytes {
+        hash ^= b as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
+}
+
+fn djb2(bytes: &[u8]) -> u64 {
+    let mut hash: u64 = 5381;
+    for &b in bytes {
+        hash = hash.wrapping_mul(33).wrapping_add(b as u64);
+    }
+    hash
+}
+
+/// Embed lyric text as a deterministic 256-dim bag-of-tokens vector.
+///
+/// Interim implementation until a real text-embedding ONNX model is integrated:
+/// ASCII words + CJK bigrams are hashed into a signed L2-normalized vector, so
+/// lexical overlap (shared words/phrases) yields similarity. Empty text returns
+/// a zero vector.
+pub fn embed_lyrics_text(text: &str) -> Vec<f32> {
+    let mut emb = vec![0.0f32; LYRICS_EMBEDDING_DIM];
+    if text.trim().is_empty() {
+        return emb;
+    }
+
+    let mut tokens: Vec<String> = Vec::new();
+    let mut word = String::new();
+    let mut cjk_run = String::new();
+    let flush_cjk = |tokens: &mut Vec<String>, run: &mut String| {
+        if run.is_empty() {
+            return;
+        }
+        let chars: Vec<char> = run.chars().collect();
+        if chars.len() >= 2 {
+            for w in chars.windows(2) {
+                tokens.push(w.iter().collect());
+            }
+        } else {
+            tokens.push(chars[0].to_string());
+        }
+        run.clear();
+    };
+
+    for ch in text.to_lowercase().chars() {
+        if is_cjk(ch) {
+            if !word.is_empty() {
+                tokens.push(std::mem::take(&mut word));
+            }
+            cjk_run.push(ch);
+        } else if ch.is_ascii_alphanumeric() {
+            if !cjk_run.is_empty() {
+                flush_cjk(&mut tokens, &mut cjk_run);
+            }
+            word.push(ch);
+        } else {
+            if !word.is_empty() {
+                tokens.push(std::mem::take(&mut word));
+            }
+            if !cjk_run.is_empty() {
+                flush_cjk(&mut tokens, &mut cjk_run);
+            }
+        }
+    }
+    if !word.is_empty() {
+        tokens.push(word);
+    }
+    if !cjk_run.is_empty() {
+        flush_cjk(&mut tokens, &mut cjk_run);
+    }
+
+    for token in tokens {
+        let bytes = token.as_bytes();
+        let h1 = fnv1a(bytes) as usize % LYRICS_EMBEDDING_DIM;
+        let h2 = djb2(bytes) as usize % LYRICS_EMBEDDING_DIM;
+        let sign = if (fnv1a(bytes) >> 63) & 1 == 0 { 1.0 } else { -1.0 };
+        emb[h1] += sign;
+        emb[h2] += sign;
+    }
+    l2_normalize(&mut emb);
+    emb
+}
+
+/// Async version of `embed_lyrics_text` — runs on a blocking thread.
+pub async fn embed_lyrics_async(text: String) -> Vec<f32> {
+    tokio::task::spawn_blocking(move || embed_lyrics_text(&text))
+        .await
+        .unwrap_or_else(|_| vec![0.0f32; LYRICS_EMBEDDING_DIM])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -290,5 +395,45 @@ mod tests {
         let dot_an: f32 = emb_a.iter().zip(&emb_n).map(|(x, y)| x * y).sum();
 
         assert!(dot_ab > dot_an, "similar tones (cos={:.3}) should be closer than tone vs noise (cos={:.3})", dot_ab, dot_an);
+    }
+
+    #[test]
+    fn test_lyrics_embedding_dim_and_norm() {
+        let emb = embed_lyrics_text("Hello world, this is a song lyric line.");
+        assert_eq!(emb.len(), LYRICS_EMBEDDING_DIM);
+        let norm: f32 = emb.iter().map(|x| x * x).sum::<f32>().sqrt();
+        assert!((norm - 1.0).abs() < 0.01, "lyrics embedding should be normalized, got {}", norm);
+    }
+
+    #[test]
+    fn test_lyrics_embedding_empty_text_is_zero() {
+        let emb = embed_lyrics_text("");
+        assert!(emb.iter().all(|&x| x == 0.0));
+        assert!(embed_lyrics_text("   \n  ").iter().all(|&x| x == 0.0));
+    }
+
+    #[test]
+    fn test_lyrics_embedding_lexical_similarity() {
+        let a = embed_lyrics_text("I love you, baby, forever and always");
+        let b = embed_lyrics_text("I love you, darling, forever and ever");
+        let c = embed_lyrics_text("股市大涨，今天全线飘红，成交量创新高");
+
+        let dot_ab: f32 = a.iter().zip(&b).map(|(x, y)| x * y).sum();
+        let dot_ac: f32 = a.iter().zip(&c).map(|(x, y)| x * y).sum();
+        assert!(
+            dot_ab > dot_ac,
+            "overlapping lyrics (cos={:.3}) should be closer than unrelated (cos={:.3})",
+            dot_ab, dot_ac
+        );
+    }
+
+    #[test]
+    fn test_lyrics_embedding_cjk_bigrams() {
+        let a = embed_lyrics_text("月亮代表我的心");
+        let b = embed_lyrics_text("月亮知道我的心");
+        let c = embed_lyrics_text("完全不同的另一首歌");
+        let dot_ab: f32 = a.iter().zip(&b).map(|(x, y)| x * y).sum();
+        let dot_ac: f32 = a.iter().zip(&c).map(|(x, y)| x * y).sum();
+        assert!(dot_ab > dot_ac, "shared CJK bigrams should be closer (ab={:.3}, ac={:.3})", dot_ab, dot_ac);
     }
 }

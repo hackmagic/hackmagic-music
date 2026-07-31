@@ -112,7 +112,9 @@ fn cmd_rebuild_index() -> Result<()> {
             print!("\r[{}/{}] Indexing {}...", i + 1, entries.len(), std::path::Path::new(path).file_name().unwrap_or_default().to_string_lossy());
             match crate::ai::embed_file(path) {
                 Some(emb) => {
-                    if let Err(e) = vecdb::index_track(conn, path, &entry.title, &entry.artist, &entry.album, &emb).await {
+                    let lyric_text = crate::core::player::load_lyric_text(path, "");
+                    let lyric_emb = crate::ai::embed_lyrics_text(&lyric_text);
+                    if let Err(e) = vecdb::index_track(conn, path, &entry.title, &entry.artist, &entry.album, &lyric_text, &emb, &lyric_emb).await {
                         eprintln!("\n  Failed to index {}: {}", path, e);
                         failed += 1;
                     } else {

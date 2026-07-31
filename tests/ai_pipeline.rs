@@ -76,7 +76,9 @@ async fn decode_embed_index_search_roundtrip() {
         "Tone A",
         "Test Artist",
         "Test Album",
+        "sine wave tone a",
         &emb_a,
+        &hm::ai::embed_lyrics_text("sine wave tone a"),
     )
     .await
     .unwrap();
@@ -86,7 +88,9 @@ async fn decode_embed_index_search_roundtrip() {
         "Tone B",
         "Test Artist",
         "Test Album",
+        "sine wave tone b",
         &emb_b,
+        &hm::ai::embed_lyrics_text("sine wave tone b"),
     )
     .await
     .unwrap();
@@ -98,10 +102,18 @@ async fn decode_embed_index_search_roundtrip() {
     assert_eq!(hits[0].title, "Tone A");
     assert_eq!(hits[0].artist, "Test Artist");
     assert_eq!(hits[0].album, "Test Album");
+    assert_eq!(hits[0].lyrics, "sine wave tone a");
     assert!(
         hits[0].distance < hits[1].distance,
         "identical embedding must be closer than the other tone"
     );
+
+    // Lyric-text search returns A as the closest match.
+    let lyr_hits = hm::vecdb::search_lyrics(&conn, &hm::ai::embed_lyrics_text("sine wave tone a"), 2)
+        .await
+        .unwrap();
+    assert_eq!(lyr_hits.len(), 2);
+    assert_eq!(lyr_hits[0].path, a_path.to_str().unwrap());
 
     // 5. Remove A: only B remains.
     hm::vecdb::remove_track(&conn, a_path.to_str().unwrap())

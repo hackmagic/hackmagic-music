@@ -108,6 +108,33 @@ pub struct Player {
     pub status: ArcSwap<EngineStatus>,
 }
 
+/// Load plain lyric text (without timestamps) for a track, preferring the
+/// configured lyric file, then a sibling `.lrc` next to the audio file.
+pub(crate) fn load_lyric_text(track_path: &str, lyric_file: &str) -> String {
+    let mut candidates: Vec<std::path::PathBuf> = Vec::new();
+    if !lyric_file.is_empty() {
+        candidates.push(std::path::PathBuf::from(lyric_file));
+    }
+    let p = std::path::Path::new(track_path);
+    if let (Some(parent), Some(stem)) = (p.parent(), p.file_stem()) {
+        candidates.push(parent.join(format!("{}.lrc", stem.to_string_lossy())));
+    }
+    for cand in candidates {
+        if let Ok(lyrics) = crate::lyric::load_lyric_file(cand.to_str().unwrap_or_default()) {
+            let lines: Vec<String> = lyrics
+                .lines
+                .iter()
+                .map(|l| l.text.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            if !lines.is_empty() {
+                return lines.join("\n");
+            }
+        }
+    }
+    String::new()
+}
+
 impl Player {
     /// Create a new player with the specified engine
     pub fn new(engine_type: EngineType) -> Self {
@@ -361,13 +388,25 @@ impl Player {
 
         // Background: extract embedding and index for similarity search.
         let ai_path = path.clone();
-        let (ai_title, ai_artist, ai_album) = self.playlist.lock().unwrap().get(index).map(|t| {
-            (t.title.clone(), t.artist.clone(), t.album.clone())
+        let (ai_title, ai_artist, ai_album, ai_lyric_file) = self.playlist.lock().unwrap().get(index).map(|t| {
+            (t.title.clone(), t.artist.clone(), t.album.clone(), t.lyric_file.clone())
         }).unwrap_or_default();
         crate::runtime().spawn(async move {
             if let Some(emb) = crate::ai::embed_file_async(ai_path.clone()).await {
+                let lyric_text = load_lyric_text(&ai_path, &ai_lyric_file);
+                let lyric_emb = crate::ai::embed_lyrics_async(lyric_text.clone()).await;
                 let conn = crate::vecdb::global_db();
-                let _ = crate::vecdb::index_track(conn, &ai_path, &ai_title, &ai_artist, &ai_album, &emb).await;
+                let _ = crate::vecdb::index_track(
+                    conn,
+                    &ai_path,
+                    &ai_title,
+                    &ai_artist,
+                    &ai_album,
+                    &lyric_text,
+                    &emb,
+                    &lyric_emb,
+                )
+                .await;
             }
         });
 
