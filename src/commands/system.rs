@@ -601,6 +601,13 @@ pub fn cmd_daemon(args: &DaemonArgs) -> Result<()> {
                 std::thread::sleep(Duration::from_millis(200));
                 let state = player.state();
                 if state == EngineState::Stopped {
+                    // Natural end-of-track: advance per repeat mode.
+                    if player.advance_if_ended() {
+                        prev_path = player.playlist_mut().current_track().map(|t| t.file_path.clone());
+                        prev_pos_secs = 0.0;
+                        player.save_playback_state();
+                        continue;
+                    }
                     if player.playlist_mut().is_empty() {
                         std::thread::sleep(Duration::from_secs(1));
                         continue;

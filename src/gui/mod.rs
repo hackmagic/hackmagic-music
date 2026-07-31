@@ -32,6 +32,8 @@ use responsive::{LayoutMode, ResponsiveState};
 
 static ACTIVE_PANEL: AtomicU8 = AtomicU8::new(0);
 static MINI_MODE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// Window size (px) before entering mini mode, restored on exit.
+static PRE_MINI_SIZE: std::sync::Mutex<Option<(f32, f32)>> = std::sync::Mutex::new(None);
 static STATUSBAR_VISIBLE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 static MENUBAR_VISIBLE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 static _MEDIA_LIB_SCANNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -773,6 +775,16 @@ impl MusicPlayer {
         });
 
         self.sync_track_display(&snap);
+
+        // Auto-advance to the next track when the current one ends
+        // (repeat-mode aware). The advance itself runs on a blocking thread
+        // because it may decode/open the next track.
+        if self.player.should_advance() {
+            let p = self.player.clone();
+            runtime().spawn_blocking(move || {
+                let _ = p.advance_if_ended();
+            });
+        }
     }
     fn sync_track_display(&mut self, snap: &crate::core::engine_trait::EngineStatus) {
         if snap.current_track_index.is_some() {
@@ -1215,8 +1227,11 @@ impl Render for MusicPlayer {
                                     }
                                     cx.notify();
                                 })))
-                                .child(Button::new("mini_exit").label("⤢").ghost().compact().on_click(|_, _, _| {
+                                .child(Button::new("mini_exit").label("⤢").ghost().compact().on_click(|_, window, _| {
                                     MINI_MODE.store(false, Ordering::Relaxed);
+                                    if let Some((w, h)) = PRE_MINI_SIZE.lock().unwrap().take() {
+                                        window.resize(gpui::Size { width: px(w), height: px(h) });
+                                    }
                                 }))
                     )
             )
@@ -2758,8 +2773,17 @@ impl MusicPlayer {
             .item(PopupMenuItem::new(s_mini_mode).on_click(|_, window, _| {
                 let is_mini = MINI_MODE.fetch_xor(true, Ordering::Relaxed);
                 if is_mini {
-                    window.resize(gpui::Size { width: px(1200.0), height: px(800.0) });
+                    // Leaving mini mode: restore the pre-mini window size
+                    // instead of a hard-coded default.
+                    let saved = PRE_MINI_SIZE.lock().unwrap().take();
+                    let (w, h) = saved.unwrap_or((1200.0, 800.0));
+                    window.resize(gpui::Size { width: px(w), height: px(h) });
                 } else {
+                    // Entering mini mode: remember the current size.
+                    let b = window.bounds();
+                    let w: f32 = b.size.width.into();
+                    let h: f32 = b.size.height.into();
+                    *PRE_MINI_SIZE.lock().unwrap() = Some((w, h));
                     window.resize(gpui::Size { width: px(340.0), height: px(520.0) });
                 }
             }))
@@ -2801,6 +2825,8 @@ impl MusicPlayer {
         let s_browse_dir = tr.menu_browse_dir;
         let s_song_info = tr.menu_song_info;
         let s_format_convert = tr.menu_format_convert;
+        let s_to_simplified = tr.menu_to_simplified;
+        let s_to_traditional = tr.menu_to_traditional;
         let s_timer_shutdown = tr.menu_timer_shutdown;
         let weak_tools = weak.clone();
         let player_sleep = self.player.clone();
@@ -2839,6 +2865,33 @@ impl MusicPlayer {
                         this.modal = Some(ModalKind::FormatConvert);
                         cx.notify();
                     }).ok();
+                }
+            }))
+            .separator()
+            .item(PopupMenuItem::new(s_to_simplified).on_click({
+                let weak = weak_tools.clone();
+                move |_, _, cx| {
+                    let _ = weak.update(cx, |this, cx| {
+                        if let Some(lyrics) = this.lyric_state.lyrics.clone() {
+                            let converted = crate::lyric::lyrics_to_simplified(&lyrics);
+                            this.lyric_state.update(Some(converted), (this.position * 1000.0) as u64);
+                            tracing::info!("[Lyric] 歌词已转为简体");
+                            cx.notify();
+                        }
+                    });
+                }
+            }))
+            .item(PopupMenuItem::new(s_to_traditional).on_click({
+                let weak = weak_tools.clone();
+                move |_, _, cx| {
+                    let _ = weak.update(cx, |this, cx| {
+                        if let Some(lyrics) = this.lyric_state.lyrics.clone() {
+                            let converted = crate::lyric::lyrics_to_traditional(&lyrics);
+                            this.lyric_state.update(Some(converted), (this.position * 1000.0) as u64);
+                            tracing::info!("[Lyric] 歌词已转为繁体");
+                            cx.notify();
+                        }
+                    });
                 }
             }))
             .item(PopupMenuItem::new(s_timer_shutdown).on_click({

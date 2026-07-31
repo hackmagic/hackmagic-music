@@ -104,6 +104,8 @@ pub struct Player {
     spectrum: Mutex<SpectrumState>,
     /// Loading flag (shared so GUI timer can check it without borrowing Player)
     pub loading: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Guards auto-advance against concurrent timer/daemon calls.
+    advance_in_flight: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Lock-free status snapshot for GUI
     pub status: ArcSwap<EngineStatus>,
 }
@@ -159,6 +161,7 @@ impl Player {
             settings: Mutex::new(PlayerSettings::default()),
             spectrum: Mutex::new(SpectrumState::new()),
             loading: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            advance_in_flight: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             status: ArcSwap::new(Arc::new(EngineStatus {
                 engine_name,
                 ..Default::default()
@@ -725,6 +728,66 @@ impl Player {
         self.engine.song_is_over()
     }
 
+    /// True when the current track has reached its natural end (or a CUE
+    /// boundary) and playback should advance per the repeat mode.
+    pub fn should_advance(&self) -> bool {
+        if self.advance_in_flight.load(std::sync::atomic::Ordering::SeqCst) {
+            return false;
+        }
+        if !self.song_is_over() {
+            return false;
+        }
+        let pos = self.engine.position();
+        let dur = self.engine.duration();
+        let cue_boundary = self
+            .settings
+            .lock()
+            .unwrap()
+            .cue_end_pos
+            .map(|end| pos >= end)
+            .unwrap_or(false);
+        // `pos >= dur` distinguishes a natural end from a manual stop (which
+        // resets the position); engines report end-of-track as either Stopped
+        // (BASS) or still Playing (rodio/symphonia).
+        cue_boundary || (dur > Duration::ZERO && pos >= dur)
+    }
+
+    /// Advance to the next track when the current one has ended (repeat-mode
+    /// aware). Safe to call from any thread; no-ops when nothing should
+    /// advance. Returns true if a new track started.
+    pub fn advance_if_ended(&self) -> bool {
+        if !self.should_advance() {
+            return false;
+        }
+        if self
+            .advance_in_flight
+            .swap(true, std::sync::atomic::Ordering::SeqCst)
+        {
+            return false;
+        }
+        let next_idx = self.playlist.lock().unwrap().next_index();
+        let result = match next_idx {
+            Some(idx) => match self.play_at_index(idx) {
+                Ok(()) => true,
+                Err(e) => {
+                    tracing::warn!("[Player] auto-advance to track {} failed: {}", idx, e);
+                    let _ = self.engine.stop();
+                    self.refresh_status();
+                    false
+                }
+            },
+            None => {
+                // End of playlist: stop cleanly.
+                let _ = self.engine.stop();
+                self.refresh_status();
+                false
+            }
+        };
+        self.advance_in_flight
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        result
+    }
+
     // === Spectrum Config ===
 
     pub fn set_spectrum_config(&self, columns: usize, fft_size: usize) {
@@ -1021,6 +1084,10 @@ mod tests {
     struct MockEngine {
         opened_paths: Arc<Mutex<Vec<String>>>,
         play_called: Arc<AtomicBool>,
+        song_over: Arc<AtomicBool>,
+        playing: Arc<AtomicBool>,
+        pos_secs: Arc<Mutex<f64>>,
+        dur_secs: Arc<Mutex<f64>>,
     }
 
     impl MockEngine {
@@ -1028,6 +1095,10 @@ mod tests {
             MockEngine {
                 opened_paths: Arc::new(Mutex::new(Vec::new())),
                 play_called: Arc::new(AtomicBool::new(false)),
+                song_over: Arc::new(AtomicBool::new(false)),
+                playing: Arc::new(AtomicBool::new(false)),
+                pos_secs: Arc::new(Mutex::new(0.0)),
+                dur_secs: Arc::new(Mutex::new(0.0)),
             }
         }
     }
@@ -1043,14 +1114,28 @@ mod tests {
         fn close(&self) -> Result<()> { Ok(()) }
         fn play(&self) -> Result<()> {
             self.play_called.store(true, Ordering::SeqCst);
+            self.playing.store(true, Ordering::SeqCst);
             Ok(())
         }
         fn capabilities(&self) -> EngineCapabilities { EngineCapabilities::all() }
         fn pause(&self) -> Result<()> { Ok(()) }
-        fn stop(&self) -> Result<()> { Ok(()) }
-        fn state(&self) -> EngineState { EngineState::Stopped }
-        fn position(&self) -> Duration { Duration::ZERO }
-        fn duration(&self) -> Duration { Duration::ZERO }
+        fn stop(&self) -> Result<()> {
+            self.playing.store(false, Ordering::SeqCst);
+            Ok(())
+        }
+        fn state(&self) -> EngineState {
+            if self.playing.load(Ordering::SeqCst) {
+                EngineState::Playing
+            } else {
+                EngineState::Stopped
+            }
+        }
+        fn position(&self) -> Duration {
+            Duration::from_secs_f64(*self.pos_secs.lock().unwrap())
+        }
+        fn duration(&self) -> Duration {
+            Duration::from_secs_f64(*self.dur_secs.lock().unwrap())
+        }
         fn seek(&self, _pos: Duration) -> Result<()> { Ok(()) }
         fn set_volume(&self, _vol: u32) -> Result<()> { Ok(()) }
         fn volume(&self) -> u32 { 80 }
@@ -1064,8 +1149,19 @@ mod tests {
         fn clear_reverb(&self) -> Result<()> { Ok(()) }
         fn fft_data(&self) -> Vec<f32> { vec![] }
         fn fft_data_with_size(&self, _fft_size: u32) -> Vec<f32> { vec![] }
-        fn song_is_over(&self) -> bool { false }
+        fn song_is_over(&self) -> bool { self.song_over.load(Ordering::SeqCst) }
         fn is_midi(&self) -> bool { false }
+    }
+
+    /// Shared handles for driving a mock engine in tests.
+    #[derive(Clone)]
+    struct MockControls {
+        opened: Arc<Mutex<Vec<String>>>,
+        play_called: Arc<AtomicBool>,
+        song_over: Arc<AtomicBool>,
+        playing: Arc<AtomicBool>,
+        pos_secs: Arc<Mutex<f64>>,
+        dur_secs: Arc<Mutex<f64>>,
     }
 
     /// Helper: create a Player with a MockEngine, returning the Player and shared state.
@@ -1087,9 +1183,109 @@ mod tests {
             settings: Mutex::new(PlayerSettings::default()),
             spectrum: Mutex::new(SpectrumState::new()),
             loading: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            advance_in_flight: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             status: Default::default(),
         };
         (player, opened_paths, play_called)
+    }
+
+    /// Like `mock_player` but also returns full engine controls for auto-advance tests.
+    fn mock_player_adv(tracks: &[&str]) -> (Player, MockControls) {
+        let engine = MockEngine::new();
+        let controls = MockControls {
+            opened: engine.opened_paths.clone(),
+            play_called: engine.play_called.clone(),
+            song_over: engine.song_over.clone(),
+            playing: engine.playing.clone(),
+            pos_secs: engine.pos_secs.clone(),
+            dur_secs: engine.dur_secs.clone(),
+        };
+        let mut playlist = Playlist::new("test");
+        for (i, t) in tracks.iter().enumerate() {
+            playlist.add_track(Track::new(t));
+            if i == 0 {
+                playlist.set_current(0).ok();
+            }
+        }
+        let player = Player {
+            engine: Box::new(engine),
+            engine_type: EngineType::Bass,
+            playlist: Mutex::new(playlist),
+            settings: Mutex::new(PlayerSettings::default()),
+            spectrum: Mutex::new(SpectrumState::new()),
+            loading: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            advance_in_flight: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            status: Default::default(),
+        };
+        (player, controls)
+    }
+
+    fn set_at_natural_end(controls: &MockControls) {
+        controls.playing.store(true, Ordering::SeqCst);
+        *controls.pos_secs.lock().unwrap() = 100.0;
+        *controls.dur_secs.lock().unwrap() = 100.0;
+        controls.song_over.store(true, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn test_advance_if_ended_natural_end() {
+        let (player, controls) = mock_player_adv(&["/a.mp3", "/b.mp3"]);
+        set_at_natural_end(&controls);
+        assert!(player.should_advance());
+        assert!(player.advance_if_ended());
+        assert_eq!(controls.opened.lock().unwrap().last().map(|s| s.as_str()), Some("/b.mp3"));
+    }
+
+    #[test]
+    fn test_advance_if_ended_manual_stop_does_not_advance() {
+        let (player, controls) = mock_player_adv(&["/a.mp3", "/b.mp3"]);
+        // Stopped with position reset to 0 — indistinguishable from a fresh start.
+        controls.playing.store(false, Ordering::SeqCst);
+        *controls.pos_secs.lock().unwrap() = 0.0;
+        *controls.dur_secs.lock().unwrap() = 100.0;
+        controls.song_over.store(true, Ordering::SeqCst);
+        assert!(!player.should_advance());
+        assert!(!player.advance_if_ended());
+    }
+
+    #[test]
+    fn test_advance_if_ended_end_of_playlist_stops() {
+        let (player, controls) = mock_player_adv(&["/only.mp3"]);
+        player.set_repeat_mode(RepeatMode::PlayOrder);
+        set_at_natural_end(&controls);
+        // PlayOrder at the last track: stop, don't loop.
+        assert!(!player.advance_if_ended());
+        assert!(!controls.playing.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn test_advance_if_ended_loop_playlist_wraps() {
+        let (player, controls) = mock_player_adv(&["/x.mp3", "/y.mp3"]);
+        player.playlist_mut().set_current(1).ok();
+        player.set_repeat_mode(RepeatMode::LoopPlaylist);
+        set_at_natural_end(&controls);
+        assert!(player.advance_if_ended());
+        assert_eq!(controls.opened.lock().unwrap().last().map(|s| s.as_str()), Some("/x.mp3"));
+    }
+
+    #[test]
+    fn test_advance_if_ended_guard_in_flight() {
+        let (player, controls) = mock_player_adv(&["/a.mp3", "/b.mp3"]);
+        set_at_natural_end(&controls);
+        player.advance_in_flight.store(true, Ordering::SeqCst);
+        assert!(!player.should_advance());
+        assert!(!player.advance_if_ended());
+    }
+
+    #[test]
+    fn test_advance_if_ended_still_playing() {
+        let (player, controls) = mock_player_adv(&["/a.mp3", "/b.mp3"]);
+        controls.playing.store(true, Ordering::SeqCst);
+        *controls.pos_secs.lock().unwrap() = 42.0;
+        *controls.dur_secs.lock().unwrap() = 100.0;
+        controls.song_over.store(false, Ordering::SeqCst);
+        assert!(!player.should_advance());
+        assert!(!player.advance_if_ended());
     }
 
     #[test]
@@ -1217,6 +1413,7 @@ mod tests {
             settings: Mutex::new(PlayerSettings::default()),
             spectrum: Mutex::new(SpectrumState::new()),
             loading: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            advance_in_flight: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             status: Default::default(),
         };
         // Set band 3 to gain 7
@@ -1238,6 +1435,7 @@ mod tests {
             settings: Mutex::new(PlayerSettings::default()),
             spectrum: Mutex::new(SpectrumState::new()),
             loading: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            advance_in_flight: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             status: Default::default(),
         };
         // Set band 5 to gain 100 — should clamp to 15
@@ -1256,6 +1454,7 @@ mod tests {
             settings: Mutex::new(PlayerSettings::default()),
             spectrum: Mutex::new(SpectrumState::new()),
             loading: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            advance_in_flight: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             status: Default::default(),
         };
         // Set band 1 to gain -100 — should clamp to -15
@@ -1274,6 +1473,7 @@ mod tests {
             settings: Mutex::new(PlayerSettings::default()),
             spectrum: Mutex::new(SpectrumState::new()),
             loading: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            advance_in_flight: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             status: Default::default(),
         };
         // Set multiple bands and verify each independently
@@ -1300,6 +1500,7 @@ mod tests {
             settings: Mutex::new(PlayerSettings::default()),
             spectrum: Mutex::new(SpectrumState::new()),
             loading: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            advance_in_flight: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             status: Default::default(),
         };
         // Set some bands
@@ -1324,6 +1525,7 @@ mod tests {
             settings: Mutex::new(PlayerSettings::default()),
             spectrum: Mutex::new(SpectrumState::new()),
             loading: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            advance_in_flight: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             status: Default::default(),
         };
         // Default is disabled

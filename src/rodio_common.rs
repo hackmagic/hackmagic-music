@@ -204,11 +204,6 @@ impl RodioBackend {
         self.total_frames.store(total_frames as u64, Ordering::Relaxed);
 
         let play_pos = self.play_pos.clone();
-        let (_stream, stream_handle) = rodio::OutputStream::try_default()
-            .map_err(|e| crate::error::PlayerError::Playback(format!("Cannot open audio output: {e}")))?;
-        let sink = rodio::Sink::try_new(&stream_handle)
-            .map_err(|e| crate::error::PlayerError::Playback(format!("Cannot create sink: {e}")))?;
-
         let source = SharedSource {
             buffer,
             channels,
@@ -217,6 +212,30 @@ impl RodioBackend {
             frame_pos_shared: play_pos,
             finished: false,
         };
+
+        // Gapless continuation: when the previous sink has already finished
+        // (natural end of the previous track), append the new source to the
+        // same sink so the output stream keeps running — no sink/stream
+        // recreation gap at auto-advance. Manual skips mid-track (sink not
+        // empty) still recreate the sink for an immediate switch.
+        let reuse_sink = {
+            let sink = self.sink.lock().unwrap();
+            matches!(&*sink, Some(s) if s.empty())
+        };
+        if reuse_sink {
+            if let Some(s) = self.sink.lock().unwrap().as_ref() {
+                s.append(source);
+            }
+            *self.state.lock().unwrap() = EngineState::Playing;
+            *self.paused.lock().unwrap() = false;
+            return Ok(());
+        }
+
+        let (_stream, stream_handle) = rodio::OutputStream::try_default()
+            .map_err(|e| crate::error::PlayerError::Playback(format!("Cannot open audio output: {e}")))?;
+        let sink = rodio::Sink::try_new(&stream_handle)
+            .map_err(|e| crate::error::PlayerError::Playback(format!("Cannot create sink: {e}")))?;
+
         sink.append(source);
         *self.sink.lock().unwrap() = Some(sink);
         *self.output_stream.lock().unwrap() = Some(_stream);
