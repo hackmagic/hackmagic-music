@@ -240,6 +240,9 @@ pub struct MusicPlayer {
     editor_state: lyric_editor::LyricEditorState,
     /// Last format-conversion result message shown in the convert dialog.
     format_convert_status: Option<String>,
+    /// Online tag search result (title, artist, album, year) waiting to be
+    /// applied to the track editor inputs when the modal opens.
+    pending_online_tags: Option<(String, String, String, String)>,
     show_editor: bool,
     download_state: lyric_download::LyricDownloadState,
     pending_download_rx: Option<std::sync::mpsc::Receiver<lyric_download::DownloadEvent>>,
@@ -681,6 +684,7 @@ impl MusicPlayer {
             pending_track_path: None,
             editor_state: lyric_editor::LyricEditorState::new(),
             format_convert_status: None,
+            pending_online_tags: None,
             show_editor: false,
             download_state: lyric_download::LyricDownloadState::new(),
             pending_download_rx: None,
@@ -1121,7 +1125,8 @@ impl Render for MusicPlayer {
 
         // Modal dialogs take over the whole window when open.
         if let Some(kind) = self.modal {
-            return self.render_modal(kind, c, window, cx).into_any_element();
+            let c = self.colours.clone();
+            return self.render_modal(kind, &c, window, cx).into_any_element();
         }
         // Open URL dialog overlay
         if self.url_dialog_open {
@@ -2828,6 +2833,7 @@ impl MusicPlayer {
         let s_browse_dir = tr.menu_browse_dir;
         let s_song_info = tr.menu_song_info;
         let s_format_convert = tr.menu_format_convert;
+        let s_online_tags = tr.menu_online_tags;
         let s_to_simplified = tr.menu_to_simplified;
         let s_to_traditional = tr.menu_to_traditional;
         let s_timer_shutdown = tr.menu_timer_shutdown;
@@ -2868,6 +2874,52 @@ impl MusicPlayer {
                         this.modal = Some(ModalKind::FormatConvert);
                         cx.notify();
                     }).ok();
+                }
+            }))
+            .item(PopupMenuItem::new(s_online_tags).on_click({
+                let weak = weak_tools.clone();
+                move |_, _, cx| {
+                    let weak = weak.clone();
+                    let current = weak.update(cx, |this, _cx| {
+                        this.player.playlist().current_index().and_then(|i| {
+                            this.player.playlist().get(i).map(|t| (i, t.title.clone(), t.artist.clone()))
+                        })
+                    })
+                    .ok()
+                    .flatten();
+                    let Some((idx, title, artist)) = current else { return; };
+                    if title.trim().is_empty() && artist.trim().is_empty() {
+                        tracing::info!("[OnlineTags] 当前曲目缺少标题/艺术家，跳过查询");
+                        return;
+                    }
+                    let weak_task = weak.clone();
+                    cx.spawn(async move |cx| {
+                        match crate::online::musicbrainz_search(&title, &artist).await {
+                            Ok(results) if !results.is_empty() => {
+                                let best = &results[0];
+                                let fill = (
+                                    best.title.clone(),
+                                    best.artist.clone(),
+                                    best.album.clone(),
+                                    best.year.clone(),
+                                );
+                                tracing::info!(
+                                    "[OnlineTags] 匹配: {} - {} ({})",
+                                    best.artist,
+                                    best.title,
+                                    best.album
+                                );
+                                let _ = weak_task.update(cx, |this, cx| {
+                                    this.pending_online_tags = Some(fill);
+                                    this.editor_track_idx = Some(idx);
+                                    this.modal = Some(ModalKind::TrackEditor);
+                                    cx.notify();
+                                });
+                            }
+                            _ => tracing::info!("[OnlineTags] MusicBrainz 未找到匹配"),
+                        }
+                    })
+                    .detach();
                 }
             }))
             .separator()
@@ -2973,7 +3025,7 @@ impl MusicPlayer {
 
     /// Render a modal dialog overlay (About / Song Info / Format Convert).
     fn render_modal(
-        &self,
+        &mut self,
         kind: ModalKind,
         c: &UiColors,
         window: &mut Window,
@@ -3027,6 +3079,16 @@ impl MusicPlayer {
             ModalKind::TrackEditor => {
                 let weak = cx.entity().downgrade();
                 let weak_save = weak.clone();
+                // Apply a pending online-tag fill (title/artist/album/year)
+                // to the editor inputs before rendering them.
+                if let Some((t, a, al, y)) = self.pending_online_tags.take() {
+                    self.editor_title_input.update(cx, |s, cx| s.set_value(&t, window, cx));
+                    self.editor_artist_input.update(cx, |s, cx| s.set_value(&a, window, cx));
+                    self.editor_album_input.update(cx, |s, cx| s.set_value(&al, window, cx));
+                    if !y.is_empty() {
+                        self.editor_year_input.update(cx, |s, cx| s.set_value(&y, window, cx));
+                    }
+                }
                 v_flex()
                     .w(px(400.0))
                     .max_h(px(520.0))
