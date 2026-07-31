@@ -238,6 +238,8 @@ pub struct MusicPlayer {
     last_lpc_path: String,
     pending_track_path: Option<String>,
     editor_state: lyric_editor::LyricEditorState,
+    /// Last format-conversion result message shown in the convert dialog.
+    format_convert_status: Option<String>,
     show_editor: bool,
     download_state: lyric_download::LyricDownloadState,
     pending_download_rx: Option<std::sync::mpsc::Receiver<lyric_download::DownloadEvent>>,
@@ -678,6 +680,7 @@ impl MusicPlayer {
             last_lpc_path: String::new(),
             pending_track_path: None,
             editor_state: lyric_editor::LyricEditorState::new(),
+            format_convert_status: None,
             show_editor: false,
             download_state: lyric_download::LyricDownloadState::new(),
             pending_download_rx: None,
@@ -3222,20 +3225,41 @@ impl MusicPlayer {
                             if let Some(file) = file {
                                 let src = file.to_string_lossy().to_string();
                                 let dst = std::path::Path::new(&src).with_extension(fmt).to_string_lossy().to_string();
-                                match std::process::Command::new("ffmpeg")
-                                    .args(["-y", "-i", &src, &dst])
-                                    .status()
-                                {
-                                    Ok(status) if status.success() => {
-                                        tracing::info!("[Convert] 转换成功: {} -> {}", src, dst);
-                                    }
-                                    Ok(status) => {
-                                        tracing::error!("[Convert] ffmpeg 退出码: {:?}", status.code());
-                                    }
-                                    Err(e) => {
-                                        tracing::error!("[Convert] 未找到 ffmpeg，或转换失败: {}", e);
-                                    }
-                                }
+                                // Run the conversion off the UI thread and report
+                                // the result back into the dialog.
+                                cx.spawn(async move |weak_view, cx| {
+                                    let src_clone = src.clone();
+                                    let dst_clone = dst.clone();
+                                    let result = tokio::task::spawn_blocking(move || {
+                                        std::process::Command::new("ffmpeg")
+                                            .args(["-y", "-i", &src_clone, &dst_clone])
+                                            .status()
+                                    })
+                                    .await;
+                                    let msg = match result {
+                                        Ok(Ok(status)) if status.success() => {
+                                            tracing::info!("[Convert] 转换成功: {} -> {}", src, dst);
+                                            format!("转换完成: {}", dst)
+                                        }
+                                        Ok(Ok(status)) => {
+                                            tracing::error!("[Convert] ffmpeg 退出码: {:?}", status.code());
+                                            format!("转换失败（ffmpeg 退出码 {:?}）", status.code())
+                                        }
+                                        Ok(Err(e)) => {
+                                            tracing::error!("[Convert] 转换失败: {}", e);
+                                            format!("转换失败: {}", e)
+                                        }
+                                        Err(e) => {
+                                            tracing::error!("[Convert] 转换任务异常: {}", e);
+                                            format!("转换任务异常: {}", e)
+                                        }
+                                    };
+                                    let _ = weak_view.update(cx, |this, cx| {
+                                        this.format_convert_status = Some(msg);
+                                        cx.notify();
+                                    });
+                                })
+                                .detach();
                             }
                             cx.notify();
                         });
@@ -3257,6 +3281,11 @@ impl MusicPlayer {
                 v_flex().w_full().gap_2()
                     .children(fmt_btns)
             )
+            .child(if let Some(status) = &self.format_convert_status {
+                layout::txt(status, 11.0, c.text_dim).into_any_element()
+            } else {
+                div().into_any_element()
+            })
             .child(h_flex().w_full().justify_end().child(close_btn))
             .into_any_element()
     }
