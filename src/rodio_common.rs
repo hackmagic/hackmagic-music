@@ -66,6 +66,12 @@ pub struct RodioBackend {
     pub total_frames: AtomicU64,
     /// Decoded PCM for the next track (gapless preload).
     pub preloaded: Mutex<Option<PreloadedBuffer>>,
+    /// Generation counter: bumped on every preload/take, so stale in-flight
+    /// decode threads never overwrite the slot with an outdated track.
+    pub preload_seq: AtomicU64,
+    /// True while a preload decode thread is running; bounds memory by only
+    /// allowing one in-flight decode at a time.
+    pub preload_in_flight: std::sync::atomic::AtomicBool,
     pub state: Mutex<EngineState>,
     pub play_pos: Arc<AtomicU64>,
     pub volume: Mutex<f32>,
@@ -95,6 +101,8 @@ impl RodioBackend {
             channels: Mutex::new(2),
             total_frames: AtomicU64::new(0),
             preloaded: Mutex::new(None),
+            preload_seq: AtomicU64::new(0),
+            preload_in_flight: std::sync::atomic::AtomicBool::new(false),
             state: Mutex::new(EngineState::Stopped),
             play_pos: Arc::new(AtomicU64::new(0)),
             volume: Mutex::new(0.8),
@@ -121,6 +129,8 @@ impl RodioBackend {
     pub fn uninit(&self) -> Result<()> {
         *self.sink.lock().unwrap() = None;
         *self.output_stream.lock().unwrap() = None;
+        self.preload_seq.fetch_add(1, Ordering::SeqCst);
+        self.preload_in_flight.store(false, Ordering::SeqCst);
         *self.preloaded.lock().unwrap() = None;
         Ok(())
     }
@@ -128,19 +138,53 @@ impl RodioBackend {
     pub fn close(&self) -> Result<()> {
         *self.sink.lock().unwrap() = None;
         *self.output_stream.lock().unwrap() = None;
+        self.preload_seq.fetch_add(1, Ordering::SeqCst);
+        self.preload_in_flight.store(false, Ordering::SeqCst);
         *self.preloaded.lock().unwrap() = None;
         *self.state.lock().unwrap() = EngineState::Stopped;
         self.play_pos.store(0, Ordering::SeqCst);
         Ok(())
     }
 
-    /// Store a decoded buffer for the given path (called by the preload thread).
-    pub fn store_preloaded(&self, path: String, samples: Vec<f32>, sample_rate: u32, channels: usize) {
-        *self.preloaded.lock().unwrap() = Some((path, samples, sample_rate, channels));
+    /// Start a preload round. Returns a generation token, or `None` if a
+    /// preload decode is already in flight.
+    pub fn begin_preload(&self) -> Option<u64> {
+        if self
+            .preload_in_flight
+            .swap(true, Ordering::SeqCst)
+        {
+            return None;
+        }
+        Some(self.preload_seq.fetch_add(1, Ordering::SeqCst) + 1)
+    }
+
+    /// Store a decoded buffer only if `gen` is still the current generation
+    /// (i.e. no newer preload/take superseded it), then clear the in-flight flag.
+    pub fn store_preloaded_if_current(
+        &self,
+        gen: u64,
+        path: String,
+        samples: Vec<f32>,
+        sample_rate: u32,
+        channels: usize,
+    ) {
+        if self.preload_seq.load(Ordering::SeqCst) == gen {
+            *self.preloaded.lock().unwrap() = Some((path, samples, sample_rate, channels));
+        }
+        self.preload_in_flight.store(false, Ordering::SeqCst);
+    }
+
+    /// Mark a preload as finished without storing anything (decode error).
+    pub fn abort_preload(&self) {
+        self.preload_in_flight.store(false, Ordering::SeqCst);
     }
 
     /// Take the preloaded buffer if it belongs to `path` (consumes it).
     pub fn take_preloaded(&self, path: &str) -> Option<(Vec<f32>, u32, usize)> {
+        // Invalidate any in-flight preload and clear the flag: after consuming
+        // the cache we never want a stale thread to refill it.
+        self.preload_seq.fetch_add(1, Ordering::SeqCst);
+        self.preload_in_flight.store(false, Ordering::SeqCst);
         let mut slot = self.preloaded.lock().unwrap();
         if slot.as_ref().map(|(p, _, _, _)| p == path).unwrap_or(false) {
             slot.take().map(|(_, samples, sample_rate, channels)| (samples, sample_rate, channels))
@@ -378,15 +422,27 @@ macro_rules! impl_rodio_backend_engine {
             }
 
             fn preload_next(&self, path: &str) {
+                let Some(gen) = self.backend.begin_preload() else {
+                    return; // a preload decode is already in flight
+                };
                 let backend = self.backend.clone();
                 let path = path.to_string();
                 std::thread::spawn(move || {
                     match Self::decode_to_buffer(&path) {
                         Ok((samples, sample_rate, channels)) => {
-                            backend.store_preloaded(path.clone(), samples, sample_rate, channels);
+                            backend.store_preloaded_if_current(
+                                gen,
+                                path.clone(),
+                                samples,
+                                sample_rate,
+                                channels,
+                            );
                             tracing::info!("[{}] preloaded {}", $engine_name, path);
                         }
-                        Err(e) => tracing::warn!("[{}] preload failed for {}: {}", $engine_name, path, e),
+                        Err(e) => {
+                            backend.abort_preload();
+                            tracing::warn!("[{}] preload failed for {}: {}", $engine_name, path, e);
+                        }
                     }
                 });
             }
@@ -491,7 +547,8 @@ mod tests {
     #[test]
     fn preloaded_buffer_roundtrip() {
         let backend = RodioBackend::new();
-        backend.store_preloaded("/a.flac".into(), vec![0.1, 0.2, 0.3], 44100, 2);
+        let gen = backend.begin_preload().unwrap();
+        backend.store_preloaded_if_current(gen, "/a.flac".into(), vec![0.1, 0.2, 0.3], 44100, 2);
 
         let taken = backend.take_preloaded("/a.flac");
         assert!(taken.is_some());
@@ -507,7 +564,8 @@ mod tests {
     #[test]
     fn preloaded_buffer_path_mismatch_keeps_cache() {
         let backend = RodioBackend::new();
-        backend.store_preloaded("/a.flac".into(), vec![1.0], 48000, 1);
+        let gen = backend.begin_preload().unwrap();
+        backend.store_preloaded_if_current(gen, "/a.flac".into(), vec![1.0], 48000, 1);
 
         // Different path: nothing is taken and the cache survives.
         assert!(backend.take_preloaded("/b.flac").is_none());
@@ -520,8 +578,33 @@ mod tests {
     #[test]
     fn close_clears_preloaded_buffer() {
         let backend = RodioBackend::new();
-        backend.store_preloaded("/a.flac".into(), vec![1.0], 48000, 1);
+        let gen = backend.begin_preload().unwrap();
+        backend.store_preloaded_if_current(gen, "/a.flac".into(), vec![1.0], 48000, 1);
         backend.close().unwrap();
         assert!(backend.take_preloaded("/a.flac").is_none());
+    }
+
+    #[test]
+    fn preload_single_in_flight() {
+        let backend = RodioBackend::new();
+        assert!(backend.begin_preload().is_some());
+        // A second preload while the first is in flight is rejected.
+        assert!(backend.begin_preload().is_none());
+        backend.abort_preload();
+        assert!(backend.begin_preload().is_some());
+    }
+
+    #[test]
+    fn stale_generation_does_not_overwrite() {
+        let backend = RodioBackend::new();
+        let gen = backend.begin_preload().unwrap();
+        backend.store_preloaded_if_current(gen, "/a.flac".into(), vec![1.0], 48000, 1);
+
+        // Take bumps the generation; a stale store from an old thread is dropped.
+        let taken = backend.take_preloaded("/a.flac");
+        assert!(taken.is_some());
+        let stale = backend.begin_preload().unwrap();
+        backend.store_preloaded_if_current(stale - 1, "/b.flac".into(), vec![9.0], 48000, 1);
+        assert!(backend.take_preloaded("/b.flac").is_none());
     }
 }

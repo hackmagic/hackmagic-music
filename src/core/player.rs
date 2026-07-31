@@ -1003,6 +1003,20 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
     use crate::core::engine_trait::EngineCapabilities;
 
+    /// `find_similar` runs inside `runtime().spawn_blocking` (GUI background
+    /// path) and itself calls `runtime().block_on`. Guard against the tokio
+    /// "Cannot start a runtime from within a runtime" panic.
+    #[test]
+    fn block_on_inside_spawn_blocking_is_safe() {
+        let rt = crate::runtime();
+        let result = rt.block_on(async {
+            rt.spawn_blocking(move || rt.block_on(async { 42 }))
+                .await
+                .unwrap()
+        });
+        assert_eq!(result, 42);
+    }
+
     /// A mock engine that tracks calls without real audio hardware.
     struct MockEngine {
         opened_paths: Arc<Mutex<Vec<String>>>,
