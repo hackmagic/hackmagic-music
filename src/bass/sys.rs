@@ -295,7 +295,7 @@ pub fn load_bass(bass_path: Option<&str>, bass_fx_path: Option<&str>) -> bool {
     match fx_lib {
         Ok(lib) => {
             let _ = BASS_FX_LIB.set(lib);
-            tracing::info!("BASS_FX library loaded successfully");
+            tracing::debug!("BASS_FX loaded");
         }
         Err(e) => {
             tracing::warn!("BASS_FX library not loaded (optional): {} (searched '{}' in PATH/cwd)", e, fx_name);

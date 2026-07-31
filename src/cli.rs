@@ -179,6 +179,9 @@ pub enum Commands {
     ///
     /// Supported shells: bash, zsh, fish, powershell, elvish
     Completion(CompletionArgs),
+
+    /// Rebuild vector index for similarity search (DCLAP 512-dim embeddings)
+    RebuildIndex,
 }
 
 // ===== Play =====

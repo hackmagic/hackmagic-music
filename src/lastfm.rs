@@ -10,7 +10,7 @@ pub struct LastfmApi {
     api_key: String,
     shared_secret: String,
     session_key: String,
-    username: String,
+    _username: String,
 }
 
 impl LastfmApi {
@@ -23,7 +23,7 @@ impl LastfmApi {
             api_key: cfg.lastfm.api_key.clone(),
             shared_secret: cfg.lastfm.shared_secret.clone(),
             session_key: cfg.lastfm.session_key.clone(),
-            username: cfg.lastfm.username.clone(),
+            _username: cfg.lastfm.username.clone(),
         })
     }
 

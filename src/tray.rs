@@ -29,7 +29,7 @@ pub enum TrayCommand {
 /// periodically from the daemon loop.
 pub struct TrayManager {
     hwnd: HWND,
-    hicon: HICON,
+    _hicon: HICON,
     rx: mpsc::Receiver<TrayCommand>,
 }
 
@@ -110,7 +110,7 @@ impl TrayManager {
                 return Err("Failed to create tray icon".into());
             }
 
-            Ok(TrayManager { hwnd, hicon, rx })
+                Ok(TrayManager { hwnd, _hicon: hicon, rx })
         }
     }
 

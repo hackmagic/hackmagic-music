@@ -1,7 +1,6 @@
 //! HackMagic Music Player - Core library
 //! Shared between CLI (`hm`) and GUI (`hm-gui`) binaries.
 
-#![allow(dead_code)]
 #![recursion_limit = "1024"]
 
 pub mod ai;

@@ -243,7 +243,7 @@ fn lrc_string_from_state(state: &LyricEditorState) -> String {
 pub fn apply_event(state: &mut LyricEditorState, event: &str) -> Option<Result<(), String>> {
     match event {
         "save" => Some(state.save()),
-        "save_as" => Some(Err("需要文件对话框选择保存路径".to_string())),
+        "save_as" => Some(Err("File dialog required for save-as".to_string())),
         "open" => None,
         "insert_row" => {
             let at = state.selected_row.unwrap_or(state.rows.len().saturating_sub(1));
@@ -320,7 +320,7 @@ pub enum LyricEditorEvent {
 pub fn apply_editor_event(state: &mut LyricEditorState, event: &LyricEditorEvent) -> Option<Result<(), String>> {
     match event {
         LyricEditorEvent::Save => Some(state.save()),
-        LyricEditorEvent::SaveAs => Some(Err("需要文件对话框选择保存路径".to_string())),
+        LyricEditorEvent::SaveAs => Some(Err("File dialog required for save-as".to_string())),
         LyricEditorEvent::OpenFile => None,
         LyricEditorEvent::InsertRow => {
             let at = state.selected_row.unwrap_or(state.rows.len().saturating_sub(1));

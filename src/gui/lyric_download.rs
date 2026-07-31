@@ -94,19 +94,19 @@ pub async fn search_lyrics(
     keyword: &str,
 ) -> Result<Vec<online::SearchResult>, String> {
     if keyword.trim().is_empty() {
-        return Err("请输入搜索关键词".to_string());
+        return Err("Please enter search keyword".to_string());
     }
 
     match source {
         "qqmusic" => {
             online::qqmusic_search(keyword)
                 .await
-                .map_err(|e| format!("QQ音乐搜索失败: {}", e))
+                .map_err(|e| format!("QQ Music search failed: {}", e))
         }
         _ => {
             online::netease_search(keyword)
                 .await
-                .map_err(|e| format!("网易云搜索失败: {}", e))
+                .map_err(|e| format!("NetEase search failed: {}", e))
         }
     }
 }
@@ -121,12 +121,12 @@ pub async fn download_lyric(
         "qqmusic" => {
             online::qqmusic_download_lyric(song_id)
                 .await
-                .map_err(|e| format!("QQ音乐下载失败: {}", e))?
+                .map_err(|e| format!("QQ Music download failed: {}", e))?
         }
         _ => {
             online::netease_download_lyric(song_id)
                 .await
-                .map_err(|e| format!("网易云下载失败: {}", e))?
+                .map_err(|e| format!("NetEase download failed: {}", e))?
         }
     };
 

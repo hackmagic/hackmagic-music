@@ -10,6 +10,7 @@ use gpui_component::input::{Input, InputState};
 use crate::gui::theme::UiColors;
 use crate::gui::i18n::Tr;
 use crate::gui::layout::txt;
+use gpui_component::scroll::ScrollableElement;
 
 /// Settings dialog tabs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -24,6 +25,7 @@ pub enum SettingsTab {
 
 /// Render the settings panel with tab navigation.
 pub fn render_settings_panel(
+    tr: &Tr,
     c: &UiColors,
     active_tab: SettingsTab,
     _window: &mut Window,
@@ -34,8 +36,9 @@ pub fn render_settings_panel(
     let build_tab_btn = |label: &'static str, id: &'static str, tab: SettingsTab| {
         let is_active = active_tab == tab;
         let bg = if is_active { c.accent } else { Hsla { h: 0.0, s: 0.0, l: 0.0, a: 0.0 } };
+        let text_color = if is_active { c.bg } else { c.text };
         let entity_clone = entity.clone();
-        Button::new(id).label(label).compact().ghost().bg(bg)
+        Button::new(id).label(label).ghost().px_3().py_1().text_size(px(11.0)).text_color(text_color).bg(bg)
             .on_click(move |_, _, cx| {
                 let _ = entity_clone.update(cx, |this, _cx| {
                     this.settings_tab = tab;
@@ -44,12 +47,12 @@ pub fn render_settings_panel(
     };
 
     let content: Vec<AnyElement> = match active_tab {
-        SettingsTab::General => render_general_settings(c, cx),
-        SettingsTab::Appearance => render_appearance_settings(c, cx),
-        SettingsTab::Playback => render_playback_settings(c, cx),
-        SettingsTab::Hotkeys => render_hotkeys_settings(c, cx),
-        SettingsTab::MediaLib => render_media_lib_settings(c, cx),
-        SettingsTab::Lyrics => render_lyrics_settings(c, cx),
+        SettingsTab::Lyrics => render_lyrics_settings(tr, c, cx),
+        SettingsTab::Appearance => render_appearance_settings(tr, c, cx),
+        SettingsTab::General => render_general_settings(tr, c, cx),
+        SettingsTab::Playback => render_playback_settings(tr, c, cx),
+        SettingsTab::MediaLib => render_media_lib_settings(tr, c, cx),
+        SettingsTab::Hotkeys => render_hotkeys_settings(tr, c, cx),
     };
 
     v_flex()
@@ -64,33 +67,60 @@ pub fn render_settings_panel(
                 .w_full()
                 .px_4().py_2()
                 .bg(c.control_bar_bg)
-                .child(txt("设置", 14.0, c.text_title))
+                .child(txt(tr.settings_title, 14.0, c.text_title))
         )
         // Tab bar
         .child(
             h_flex()
                 .w_full()
                 .px_4().py_1()
-                .gap_2()
+                .gap_1()
                 .bg(c.panel_alt)
                 .border_b(px(1.0))
                 .border_color(c.border)
                 .items_center()
-                .child(build_tab_btn("常规", "set_tab_general", SettingsTab::General))
-                .child(build_tab_btn("外观", "set_tab_appearance", SettingsTab::Appearance))
-                .child(build_tab_btn("播放", "set_tab_playback", SettingsTab::Playback))
-                .child(build_tab_btn("歌词", "set_tab_lyrics", SettingsTab::Lyrics))
-                .child(build_tab_btn("热键", "set_tab_hotkeys", SettingsTab::Hotkeys))
-                .child(build_tab_btn("媒体库", "set_tab_medialib", SettingsTab::MediaLib))
+                .overflow_x_scrollbar()
+                .child(build_tab_btn(tr.settings_tab_lyrics, "set_tab_lyrics", SettingsTab::Lyrics))
+                .child(build_tab_btn(tr.settings_tab_appearance, "set_tab_appearance", SettingsTab::Appearance))
+                .child(build_tab_btn(tr.settings_tab_general, "set_tab_general", SettingsTab::General))
+                .child(build_tab_btn(tr.settings_tab_playback, "set_tab_playback", SettingsTab::Playback))
+                .child(build_tab_btn(tr.settings_tab_media_lib, "set_tab_medialib", SettingsTab::MediaLib))
+                .child(build_tab_btn(tr.settings_tab_hotkeys, "set_tab_hotkeys", SettingsTab::Hotkeys))
         )
-        // Content
+        // Content (scrollable)
         .child(
             v_flex()
                 .flex_1()
                 .w_full()
                 .p_4()
                 .gap_2()
+                .overflow_y_scrollbar()
                 .children(content)
+        )
+        // Bottom button bar
+        .child(
+            h_flex()
+                .w_full()
+                .justify_end()
+                .px_4().py_2()
+                .gap_2()
+                .border_t(px(1.0))
+                .border_color(c.border)
+                .child({
+                    let e = entity.clone();
+                    Button::new("btn_ok").label(tr.settings_btn_ok).compact()
+                        .on_click(move |_, _, cx| { let _ = e.update(cx, |_, cx| cx.notify()); })
+                })
+                .child({
+                    let e = entity.clone();
+                    Button::new("btn_cancel").label(tr.settings_btn_cancel).compact().ghost()
+                        .on_click(move |_, _, cx| { let _ = e.update(cx, |_, cx| cx.notify()); })
+                })
+                .child({
+                    let e = entity.clone();
+                    Button::new("btn_apply").label(tr.settings_btn_apply).compact().ghost()
+                        .on_click(move |_, _, cx| { let _ = e.update(cx, |_, cx| cx.notify()); })
+                })
         )
 }
 
@@ -108,13 +138,14 @@ fn section_title(c: &UiColors, label: &str) -> AnyElement {
 fn setting_row(c: &UiColors, label: &str, control: AnyElement) -> AnyElement {
     h_flex()
         .w_full()
-        .h(px(28.0))
+        .min_h(px(28.0))
         .items_center()
-        .gap_4()
+        .gap_3()
         .child(
             div()
-                .w(px(140.0))
-                .text_size(px(12.0))
+                .w(px(160.0))
+                .flex_shrink_0()
+                .text_size(px(11.0))
                 .text_color(c.text)
                 .child(label.to_string())
         )
@@ -131,14 +162,20 @@ fn toggle_config(
     on_toggled: Option<Box<dyn Fn(bool, &mut super::MusicPlayer, &mut Window, &mut Context<super::MusicPlayer>) + 'static>>,
     cx: &mut Context<super::MusicPlayer>,
 ) -> AnyElement {
-    let label = if enabled { "已启用" } else { "已禁用" };
-    let bg = if enabled { c.accent } else { Hsla { h: 0.0, s: 0.0, l: 0.0, a: 0.0 } };
     let entity = cx.entity().downgrade();
+    let bg = if enabled { c.accent.opacity(0.15) } else { Hsla { h: 0.0, s: 0.0, l: 0.0, a: 0.0 } };
+    let border_color = if enabled { c.accent } else { c.border };
     Button::new(id)
-        .label(label)
+        .label(if enabled { "✓" } else { "✖" })
         .compact()
         .ghost()
+        .text_size(px(11.0))
+        .h(px(20.0))
+        .min_w(px(28.0))
         .bg(bg)
+        .border_1()
+        .border_color(border_color)
+        .rounded(px(4.0))
         .on_click(move |_, _window, cx| {
             let new_val = !enabled;
             let _ = crate::config::Config::set(config_key, if new_val { "true" } else { "false" });
@@ -147,8 +184,121 @@ fn toggle_config(
                     (callback)(new_val, this, _window, cx);
                 });
             } else {
-                let _ = entity.update(cx, |_, _cx| {});
+                let _ = entity.update(cx, |_, cx| { cx.notify(); });
             }
+        })
+        .into_any_element()
+}
+
+/// A horizontal slider that reads/writes a numeric config key.
+fn slider_config(
+    c: &UiColors,
+    _id: &'static str,
+    value: u32,
+    min: u32,
+    max: u32,
+    step: u32,
+    config_key: &'static str,
+    label_fn: Option<Box<dyn Fn(u32) -> String + 'static>>,
+    cx: &mut Context<super::MusicPlayer>,
+) -> AnyElement {
+    let display = if let Some(ref f) = label_fn {
+        f(value)
+    } else {
+        value.to_string()
+    };
+    let entity = cx.entity().downgrade();
+    h_flex().items_center().gap_2()
+        .child({
+            let e = entity.clone();
+            let key = config_key;
+            let k2 = key;
+            Button::new("sd").label("−").compact().ghost().on_click(move |_, _, cx| {
+                let new_val = value.saturating_sub(step);
+                let _ = crate::config::Config::set(&k2, &new_val.to_string());
+                let _ = e.update(cx, |_, cx| cx.notify());
+            })
+        })
+        .child(
+            div().w(px(120.0)).h(px(6.0)).rounded(px(3.0)).bg(c.border)
+                .child(
+                    div().h(px(6.0)).rounded(px(3.0)).bg(c.accent)
+                        .w(px(((value - min) as f32 / (max - min) as f32) * 120.0))
+                )
+        )
+        .child({
+            let e = entity.clone();
+            let key = config_key;
+            Button::new("si").label("+").compact().ghost().on_click(move |_, _, cx| {
+                let new_val = (value + step).min(max);
+                let _ = crate::config::Config::set(&key, &new_val.to_string());
+                let _ = e.update(cx, |_, cx| cx.notify());
+            })
+        })
+        .child(
+            div().text_size(px(11.0)).text_color(c.text_dim).child(display)
+        )
+        .into_any_element()
+}
+
+/// A radio button group item that writes a string config value.
+fn radio_config(
+    c: &UiColors,
+    id: &'static str,
+    selected: bool,
+    label: &'static str,
+    config_key: &'static str,
+    config_value: &'static str,
+    cx: &mut Context<super::MusicPlayer>,
+) -> AnyElement {
+    let entity = cx.entity().downgrade();
+    Button::new(id)
+        .label(if selected { "●" } else { "○" })
+        .compact()
+        .ghost()
+        .on_click(move |_, _, cx| {
+            let _ = crate::config::Config::set(config_key, config_value);
+            let _ = entity.update(cx, |_, cx| cx.notify());
+        })
+        .child(txt(label, 12.0, if selected { c.text_title } else { c.text }))
+        .into_any_element()
+}
+
+/// A dropdown selector that reads/writes a string config key.
+fn dropdown_config(
+    _c: &UiColors,
+    _id: &'static str,
+    current: &str,
+    options: &[(&'static str, &'static str)],
+    config_key: &'static str,
+    cx: &mut Context<super::MusicPlayer>,
+) -> AnyElement {
+    let entity = cx.entity().downgrade();
+    let current_label = options.iter().find(|(v, _)| *v == current).map(|(_, l)| l.to_string()).unwrap_or_else(|| current.to_string());
+    let entity_clone = entity.clone();
+    let key = config_key.to_string();
+    let current_owned = current.to_string();
+    let options_owned: Vec<(String, String)> = options.iter().map(|(v, l)| (v.to_string(), l.to_string())).collect();
+    let btn_id: SharedString = format!("dd_{}", config_key).into();
+    Button::new(btn_id)
+        .label(current_label)
+        .compact()
+        .ghost()
+        .bg(Hsla { h: 0.0, s: 0.0, l: 0.1, a: 0.5 })
+        .on_click(move |_, _, cx| {
+            let current_idx = options_owned.iter().position(|(v, _)| *v == current_owned).unwrap_or(0);
+            let next_idx = (current_idx + 1) % options_owned.len();
+            let new_val = options_owned[next_idx].0.clone();
+            let _ = crate::config::Config::set(&key, &new_val);
+            // For language switching, update the global language atom
+            if key == "general.language" {
+                let lang = match new_val.as_str() {
+                    "en" => crate::gui::i18n::Lang::EnUs,
+                    _ => crate::gui::i18n::Lang::ZhCn,
+                };
+                crate::gui::i18n::set_global_lang(lang);
+            }
+            let _ = entity_clone.update(cx, |_, cx| cx.notify());
         })
         .into_any_element()
 }
@@ -157,29 +307,50 @@ fn toggle_config(
 // General settings
 // ---------------------------------------------------------------------------
 fn render_general_settings(
+    tr: &Tr,
     c: &UiColors,
     cx: &mut Context<super::MusicPlayer>,
 ) -> Vec<AnyElement> {
     let cfg = crate::config::Config::load();
     vec![
-        section_title(c, "常规设置"),
-        setting_row(c, "语言", txt(
-            match cfg.general.language.as_str() {
-                "zh-CN" | "zh" => "简体中文",
-                _ => "English",
-            },
-            12.0, c.accent,
-        ).into_any_element()),
-        setting_row(c, "自动下载歌词", toggle_config(c, "gen_auto_lyric",
-            cfg.general.auto_download_lyric, "general.auto_download_lyric", None, cx)),
-        setting_row(c, "自动下载封面", toggle_config(c, "gen_auto_cover",
-            cfg.general.auto_download_album_cover, "general.auto_download_album_cover", None, cx)),
-        setting_row(c, "ID3v2优先", toggle_config(c, "gen_id3v2",
-            cfg.general.id3v2_first, "general.id3v2_first", None, cx)),
-        setting_row(c, "启动时检查更新", toggle_config(c, "gen_check_update",
+        // Group 1: Application Settings
+        section_title(c, tr.settings_section_app),
+        setting_row(c, tr.settings_check_update, toggle_config(c, "gen_check_update",
             cfg.general.check_update_when_start, "general.check_update_when_start", None, cx)),
-        setting_row(c, "最小化到托盘", toggle_config(c, "gen_min_tray",
-            cfg.general.minimize_to_notify_icon, "general.minimize_to_notify_icon", None, cx)),
+        setting_row(c, tr.settings_label_update_source, dropdown_config(c, "gen_update_src", "github",
+            &[("github", "Github"), ("gitee", "Gitee")], "general.update_source", cx)),
+        setting_row(c, tr.settings_label_auto_run, toggle_config(c, "gen_auto_run",
+            false, "general.auto_run", None, cx)),
+        setting_row(c, tr.settings_lang_label, dropdown_config(c, "gen_lang", &cfg.general.language,
+            &[("", "简体中文"), ("en", "English")], "general.language", cx)),
+        // Group 2: Config and Data Files
+        section_title(c, tr.settings_section_config_file),
+        setting_row(c, tr.settings_label_portable_mode, toggle_config(c, "gen_portable",
+            cfg.general.portable_mode, "general.portable_mode", None, cx)),
+        setting_row(c, tr.settings_label_open_config_dir, Button::new("gen_open_cfg").label(tr.settings_btn_open).compact().ghost()
+            .on_click(|_, _, _| {
+                let dir = crate::config::get_config_dir();
+                #[cfg(windows)]
+                { let _ = std::process::Command::new("explorer").arg(dir.to_string_lossy().to_string()).spawn(); }
+                #[cfg(not(windows))]
+                { let _ = std::process::Command::new("xdg-open").arg(dir.to_string_lossy().to_string()).spawn(); }
+            }).into_any_element()),
+        // Group 3: When Closing Window
+        section_title(c, tr.settings_section_close),
+        setting_row(c, tr.settings_label_minimize_to_tray, radio_config(c, "gen_close_min",
+            cfg.general.minimize_to_notify_icon, tr.settings_label_minimize_to_tray, "general.minimize_to_notify_icon", "true", cx)),
+        setting_row(c, tr.settings_label_exit, radio_config(c, "gen_close_exit",
+            !cfg.general.minimize_to_notify_icon, tr.settings_label_exit, "general.minimize_to_notify_icon", "false", cx)),
+        // Group 4: Download Settings
+        section_title(c, tr.settings_section_download),
+        setting_row(c, tr.settings_label_auto_download_lyric, toggle_config(c, "gen_auto_dl_lyric",
+            cfg.general.auto_download_lyric, "general.auto_download_lyric", None, cx)),
+        setting_row(c, tr.settings_label_lyric_save_pos, dropdown_config(c, "gen_dl_lyric_pos", "lyrics_folder",
+            &[("lyrics_folder", tr.settings_option_lyric_save_lyrics), ("song_dir", tr.settings_option_lyric_save_song)], "general.auto_download_lyric_path", cx)),
+        setting_row(c, tr.settings_label_download_trans_format, dropdown_config(c, "gen_dl_trans_fmt", "lrc",
+            &[("lrc", "LRC"), ("srt", "SRT"), ("txt", "TXT")], "general.download_trans_format", cx)),
+        setting_row(c, tr.settings_label_auto_download_cover, toggle_config(c, "gen_auto_dl_cover",
+            cfg.general.auto_download_album_cover, "general.auto_download_album_cover", None, cx)),
     ]
 }
 
@@ -187,40 +358,64 @@ fn render_general_settings(
 // Appearance settings
 // ---------------------------------------------------------------------------
 fn render_appearance_settings(
+    tr: &Tr,
     c: &UiColors,
     cx: &mut Context<super::MusicPlayer>,
 ) -> Vec<AnyElement> {
     let cfg = crate::config::Config::load();
-    let opacity_val = cfg.appearance.window_transparency;
-    let opacity_label = if opacity_val >= 100 {
-        "不透明".to_string()
-    } else {
-        format!("{:.0}%", opacity_val as f32)
-    };
-    let spectrum_height_label = format!("{}px", cfg.appearance.spectrum_height);
 
     vec![
-        section_title(c, "外观设置"),
-        setting_row(c, "深色模式", toggle_config(c, "app_dark",
+        // Group 1: Visual Effects
+        section_title(c, tr.settings_section_visual),
+        setting_row(c, tr.settings_show_spectrum, toggle_config(c, "app_spectrum",
+            cfg.appearance.show_spectrum, "appearance.show_spectrum", None, cx)),
+        setting_row(c, tr.settings_label_spectrum_low_center, toggle_config(c, "app_spec_low_mid",
+            false, "appearance.spectrum_low_freq_center", None, cx)),
+        setting_row(c, tr.settings_label_spectrum_height, slider_config(c, "app_spec_h",
+            cfg.appearance.spectrum_height, 12, 120, 4, "appearance.spectrum_height",
+            Some(Box::new(|v| format!("{}px", v))), cx)),
+        setting_row(c, tr.settings_label_show_cover, toggle_config(c, "app_show_cover",
+            true, "appearance.show_album_cover", None, cx)),
+        setting_row(c, tr.settings_label_cover_fit, dropdown_config(c, "app_cover_fit", "cover",
+            &[("cover", tr.settings_option_cover_fit), ("fill", tr.settings_option_cover_fill),
+              ("contain", tr.settings_option_cover_contain), ("none", tr.settings_option_cover_none)], "appearance.album_cover_fit", cx)),
+        setting_row(c, tr.settings_label_lyric_bg, toggle_config(c, "app_lyric_bg",
+            true, "appearance.lyric_background", None, cx)),
+        setting_row(c, tr.settings_label_rounded, toggle_config(c, "app_rounded",
+            true, "appearance.rounded_style", None, cx)),
+        setting_row(c, tr.settings_dark_mode, toggle_config(c, "app_dark",
             cfg.appearance.dark_mode, "appearance.dark_mode",
             Some(Box::new(move |new_val, this, _window, cx| {
                 let mut new_cfg = crate::config::Config::load();
                 new_cfg.appearance.dark_mode = new_val;
                 let theme_name = crate::gui::theme::ThemeName::from_config(&new_cfg.appearance.theme);
                 this.colours = crate::gui::theme::UiColors::build(new_val, &theme_name);
-                // Force repaint of everything
                 cx.notify();
             })),
             cx)),
-        setting_row(c, "显示频谱分析", toggle_config(c, "app_spectrum",
-            cfg.appearance.show_spectrum, "appearance.show_spectrum", None, cx)),
-        setting_row(c, "频谱高度", txt(&spectrum_height_label, 12.0, c.accent).into_any_element()),
-        setting_row(c, "显示专辑封面", txt("是", 12.0, c.accent).into_any_element()),
-        setting_row(c, "背景高斯模糊", toggle_config(c, "app_blur", false, "appearance.blur", None, cx)),
-        setting_row(c, "窗口透明度", txt(&opacity_label, 12.0, c.accent).into_any_element()),
-        setting_row(c, "显示状态栏",
-            if cfg.appearance.dark_mode { txt("已启用", 12.0, c.accent).into_any_element() }
-            else { txt("已启用", 12.0, c.accent).into_any_element() }),
+        setting_row(c, tr.settings_window_opacity, slider_config(c, "app_opacity",
+            cfg.appearance.window_transparency, 20, 100, 5, "appearance.window_transparency",
+            Some(Box::new(|v| if v >= 100 { tr.settings_label_opaque.to_string() } else { format!("{}%", v) })), cx)),
+        // Group 2: Background Settings
+        section_title(c, tr.settings_section_background),
+        setting_row(c, tr.settings_label_enable_bg, toggle_config(c, "app_bg_enable",
+            cfg.appearance.background_transparency > 0, "appearance.background_enabled", None, cx)),
+        setting_row(c, tr.settings_label_desktop_bg, toggle_config(c, "app_bg_desktop",
+            false, "appearance.use_desktop_background", None, cx)),
+        setting_row(c, tr.settings_label_bg_opacity, slider_config(c, "app_bg_opacity",
+            cfg.appearance.background_transparency, 10, 100, 5, "appearance.background_transparency",
+            Some(Box::new(|v| format!("{}%", v))), cx)),
+        setting_row(c, tr.settings_label_bg_cover, toggle_config(c, "app_bg_cover",
+            false, "appearance.album_cover_as_background", None, cx)),
+        setting_row(c, tr.settings_label_gaussian_blur, toggle_config(c, "app_bg_blur",
+            false, "appearance.background_blur", None, cx)),
+        setting_row(c, tr.settings_label_blur_radius, slider_config(c, "app_bg_blur_r",
+            5, 1, 50, 1, "appearance.background_blur_radius",
+            Some(Box::new(|v| format!("{}", v))), cx)),
+        setting_row(c, tr.settings_theme_label, dropdown_config(c, "app_theme", &cfg.appearance.theme,
+            &[("default", "默认"), ("ocean", "海洋"), ("forest", "森林"), ("lavender", "薰衣草"),
+              ("sunset", "日落"), ("midnight", "午夜"), ("autumn", "秋色"), ("spring", "春意")],
+            "appearance.theme", cx)),
     ]
 }
 
@@ -228,63 +423,56 @@ fn render_appearance_settings(
 // Playback settings
 // ---------------------------------------------------------------------------
 fn render_playback_settings(
+    tr: &Tr,
     c: &UiColors,
-    _cx: &mut Context<super::MusicPlayer>,
+    cx: &mut Context<super::MusicPlayer>,
 ) -> Vec<AnyElement> {
     let cfg = crate::config::Config::load();
-    let device_count = crate::bass::sys::BASS_GetDeviceCount();
-    let current_device = cfg.play.wasapi_device;
-    let device_str = if current_device >= 0 && (current_device as u32) < device_count {
-        let mut info = crate::bass::sys::BASS_DEVICEINFO {
-            name: std::ptr::null(),
-            driver: std::ptr::null(),
-            flags: 0,
-        };
-        if crate::bass::sys::BASS_GetDeviceInfo(current_device as u32, &raw mut info) && !info.name.is_null() {
-            unsafe {
-                let len = (0..).find(|&i| *info.name.offset(i) == 0).unwrap_or(0);
-                if len > 0 {
-                    String::from_utf16_lossy(std::slice::from_raw_parts(info.name, len as usize))
-                } else {
-                    "默认".to_string()
-                }
-            }
-        } else {
-            "默认".to_string()
-        }
-    } else {
-        "默认".to_string()
-    };
 
     vec![
-        section_title(c, "播放设置"),
-        setting_row(c, "音频引擎", txt(&cfg.play.engine, 12.0, c.accent).into_any_element()),
-        setting_row(c, "输出设备", txt(&device_str, 12.0, c.accent).into_any_element()),
-        setting_row(c, "自动播放", txt(
-            if cfg.play.auto_play_when_start { "已启用" } else { "已禁用" },
-            12.0, c.accent,
-        ).into_any_element()),
-        setting_row(c, "淡入淡出", txt(
-            if cfg.play.fade_effect { "已启用" } else { "已禁用" },
-            12.0, c.accent,
-        ).into_any_element()),
-        setting_row(c, "淡入淡出时间", txt(&format!("{} ms", cfg.play.fade_time), 12.0, c.accent).into_any_element()),
-        setting_row(c, "默认音量", txt(&format!("{}%", cfg.play.default_volume), 12.0, c.accent).into_any_element()),
-        setting_row(c, "音量步进", txt(&cfg.play.volume_step.to_string(), 12.0, c.accent).into_any_element()),
-        setting_row(c, "ReplayGain", txt(&cfg.play.replaygain, 12.0, c.accent).into_any_element()),
-        setting_row(c, "记忆播放位置", txt("已启用", 12.0, c.accent).into_any_element()),
-        setting_row(c, "合并多版本", toggle_config(c, "play_merge",
-            cfg.play.merge_song_different_versions, "play.merge_song_different_versions", None, _cx)),
-        setting_row(c, "FFmpeg缓存", txt(&format!("{}秒", cfg.play.ffmpeg_cache_len), 12.0, c.accent).into_any_element()),
-        section_title(c, "MIDI设置"),
-        setting_row(c, "启用MIDI", txt(
-            if cfg.midi.enabled { "已启用" } else { "已禁用" },
-            12.0, c.accent,
-        ).into_any_element()),
-        setting_row(c, "SF2音色库", txt(
-            if cfg.midi.soundfont.is_empty() { "未设置" } else { &cfg.midi.soundfont },
-            12.0, c.accent,
-        ).into_any_element()),
+        // Group 1: Playback Options
+        section_title(c, tr.settings_section_play_options),
+        setting_row(c, tr.settings_label_error_stop, toggle_config(c, "pb_stop_err",
+            cfg.play.stop_when_error, "play.stop_when_error", None, cx)),
+        setting_row(c, tr.settings_auto_play, toggle_config(c, "pb_auto_play",
+            cfg.play.auto_play_when_start, "play.auto_play_when_start", None, cx)),
+        setting_row(c, tr.settings_label_taskbar_progress, toggle_config(c, "pb_taskbar_progress",
+            false, "play.show_taskbar_progress", None, cx)),
+        setting_row(c, tr.settings_label_taskbar_icon, toggle_config(c, "pb_taskbar_icon",
+            false, "play.show_taskbar_status_icon", None, cx)),
+        setting_row(c, tr.settings_fade, toggle_config(c, "pb_fade",
+            cfg.play.fade_effect, "play.fade_effect", None, cx)),
+        setting_row(c, tr.settings_label_fade_time, slider_config(c, "pb_fade_time",
+            cfg.play.fade_time, 0, 2000, 50, "play.fade_time",
+            Some(Box::new(|v| format!("{} ms", v))), cx)),
+        setting_row(c, tr.settings_label_continue_on_switch, toggle_config(c, "pb_continue",
+            false, "play.continue_when_switch_playlist", None, cx)),
+        setting_row(c, tr.settings_label_system_media, toggle_config(c, "pb_sys_media",
+            false, "play.use_system_media_controls", None, cx)),
+        setting_row(c, tr.settings_label_remember_pos, toggle_config(c, "pb_remember_pos",
+            false, "play.remember_last_position", None, cx)),
+        setting_row(c, tr.settings_label_default_volume, slider_config(c, "pb_vol",
+            cfg.play.default_volume, 0, 100, 5, "play.default_volume",
+            Some(Box::new(|v| format!("{}%", v))), cx)),
+        setting_row(c, tr.settings_label_volume_step, slider_config(c, "pb_vol_step",
+            cfg.play.volume_step, 1, 10, 1, "play.volume_step", None, cx)),
+        setting_row(c, tr.settings_label_merge_versions, toggle_config(c, "play_merge",
+            cfg.play.merge_song_different_versions, "play.merge_song_different_versions", None, cx)),
+        // Group 2: Playback Kernel
+        section_title(c, tr.settings_section_play_kernel),
+        setting_row(c, tr.settings_label_kernel, h_flex().gap_2()
+            .child(radio_config(c, "pb_bass", cfg.play.engine == "bass", "BASS", "play.engine", "bass", cx))
+            .child(radio_config(c, "pb_mci", cfg.play.engine == "mci", "MCI", "play.engine", "mci", cx))
+            .child(radio_config(c, "pb_ffmpeg", cfg.play.engine == "ffmpeg", "FFMPEG", "play.engine", "ffmpeg", cx))
+            .into_any_element()),
+        // Group 3: Playback Device
+        section_title(c, tr.settings_section_play_device),
+        setting_row(c, tr.settings_option_default_device, dropdown_config(c, "pb_device", &cfg.play.output_device,
+            &[("", tr.settings_option_default_device)], "play.output_device", cx)),
+        setting_row(c, tr.settings_replaygain, dropdown_config(c, "pb_rg", &cfg.play.replaygain,
+            &[("off", tr.settings_option_replaygain_off), ("track", "Track"),
+              ("album", "Album"), ("auto", tr.settings_option_replaygain_auto)],
+            "play.replaygain", cx)),
     ]
 }
 
@@ -292,76 +480,120 @@ fn render_playback_settings(
 // Hotkey settings
 // ---------------------------------------------------------------------------
 fn render_hotkeys_settings(
+    tr: &Tr,
     c: &UiColors,
-    _cx: &mut Context<super::MusicPlayer>,
+    cx: &mut Context<super::MusicPlayer>,
 ) -> Vec<AnyElement> {
-    vec![
-        section_title(c, "全局热键"),
-        setting_row(c, "启用全局热键", txt("已启用", 12.0, c.accent).into_any_element()),
-        setting_row(c, "播放/暂停", txt("Space", 12.0, c.accent).into_any_element()),
-        setting_row(c, "停止", txt("Ctrl+S", 12.0, c.accent).into_any_element()),
-        setting_row(c, "下一曲", txt("Ctrl+Right / Media Next", 12.0, c.accent).into_any_element()),
-        setting_row(c, "上一曲", txt("Ctrl+Left / Media Prev", 12.0, c.accent).into_any_element()),
-        setting_row(c, "快进5秒", txt("Ctrl+Shift+Right", 12.0, c.accent).into_any_element()),
-        setting_row(c, "快退5秒", txt("Ctrl+Shift+Left", 12.0, c.accent).into_any_element()),
-        setting_row(c, "音量+", txt("Ctrl+Up / Media Up", 12.0, c.accent).into_any_element()),
-        setting_row(c, "音量-", txt("Ctrl+Down / Media Down", 12.0, c.accent).into_any_element()),
-        setting_row(c, "静音", txt("M", 12.0, c.accent).into_any_element()),
-        setting_row(c, "显示/隐藏", txt("Ctrl+H", 12.0, c.accent).into_any_element()),
-        setting_row(c, "显示桌面歌词", txt("Ctrl+L", 12.0, c.accent).into_any_element()),
-    ]
+    let cfg = crate::config::Config::load();
+    let hotkeys = [
+        (tr.hotkey_play_pause, "Space"),
+        (tr.hotkey_stop, "Ctrl+S"),
+        (tr.hotkey_forward, "Ctrl+Shift+Right"),
+        (tr.hotkey_rewind, "Ctrl+Shift+Left"),
+        (tr.hotkey_prev, "Ctrl+Left"),
+        (tr.hotkey_next, "Ctrl+Right"),
+        (tr.hotkey_vol_up, "Ctrl+Up"),
+        (tr.hotkey_vol_down, "Ctrl+Down"),
+        (tr.hotkey_exit, "Alt+F4"),
+        (tr.hotkey_show_hide, "Ctrl+H"),
+        (tr.hotkey_desktop_lyric, "Ctrl+L"),
+        (tr.hotkey_favourite, "Ctrl+D"),
+    ];
+    let mut children = vec![
+        section_title(c, tr.settings_section_hotkeys),
+        setting_row(c, tr.settings_hk_enable, toggle_config(c, "hk_enabled",
+            cfg.hotkey.enabled, "hotkey.enabled", None, cx)),
+        section_title(c, tr.settings_label_hotkey_func_shortcut),
+    ];
+    // Table header
+    children.push(
+        h_flex().w_full().h(px(24.0)).items_center().px_4()
+            .child(div().w(px(200.0)).text_size(px(11.0)).text_color(c.text_title).font_weight(FontWeight::SEMIBOLD).child(tr.hotkey_function))
+            .child(div().flex_grow().text_size(px(11.0)).text_color(c.text_title).font_weight(FontWeight::SEMIBOLD).child(tr.hotkey_shortcut))
+            .into_any_element(),
+    );
+    for (func, key) in &hotkeys {
+        children.push(
+            h_flex().w_full().h(px(24.0)).items_center().px_4()
+                .border_b(px(1.0)).border_color(c.border)
+                .child(div().w(px(200.0)).text_size(px(12.0)).text_color(c.text).child(*func))
+                .child(div().flex_grow().text_size(px(12.0)).text_color(c.accent).child(*key))
+                .into_any_element(),
+        );
+    }
+    children
 }
 
 // ---------------------------------------------------------------------------
 // Media library settings
 // ---------------------------------------------------------------------------
 fn render_media_lib_settings(
+    tr: &Tr,
     c: &UiColors,
-    _cx: &mut Context<super::MusicPlayer>,
+    cx: &mut Context<super::MusicPlayer>,
 ) -> Vec<AnyElement> {
     let cfg = crate::config::Config::load();
     let lib = crate::media::MediaLib::load();
-    let data_path = crate::config::get_config_dir().join("media_lib.json");
-    let data_size = if data_path.exists() {
-        let bytes = std::fs::metadata(&data_path).map(|m| m.len()).unwrap_or(0);
-        if bytes > 1024 * 1024 {
-            format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
-        } else if bytes > 1024 {
-            format!("{:.0} KB", bytes as f64 / 1024.0)
-        } else {
-            format!("{} B", bytes)
-        }
-    } else {
-        "无数据".to_string()
-    };
 
     let mut children = vec![
-        section_title(c, "媒体库设置"),
-        setting_row(c, "启动时自动扫描", txt(
-            if cfg.media_lib.auto_scan { "已启用" } else { "已禁用" },
-            12.0, c.accent,
-        ).into_any_element()),
-        setting_row(c, "忽略短曲目", txt(
-            &(if cfg.media_lib.min_duration_secs > 0 { format!("{}秒", cfg.media_lib.min_duration_secs) } else { "不过滤".to_string() }),
-            12.0, c.accent,
-        ).into_any_element()),
-        setting_row(c, "显示格式", txt(&cfg.media_lib.display_format, 12.0, c.accent).into_any_element()),
-        setting_row(c, "播放列表行高", txt(&format!("{}px", cfg.appearance.playlist_row_height), 12.0, c.accent).into_any_element()),
-        section_title(c, "扫描文件夹"),
+        // Group 1: Media Library Options
+        section_title(c, tr.settings_section_ml_options),
+        setting_row(c, tr.settings_label_disable_delete, toggle_config(c, "ml_no_delete",
+            false, "media_lib.disable_disk_delete", None, cx)),
+        setting_row(c, tr.settings_label_merge_single, toggle_config(c, "ml_merge_single",
+            false, "media_lib.merge_single_category", None, cx)),
+        setting_row(c, tr.settings_label_min_duration, slider_config(c, "ml_min_dur",
+            cfg.media_lib.min_duration_secs as u32, 0, 300, 5, "media_lib.min_duration_secs",
+            Some(Box::new(|v| format!("{}秒", v))), cx)),
+        // Group 2: Media Library Update Options
+        section_title(c, tr.settings_section_ml_update),
+        setting_row(c, tr.settings_label_remove_missing, toggle_config(c, "ml_remove_missing",
+            true, "media_lib.remove_missing_files", None, cx)),
+        setting_row(c, tr.settings_auto_scan, toggle_config(c, "ml_autoscan",
+            cfg.media_lib.auto_scan, "media_lib.auto_scan", None, cx)),
+        setting_row(c, tr.settings_label_force_reload, Button::new("ml_reload").label(tr.settings_btn_force_reload).compact().ghost()
+            .on_click(|_, _, _| {
+                crate::runtime().spawn_blocking(|| {
+                    let lib = crate::media::MediaLib::load();
+                    let _ = lib.save();
+                });
+            }).into_any_element()),
+        // Group 3: Media Library Directories
+        section_title(c, tr.settings_section_ml_dirs),
     ];
 
-    // List media directories
+    let entity = cx.entity().downgrade();
     for (i, dir) in cfg.media_lib.media_dirs.iter().enumerate() {
+        let dir_clone = dir.clone();
+        let btn_id: SharedString = format!("ml_del_{}", i).into();
+        let cfg_dirs = cfg.media_lib.media_dirs.clone();
+        let ent = entity.clone();
         children.push(
-            setting_row(c, &format!("  目录 {}", i + 1), txt(dir, 11.0, c.text_dim).into_any_element())
+            h_flex().w_full().h(px(28.0)).items_center().gap_2().px_4()
+                .child(div().w(px(20.0)).text_size(px(11.0)).text_color(c.text_dim).child(format!("{}", i + 1)))
+                .child(div().flex_grow().text_size(px(12.0)).text_color(c.text).child(dir_clone.clone()))
+                .child(Button::new(btn_id).label(tr.settings_btn_delete).compact().ghost()
+                    .on_click(move |_, _, cx| {
+                        let new_dirs: Vec<String> = cfg_dirs.iter().filter(|d| **d != dir_clone).cloned().collect();
+                        let _ = crate::config::Config::set("media_lib.media_dirs", &new_dirs.join(","));
+                        let _ = ent.update(cx, |_, cx| cx.notify());
+                    }).into_any_element())
+                .into_any_element(),
         );
     }
 
-    children.extend(vec![
-        section_title(c, "数据管理"),
-        setting_row(c, "媒体库条目数", txt(&format!("{} 首", lib.entries.len()), 12.0, c.accent).into_any_element()),
-        setting_row(c, "数据文件大小", txt(&data_size, 12.0, c.accent).into_any_element()),
-    ].into_iter());
+    children.push(
+        setting_row(c, tr.settings_label_add_dir, Button::new("ml_add").label(tr.settings_btn_add).compact().ghost()
+            .on_click(|_, _, _| {
+                #[cfg(windows)]
+                { let _ = std::process::Command::new("explorer").spawn(); }
+                #[cfg(not(windows))]
+                { let _ = std::process::Command::new("xdg-open").arg(".").spawn(); }
+            }).into_any_element()),
+    );
+
+    children.push(section_title(c, tr.settings_section_data_mgmt));
+    children.push(setting_row(c, tr.settings_label_media_count, txt(&tr.settings_label_media_count.replace("{}", &lib.entries.len().to_string()), 12.0, c.accent).into_any_element()));
 
     children
 }
@@ -370,37 +602,50 @@ fn render_media_lib_settings(
 // Lyrics settings
 // ---------------------------------------------------------------------------
 fn render_lyrics_settings(
+    tr: &Tr,
     c: &UiColors,
-    _cx: &mut Context<super::MusicPlayer>,
+    cx: &mut Context<super::MusicPlayer>,
 ) -> Vec<AnyElement> {
     let cfg = crate::config::Config::load();
     vec![
-        section_title(c, "歌词显示"),
-        setting_row(c, "卡拉OK风格", txt("已启用", 12.0, c.accent).into_any_element()),
-        setting_row(c, "双行显示", txt("已启用", 12.0, c.accent).into_any_element()),
-        setting_row(c, "内嵌歌词优先", txt(
-            if cfg.lyric.use_inner_lyric_first { "已启用" } else { "已禁用" },
-            12.0, c.accent,
-        ).into_any_element()),
-        setting_row(c, "歌词模糊匹配", txt(
-            if cfg.lyric.fuzzy_match { "已启用" } else { "已禁用" },
-            12.0, c.accent,
-        ).into_any_element()),
-        setting_row(c, "显示翻译", txt(
-            if cfg.lyric.show_translate { "已启用" } else { "已禁用" },
-            12.0, c.accent,
-        ).into_any_element()),
-        setting_row(c, "歌词对齐", txt("居中", 12.0, c.accent).into_any_element()),
-        setting_row(c, "行间距", txt("正常", 12.0, c.accent).into_any_element()),
-        setting_row(c, "字体大小", txt("13px", 12.0, c.accent).into_any_element()),
-        section_title(c, "桌面歌词"),
-        setting_row(c, "字体颜色", txt("默认", 12.0, c.accent).into_any_element()),
-        setting_row(c, "高亮颜色", txt("默认", 12.0, c.accent).into_any_element()),
-        setting_row(c, "背景透明度", txt("80%", 12.0, c.accent).into_any_element()),
-        section_title(c, "自动歌词处理"),
-        setting_row(c, "自动保存歌词", txt("已启用", 12.0, c.accent).into_any_element()),
-        setting_row(c, "无歌词时隐藏", txt("已禁用", 12.0, c.accent).into_any_element()),
-        setting_row(c, "暂停时隐藏", txt("已禁用", 12.0, c.accent).into_any_element()),
+        // Group 1: Lyric Options
+        section_title(c, tr.settings_section_lyric_options),
+        setting_row(c, tr.settings_label_inner_lyric, toggle_config(c, "ly_inner",
+            cfg.lyric.use_inner_lyric_first, "lyric.use_inner_lyric_first", None, cx)),
+        setting_row(c, tr.settings_label_fuzzy_match, toggle_config(c, "ly_fuzzy",
+            cfg.lyric.fuzzy_match, "lyric.fuzzy_match", None, cx)),
+        setting_row(c, tr.menu_show_translation, toggle_config(c, "ly_translate",
+            cfg.lyric.show_translate, "lyric.show_translate", None, cx)),
+        setting_row(c, tr.settings_label_show_info_when_none, toggle_config(c, "ly_show_info",
+            true, "lyric.show_song_info_when_no_lyric", None, cx)),
+        setting_row(c, tr.settings_label_lyric_folder, txt(".\\lyrics\\", 12.0, c.accent).into_any_element()),
+        setting_row(c, tr.settings_label_lyric_adjust, dropdown_config(c, "ly_adjust", "ask",
+            &[("ask", tr.settings_option_adjust_ask), ("auto_save", tr.settings_option_adjust_save),
+              ("discard", tr.settings_option_adjust_discard)], "lyric.after_adjust", cx)),
+        setting_row(c, tr.settings_label_karaoke, toggle_config(c, "ly_karaoke",
+            false, "lyric.karaoke_display", None, cx)),
+        setting_row(c, tr.settings_label_hide_empty, toggle_config(c, "ly_no_empty",
+            false, "lyric.hide_empty_lines", None, cx)),
+        // Group 2: Window Lyrics
+        section_title(c, tr.settings_section_window_lyric),
+        setting_row(c, tr.settings_label_line_spacing, slider_config(c, "ly_line_spacing",
+            0, 0, 20, 1, "lyric.line_spacing",
+            Some(Box::new(|v| format!("{}px", v))), cx)),
+        setting_row(c, tr.settings_label_alignment, dropdown_config(c, "ly_align", "auto",
+            &[("auto", tr.settings_option_align_auto), ("left", tr.settings_option_align_left),
+              ("center", tr.settings_option_align_center), ("right", tr.settings_option_align_right)], "lyric.alignment", cx)),
+        // Group 3: Desktop Lyrics
+        section_title(c, tr.settings_section_desktop_lyric),
+        setting_row(c, tr.settings_label_show_desktop_lyric, toggle_config(c, "ly_desktop_show",
+            false, "desktop_lyric.show", None, cx)),
+        setting_row(c, tr.settings_label_hide_when_none, toggle_config(c, "ly_desktop_hide_no",
+            true, "desktop_lyric.hide_when_no_lyric", None, cx)),
+        setting_row(c, tr.settings_label_hide_when_paused, toggle_config(c, "ly_desktop_hide_pause",
+            false, "desktop_lyric.hide_when_paused", None, cx)),
+        setting_row(c, tr.settings_label_lock_desktop, toggle_config(c, "ly_desktop_lock",
+            false, "desktop_lyric.locked", None, cx)),
+        setting_row(c, tr.settings_label_double_line, toggle_config(c, "ly_desktop_double",
+            true, "desktop_lyric.double_line", None, cx)),
     ]
 }
 
@@ -454,6 +699,7 @@ pub fn render_search_panel(
     c: &UiColors,
     query: &str,
     search_input: &Entity<InputState>,
+    player: std::sync::Arc<crate::core::player::Player>,
     _window: &mut Window,
     _cx: &mut Context<super::MusicPlayer>,
 ) -> impl IntoElement {
@@ -464,7 +710,7 @@ pub fn render_search_panel(
         lib.search(query).iter().map(|e| SearchResult {
             title: e.title.clone(),
             artist: e.artist.clone(),
-            album: e.album.clone(),
+            _album: e.album.clone(),
             path: e.file_path.clone(),
         }).collect()
     };
@@ -481,7 +727,7 @@ pub fn render_search_panel(
                 .px_4().py_2()
                 .bg(c.control_bar_bg)
                 .gap_2()
-                .child(txt("搜索", 14.0, c.text_title))
+                .child(txt(tr.menu_find, 14.0, c.text_title))
                 .child(
                     h_flex().flex_grow().h(px(24.0))
                         .bg(c.panel).rounded(px(4.0)).px_2()
@@ -491,7 +737,7 @@ pub fn render_search_panel(
                                 .w_full()
                         )
                 )
-                .child(txt(&format!("{} 条结果", results.len()), 11.0, c.text_dim))
+                .child(txt(&format!("{}", results.len()), 11.0, c.text_dim))
         )
         .child(
             v_flex()
@@ -502,6 +748,8 @@ pub fn render_search_panel(
                     let bg = if is_even { c.playlist_item } else { c.playlist_item_hover };
                     let title = if r.title.is_empty() { r.path.clone() } else { r.title.clone() };
                     let path = r.path.clone();
+                    let p_click = player.clone();
+                    let p_menu = player.clone();
                     h_flex()
                         .w_full()
                         .h(px(28.0))
@@ -516,7 +764,9 @@ pub fn render_search_panel(
                         .on_mouse_up(gpui::MouseButton::Left, {
                             let path2 = path.clone();
                             move |_, _, _| {
-                                tracing::info!("[Search] 播放: {}", path2);
+                                let p2 = p_click.clone();
+                                let path3 = path2.clone();
+                                crate::runtime().spawn_blocking(move || { let _ = p2.play_file(&path3); });
                             }
                         })
                         .context_menu({
@@ -529,12 +779,19 @@ pub fn render_search_panel(
                              let p_open = path.clone();
                              let p_add = path.clone();
                              let p_copy = path.clone();
+                             let p_play2 = p_menu.clone();
+                             let p_menu_add = p_menu.clone();
                              menu.item(PopupMenuItem::new(s_play).on_click(move |_, _, _| {
-                                 tracing::info!("[Search] 播放: {}", p_play);
+                                 let p = p_play2.clone();
+                                 let path = p_play.clone();
+                                 crate::runtime().spawn_blocking(move || { let _ = p.play_file(&path); });
                              }))
-                             .item(PopupMenuItem::new(s_add).on_click(move |_, _, _| {
-                                 tracing::info!("[Search] 添加到播放列表: {}", p_add);
-                             }))
+                               .item(PopupMenuItem::new(s_add).on_click(move |_, _, _| {
+                                   let p = p_menu_add.clone();
+                                  let path = p_add.clone();
+                                  let mut pl = p.playlist_mut();
+                                  pl.add_track(crate::core::playlist::Track::new(&path));
+                              }))
                              .separator()
                              .item(PopupMenuItem::new(s_open).on_click(move |_, _, _| {
                                  let path = std::path::Path::new(&p_open);
@@ -546,9 +803,9 @@ pub fn render_search_panel(
                                  }
                                  tracing::info!("[Search] 打开文件位置: {}", p_open);
                              }))
-                             .item(PopupMenuItem::new(s_copy).on_click(move |_, _, _| {
-                                 tracing::info!("[Search] 复制路径: {}", p_copy);
-                             }))
+                              .item(PopupMenuItem::new(s_copy).on_click(move |_, _, _| {
+                                  super::copy_text_to_clipboard(&p_copy);
+                              }))
                             }
                         })
                 }))
@@ -558,6 +815,6 @@ pub fn render_search_panel(
 struct SearchResult {
     title: String,
     artist: String,
-    album: String,
+    _album: String,
     path: String,
 }

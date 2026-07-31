@@ -8,6 +8,49 @@ use gpui_component::menu::{ContextMenuExt, PopupMenuItem};
 use crate::gui::theme::UiColors;
 use crate::gui::i18n::Tr;
 use crate::lyric::{Lyrics, TranslateMode};
+use std::sync::atomic::{AtomicBool, Ordering};
+
+static DESKTOP_LYRICS_LOCKED: AtomicBool = AtomicBool::new(false);
+static DESKTOP_LYRICS_SHOULD_CLOSE: AtomicBool = AtomicBool::new(false);
+static LYRIC_OFFSET_DELTA: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+static LYRIC_SHOULD_RELOAD: AtomicBool = AtomicBool::new(false);
+
+pub fn is_locked() -> bool {
+    DESKTOP_LYRICS_LOCKED.load(Ordering::Relaxed)
+}
+
+pub fn set_locked(val: bool) {
+    DESKTOP_LYRICS_LOCKED.store(val, Ordering::Relaxed);
+}
+
+pub fn should_close() -> bool {
+    DESKTOP_LYRICS_SHOULD_CLOSE.swap(false, Ordering::Relaxed)
+}
+
+pub fn request_close() {
+    DESKTOP_LYRICS_SHOULD_CLOSE.store(true, Ordering::Relaxed);
+    super::DESKTOP_LYRICS_WINDOW_OPEN.store(false, Ordering::Relaxed);
+}
+
+pub fn take_offset_delta() -> i64 {
+    LYRIC_OFFSET_DELTA.swap(0, Ordering::Relaxed)
+}
+
+pub fn advance_lyric() {
+    LYRIC_OFFSET_DELTA.fetch_add(500, Ordering::Relaxed);
+}
+
+pub fn retreat_lyric() {
+    LYRIC_OFFSET_DELTA.fetch_sub(500, Ordering::Relaxed);
+}
+
+pub fn should_reload() -> bool {
+    LYRIC_SHOULD_RELOAD.swap(false, Ordering::Relaxed)
+}
+
+pub fn request_reload() {
+    LYRIC_SHOULD_RELOAD.store(true, Ordering::Relaxed);
+}
 
 /// Lyrics display state tracked by the GUI.
 #[derive(Clone)]
@@ -17,6 +60,7 @@ pub struct LyricsState {
     pub progress: u32, // 0-1000 karaoke progress
     pub visible: bool,
     pub error: Option<String>,
+    pub locked: bool,
 }
 
 impl LyricsState {
@@ -27,6 +71,7 @@ impl LyricsState {
             progress: 0,
             visible: false,
             error: None,
+            locked: false,
         }
     }
 
@@ -219,7 +264,7 @@ pub fn render_lyrics_panel(
             let s_retreat = tr.menu_lyric_retreat;
             move |menu, _w, _cx| {
             menu.item(PopupMenuItem::new(s_reload).on_click(|_, _, _| {
-                tracing::info!("[Lyric] 重新加载歌词");
+                request_reload();
             }))
             .item(PopupMenuItem::new(s_edit).on_click(|_, _, _| {
                 tracing::info!("[Lyric] 编辑歌词");
@@ -229,10 +274,10 @@ pub fn render_lyrics_panel(
             }))
             .separator()
             .item(PopupMenuItem::new(s_adv).on_click(|_, _, _| {
-                tracing::info!("[Lyric] 歌词前进0.5秒");
+                advance_lyric();
             }))
             .item(PopupMenuItem::new(s_retreat).on_click(|_, _, _| {
-                tracing::info!("[Lyric] 歌词后退0.5秒");
+                retreat_lyric();
             }))
             }
         })
@@ -376,7 +421,7 @@ pub fn render_lyrics_overlay(
             let s_close = tr.menu_close_desktop_lyric;
             move |menu, _w, _cx| {
             menu.item(PopupMenuItem::new(s_reload).on_click(|_, _, _| {
-                tracing::info!("[DesktopLyric] 重新加载歌词");
+                request_reload();
             }))
             .item(PopupMenuItem::new(s_edit).on_click(|_, _, _| {
                 tracing::info!("[DesktopLyric] 编辑歌词");
@@ -386,10 +431,11 @@ pub fn render_lyrics_overlay(
             }))
             .separator()
             .item(PopupMenuItem::new(s_lock).on_click(|_, _, _| {
-                tracing::info!("[DesktopLyric] 锁定/解锁位置");
+                let old = DESKTOP_LYRICS_LOCKED.load(Ordering::Relaxed);
+                DESKTOP_LYRICS_LOCKED.store(!old, Ordering::Relaxed);
             }))
             .item(PopupMenuItem::new(s_close).on_click(|_, _, _| {
-                tracing::info!("[DesktopLyric] 关闭桌面歌词");
+                request_close();
             }))
             }
         })

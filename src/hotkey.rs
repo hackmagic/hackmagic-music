@@ -8,32 +8,28 @@ use crate::core::player::Player;
 static PLAYER: OnceLock<std::sync::Arc<Player>> = OnceLock::new();
 
 pub fn init(player: std::sync::Arc<Player>) {
-    tracing::info!("[Hotkey] init() entered");
     let _ = PLAYER.set(player.clone());
-    tracing::info!("[Hotkey] PLAYER set, calling commands::init_player...");
     crate::commands::init_player(player);
-    tracing::info!("[Hotkey] commands::init_player done");
     #[cfg(target_os = "windows")]
     {
-        tracing::info!("[Hotkey] Windows: creating mutex and starting message thread");
         extern "system" {
             fn CreateMutexW(
                 lpMutexAttributes: *const std::ffi::c_void,
                 bInitialOwner: i32,
                 lpName: *const u16,
             ) -> isize;
+            #[allow(dead_code)]
             fn GetLastError() -> u32;
         }
+        #[allow(dead_code)]
         const ERROR_ALREADY_EXISTS: u32 = 183;
         let name: Vec<u16> = "HackMagicMusic\0".encode_utf16().collect();
         unsafe {
             CreateMutexW(std::ptr::null(), 1, name.as_ptr());
         }
-        tracing::info!("[Hotkey] Mutex created, starting message thread...");
         start_message_thread();
-        tracing::info!("[Hotkey] Message thread spawned");
     }
-    tracing::info!("[Hotkey] init() done");
+    tracing::info!("[Hotkey] Global hotkeys initialized");
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -382,7 +378,7 @@ fn start_message_thread() {
                 tracing::warn!("Failed to create message window");
                 return;
             }
-            tracing::info!("Message window created for IPC");
+            tracing::debug!("Message window created for IPC");
 
             let hook = SetWindowsHookExW(
                 WH_KEYBOARD_LL, hook_proc as HOOKPROC, 0, 0,
@@ -390,7 +386,7 @@ fn start_message_thread() {
             if hook == 0 {
                 tracing::warn!("Failed to set keyboard hook for global hotkeys");
             } else {
-                tracing::info!("Global hotkey hook installed");
+                tracing::debug!("Global hotkey hook installed");
             }
 
             let mut msg: [u8; 48] = std::mem::zeroed();
