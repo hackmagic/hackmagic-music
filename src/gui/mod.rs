@@ -637,6 +637,19 @@ impl MusicPlayer {
         crate::hotkey::init(player.clone());
         tracing::info!("[GUI] Hotkey system initialized — building MusicPlayer struct");
 
+        // Initialise the local vector DB in the background so play-time audio +
+        // lyric indexing works from the GUI (indexing is skipped gracefully if
+        // this hasn't completed yet).
+        let vecdb_path = crate::vecdb::default_db_path();
+        if let Some(parent) = std::path::Path::new(&vecdb_path).parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        crate::runtime().spawn(async move {
+            if let Err(e) = crate::vecdb::init_vecdb(&vecdb_path).await {
+                tracing::warn!("[GUI] vecdb init failed: {}", e);
+            }
+        });
+
         tracing::info!("[GUI] MusicPlayer::new() returning");
         Self {
             player,
@@ -4616,13 +4629,21 @@ impl MusicPlayer {
                                 .item(PopupMenuItem::new(s_find_similar).on_click({
                                     let p = ctx_player.clone();
                                     let fp = fp_loc.clone();
-                                    let cv_sim = cv_row.clone();
+                                    let weak_sim = cv_row.clone().downgrade();
+                                    let fp_build = fp.clone();
                                     move |_, _, cx| {
-                                        let hits = p.find_similar(&fp, 10);
-                                        tracing::info!("[Similar] Found {} similar tracks", hits.len());
-                                        cv_sim.update(cx, |this, _cx| {
+                                        // Similarity search decodes the whole file and runs
+                                        // ONNX inference — run it off the UI thread.
+                                        let p = p.clone();
+                                        let fp_build = fp_build.clone();
+                                        let fp_apply = fp.clone();
+                                        let weak_sim = weak_sim.clone();
+                                        run_blocking_dialog_app(cx, &weak_sim, move || {
+                                            p.find_similar(&fp_build, 10)
+                                        }, move |hits, this, _cx| {
+                                            tracing::info!("[Similar] Found {} similar tracks", hits.len());
                                             this.similar_tracks = hits;
-                                            this.similar_tracks_source = fp.clone();
+                                            this.similar_tracks_source = fp_apply;
                                             this.modal = Some(ModalKind::SimilarTracks);
                                         });
                                     }

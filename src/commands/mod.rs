@@ -64,6 +64,7 @@ pub fn dispatch(command: &Commands) -> Result<()> {
         Commands::Musicbrainz(args) => track::cmd_musicbrainz(args),
         Commands::OpenLocation(args) => system::cmd_open_location(args),
         Commands::Completion(args) => system::cmd_completion(args),
+        Commands::SearchLyrics(args) => media::cmd_search_lyrics(args),
         Commands::RebuildIndex => cmd_rebuild_index(),
 }
 }
@@ -82,16 +83,15 @@ fn cmd_rebuild_index() -> Result<()> {
         return Ok(());
     }
 
-    // Initialize vecdb
-    let db_dir = std::env::current_dir()
-        .unwrap_or_else(|_| std::env::temp_dir())
-        .join("vecdb");
-    std::fs::create_dir_all(&db_dir).ok();
-    let db_path = db_dir.to_str().unwrap_or("./vecdb");
+    // Initialize vecdb (shared config-dir location, same as the GUI).
+    let db_path = vecdb::default_db_path();
+    if let Some(parent) = std::path::Path::new(&db_path).parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
 
     let rt = tokio::runtime::Runtime::new().expect("failed to create runtime");
     rt.block_on(async {
-        vecdb::init_vecdb(db_path).await.map_err(|e| {
+        vecdb::init_vecdb(&db_path).await.map_err(|e| {
             crate::error::PlayerError::BassError(format!("Failed to init vecdb: {e}"))
         })?;
         let conn = vecdb::global_db();

@@ -185,20 +185,25 @@ pub fn extract_embedding(samples: &[f32], sample_rate: u32) -> Vec<f32> {
     let (mel_data, n_mels, n_frames) = compute_log_mel(&samples, SAMPLE_RATE);
 
     if let Some(model) = model() {
-        let input = tract_ndarray::Array3::from_shape_vec(
+        if let Ok(input) = tract_ndarray::Array3::from_shape_vec(
             (1, n_mels, n_frames),
             mel_data.clone(),
-        ).unwrap();
-
-        let input_tensor: Tensor = input.into();
-        if let Ok(result) = model.run(tvec!(input_tensor.into())) {
-            if let Some(output) = result.first() {
-                let arr = output.to_array_view::<f32>().unwrap();
-                let mut emb: Vec<f32> = arr.as_slice().unwrap().to_vec();
-                emb.truncate(EMBEDDING_DIM);
-                emb.resize(EMBEDDING_DIM, 0.0);
-                l2_normalize(&mut emb);
-                return emb;
+        ) {
+            let input_tensor: Tensor = input.into();
+            if let Ok(result) = model.run(tvec!(input_tensor.into())) {
+                if let Some(output) = result.first() {
+                    // Fall back to mel pooling if the model output is not a
+                    // contiguous f32 array instead of panicking.
+                    if let Ok(arr) = output.to_array_view::<f32>() {
+                        if let Some(slice) = arr.as_slice() {
+                            let mut emb: Vec<f32> = slice.to_vec();
+                            emb.truncate(EMBEDDING_DIM);
+                            emb.resize(EMBEDDING_DIM, 0.0);
+                            l2_normalize(&mut emb);
+                            return emb;
+                        }
+                    }
+                }
             }
         }
     }

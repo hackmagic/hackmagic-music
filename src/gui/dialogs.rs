@@ -473,6 +473,8 @@ fn render_playback_settings(
             .child(radio_config(c, "pb_bass", cfg.play.engine == "bass", "BASS", "play.engine", "bass", cx))
             .child(radio_config(c, "pb_mci", cfg.play.engine == "mci", "MCI", "play.engine", "mci", cx))
             .child(radio_config(c, "pb_ffmpeg", cfg.play.engine == "ffmpeg", "FFMPEG", "play.engine", "ffmpeg", cx))
+            .child(radio_config(c, "pb_rodio", cfg.play.engine == "rodio", "Rodio", "play.engine", "rodio", cx))
+            .child(radio_config(c, "pb_symphonia", cfg.play.engine == "symphonia", "Symphonia", "play.engine", "symphonia", cx))
             .into_any_element()),
         // Group 3: Playback Device
         section_title(c, tr.settings_section_play_device),

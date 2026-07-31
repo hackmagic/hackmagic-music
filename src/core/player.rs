@@ -395,18 +395,19 @@ impl Player {
             if let Some(emb) = crate::ai::embed_file_async(ai_path.clone()).await {
                 let lyric_text = load_lyric_text(&ai_path, &ai_lyric_file);
                 let lyric_emb = crate::ai::embed_lyrics_async(lyric_text.clone()).await;
-                let conn = crate::vecdb::global_db();
-                let _ = crate::vecdb::index_track(
-                    conn,
-                    &ai_path,
-                    &ai_title,
-                    &ai_artist,
-                    &ai_album,
-                    &lyric_text,
-                    &emb,
-                    &lyric_emb,
-                )
-                .await;
+                if let Some(conn) = crate::vecdb::try_global_db() {
+                    let _ = crate::vecdb::index_track(
+                        conn,
+                        &ai_path,
+                        &ai_title,
+                        &ai_artist,
+                        &ai_album,
+                        &lyric_text,
+                        &emb,
+                        &lyric_emb,
+                    )
+                    .await;
+                }
             }
         });
 
@@ -664,7 +665,9 @@ impl Player {
 
     /// Find similar tracks by vector similarity search (requires vecdb initialised).
     pub fn find_similar(&self, path: &str, k: usize) -> Vec<crate::vecdb::SearchHit> {
-        let conn = crate::vecdb::global_db();
+        let Some(conn) = crate::vecdb::try_global_db() else {
+            return vec![];
+        };
         let rt = crate::runtime();
         rt.block_on(async {
             if let Some(emb) = crate::ai::embed_file(path) {

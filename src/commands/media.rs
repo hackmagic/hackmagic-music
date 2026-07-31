@@ -1,5 +1,58 @@
-use crate::cli::{MediaArgs, MediaAction};
+use crate::cli::{MediaArgs, MediaAction, SearchLyricsArgs};
 use crate::error::Result;
+
+/// Search the local vector index by lyric text similarity.
+pub fn cmd_search_lyrics(args: &SearchLyricsArgs) -> Result<()> {
+    let db_path = crate::vecdb::default_db_path();
+    if let Some(parent) = std::path::Path::new(&db_path).parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
+
+    let rt = tokio::runtime::Runtime::new().expect("failed to create runtime");
+    rt.block_on(async {
+        crate::vecdb::init_vecdb(&db_path).await.map_err(|e| {
+            crate::error::PlayerError::BassError(format!("Failed to init vecdb: {e}"))
+        })?;
+        let conn = crate::vecdb::global_db();
+        let query_emb = crate::ai::embed_lyrics_text(&args.query);
+        let hits = crate::vecdb::search_lyrics(conn, &query_emb, args.limit)
+            .await
+            .map_err(|e| {
+                crate::error::PlayerError::BassError(format!("Lyric search failed: {e}"))
+            })?;
+
+        if hits.is_empty() {
+            println!("No matching lyrics found.");
+            return Ok(());
+        }
+        println!("Top {} lyric matches for \"{}\":", hits.len(), args.query);
+        for (i, hit) in hits.iter().enumerate() {
+            let name = if hit.title.is_empty() {
+                hit.path.clone()
+            } else {
+                format!("{} - {}", hit.artist, hit.title)
+            };
+            let snippet: String = hit
+                .lyrics
+                .lines()
+                .next()
+                .unwrap_or("")
+                .chars()
+                .take(80)
+                .collect();
+            println!(
+                "  {}. {}\n     album: {}\n     path: {}\n     distance: {:.4}\n     lyrics: {}",
+                i + 1,
+                name,
+                hit.album,
+                hit.path,
+                hit.distance,
+                snippet
+            );
+        }
+        Ok(())
+    })
+}
 
 pub fn cmd_media(args: &MediaArgs) -> Result<()> {
     match &args.action {

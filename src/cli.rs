@@ -180,8 +180,22 @@ pub enum Commands {
     /// Supported shells: bash, zsh, fish, powershell, elvish
     Completion(CompletionArgs),
 
+    /// Search tracks by lyric text similarity (local vector index)
+    SearchLyrics(SearchLyricsArgs),
+
     /// Rebuild vector index for similarity search (DCLAP 512-dim embeddings)
     RebuildIndex,
+}
+
+// ===== SearchLyrics =====
+#[derive(Args, Debug, Clone)]
+pub struct SearchLyricsArgs {
+    /// Query text to match against lyrics
+    pub query: String,
+
+    /// Maximum number of results to return
+    #[arg(short, long, default_value = "10")]
+    pub limit: usize,
 }
 
 // ===== Play =====
@@ -1927,6 +1941,18 @@ mod tests {
         assert!(cli.is_ok());
     }
 
+    #[test]
+    fn test_search_lyrics_parse() {
+        let cli = Cli::try_parse_from(["hm", "search-lyrics", "moonlight river", "--limit", "5"]).unwrap();
+        match cli.command.unwrap() {
+            Commands::SearchLyrics(args) => {
+                assert_eq!(args.query, "moonlight river");
+                assert_eq!(args.limit, 5);
+            }
+            other => panic!("expected SearchLyrics, got {:?}", other),
+        }
+    }
+
     // === CommandFactory assertion ===
 
     #[test]
@@ -1940,7 +1966,8 @@ mod tests {
             "ab", "playlist", "fav", "lyric", "musicbrainz", "cover", "tag",
             "media", "device", "lastfm", "midi", "plugin", "rate", "status",
             "nowplaying", "info", "config", "cue", "daemon", "stats",
-            "convert", "osu", "recent", "open-location", "file-assoc"]
+            "convert", "osu", "recent", "open-location", "file-assoc",
+            "search-lyrics", "rebuild-index"]
         {
             let found = cmd.clone().find_subcommand(sub_name).is_some();
             assert!(found, "Subcommand '{}' not found in Cli definition", sub_name);

@@ -1,5 +1,6 @@
-//! Local vector database (LanceDB) for audio embedding similarity search.
-//! ponytail: single "tracks" table, 256-dim F32 vectors, L2 distance.
+//! Local vector database (LanceDB) for audio + lyric similarity search.
+//! Single "tracks" table: 512-dim audio embeddings and 256-dim lyric text
+//! embeddings, L2 distance, with title/artist/album/lyrics metadata columns.
 
 use crate::error::{PlayerError, Result};
 use crate::ai::LYRICS_EMBEDDING_DIM;
@@ -66,6 +67,20 @@ pub async fn open_db(db_path: &str) -> Result<lancedb::Connection> {
 /// Get or lazily initialise the global vector DB connection.
 pub fn global_db() -> &'static lancedb::Connection {
     VECDB.get().expect("vecdb not initialised; call init_vecdb first")
+}
+
+/// Get the global vector DB connection if it has been initialised.
+/// Returns `None` (instead of panicking) before `init_vecdb` has run.
+pub fn try_global_db() -> Option<&'static lancedb::Connection> {
+    VECDB.get()
+}
+
+/// Default local vector DB location, shared by the CLI and GUI.
+pub fn default_db_path() -> String {
+    crate::config::get_config_dir()
+        .join("vecdb")
+        .to_string_lossy()
+        .to_string()
 }
 
 /// Initialise the global vecdb (called once at startup).
@@ -312,6 +327,13 @@ mod tests {
 
     fn lyrics_embedding(v: f32) -> Vec<f32> {
         vec![v; LYRICS_EMBEDDING_DIM]
+    }
+
+    #[test]
+    fn test_default_db_path() {
+        let p = default_db_path();
+        assert!(!p.is_empty());
+        assert!(p.contains("vecdb"));
     }
 
     #[tokio::test]
