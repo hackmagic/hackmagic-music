@@ -48,6 +48,12 @@ pub struct Lyrics {
     pub translate_mode: TranslateMode,
 }
 
+impl Default for Lyrics {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Lyrics {
     pub fn new() -> Self {
         Self {

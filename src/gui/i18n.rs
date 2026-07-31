@@ -47,8 +47,8 @@ pub fn global_tr() -> &'static Tr {
     static EN: OnceLock<&'static Tr> = OnceLock::new();
     static ZH: OnceLock<&'static Tr> = OnceLock::new();
     match GLOBAL_LANG.load(Ordering::Relaxed) {
-        1 => *ZH.get_or_init(|| Tr::ZH),
-        _ => *EN.get_or_init(|| Tr::EN),
+        1 => ZH.get_or_init(|| Tr::ZH),
+        _ => EN.get_or_init(|| Tr::EN),
     }
 }
 
@@ -586,7 +586,7 @@ pub struct Tr {
 
 impl Default for Locale {
     fn default() -> Self {
-        Self { lang: Lang::EnUs, tr: &Tr::EN }
+        Self { lang: Lang::EnUs, tr: Tr::EN }
     }
 }
 
@@ -1608,7 +1608,7 @@ mod tests {
         // Verify both translations have same number of fields by checking a few key ones
         let en = Tr::EN;
         let zh = Tr::ZH;
-        assert_eq!(en.app_title.len() > 0, zh.app_title.len() > 0);
-        assert_eq!(en.menu_file.len() > 0, zh.menu_file.len() > 0);
+        assert_eq!(!en.app_title.is_empty(), !zh.app_title.is_empty());
+        assert_eq!(!en.menu_file.is_empty(), !zh.menu_file.is_empty());
     }
 }

@@ -70,6 +70,12 @@ pub struct BassEngine {
 unsafe impl Send for BassEngine {}
 unsafe impl Sync for BassEngine {}
 
+impl Default for BassEngine {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl BassEngine {
     pub fn new() -> Self {
         Self {
@@ -865,11 +871,11 @@ mod tests {
     fn bass_engine_set_fade() {
         let engine = BassEngine::new();
         engine.set_fade(false, 1000);
-        assert_eq!(*engine.fade_effect.lock().unwrap(), false);
+        assert!(!(*engine.fade_effect.lock().unwrap()));
         assert_eq!(*engine.fade_time.lock().unwrap(), 1000);
 
         engine.set_fade(true, 200);
-        assert_eq!(*engine.fade_effect.lock().unwrap(), true);
+        assert!(*engine.fade_effect.lock().unwrap());
         assert_eq!(*engine.fade_time.lock().unwrap(), 200);
     }
 

@@ -1,7 +1,9 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Default)]
 pub enum ThemeName {
+    #[default]
     Default,
     Ocean,
     Forest,
@@ -40,11 +42,6 @@ impl ThemeName {
     }
 }
 
-impl Default for ThemeName {
-    fn default() -> Self {
-        ThemeName::Default
-    }
-}
 
 impl std::fmt::Display for ThemeName {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

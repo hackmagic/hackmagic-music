@@ -32,7 +32,7 @@ impl Iterator for SharedSource {
         }
         let sample = self.buffer[idx];
         self.frame_pos += 1;
-        if self.frame_pos % 1000 == 0 {
+        if self.frame_pos.is_multiple_of(1000) {
             self.frame_pos_shared.store(self.frame_pos, Ordering::Relaxed);
         }
         Some(sample)
@@ -75,6 +75,12 @@ pub struct RodioBackend {
 // Safety: all fields are Send+Sync (Mutex, Atomic*, Arc)
 unsafe impl Send for RodioBackend {}
 unsafe impl Sync for RodioBackend {}
+
+impl Default for RodioBackend {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl RodioBackend {
     pub fn new() -> Self {

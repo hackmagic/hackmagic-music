@@ -227,6 +227,7 @@ pub struct MidiConfig {
 /// 10-band equalizer persistent state.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
+#[derive(Default)]
 pub struct EqConfig {
     pub enabled: bool,
     /// 10 band gains in dB, range [-15, 15].
@@ -235,15 +236,6 @@ pub struct EqConfig {
     pub preset: String,
 }
 
-impl Default for EqConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            gains: [0; 10],
-            preset: String::new(),
-        }
-    }
-}
 
 
 impl Config {

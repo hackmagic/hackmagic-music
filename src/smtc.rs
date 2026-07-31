@@ -333,6 +333,41 @@ fn get_activation_factory(
     }
 }
 
+fn create_hidden_window() -> Result<HWND> {
+    unsafe {
+        let instance = GetModuleHandleA(None)?;
+        let class_name: Vec<u16> = "HackMagicMusic_SmtcHidden\0".encode_utf16().collect();
+        let class_name_pcwstr = PCWSTR::from_raw(class_name.as_ptr());
+
+        let wc = WNDCLASSW {
+            style: WNDCLASS_STYLES(0),
+            lpfnWndProc: Some(smtc_wnd_proc),
+            cbClsExtra: 0,
+            cbWndExtra: 0,
+            hInstance: HINSTANCE(instance.0),
+            hIcon: HICON(std::ptr::null_mut()),
+            hCursor: HCURSOR(std::ptr::null_mut()),
+            hbrBackground: HBRUSH(std::ptr::null_mut()),
+            lpszMenuName: PCWSTR::null(),
+            lpszClassName: class_name_pcwstr,
+        };
+        RegisterClassW(&raw const wc);
+
+        let hwnd = CreateWindowExW(
+            WINDOW_EX_STYLE(0),
+            class_name_pcwstr,
+            PCWSTR::null(),
+            WINDOW_STYLE(0),
+            0, 0, 0, 0,
+            Some(HWND_MESSAGE),
+            None,
+            Some(HINSTANCE(instance.0)),
+            None,
+        )?;
+        Ok(hwnd)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::BluetoothMonitor;
@@ -406,40 +441,5 @@ mod tests {
     #[test]
     fn test_is_bluetooth_device_numeric_name() {
         assert!(!BluetoothMonitor::is_bluetooth_device("12345"));
-    }
-}
-
-fn create_hidden_window() -> Result<HWND> {
-    unsafe {
-        let instance = GetModuleHandleA(None)?;
-        let class_name: Vec<u16> = "HackMagicMusic_SmtcHidden\0".encode_utf16().collect();
-        let class_name_pcwstr = PCWSTR::from_raw(class_name.as_ptr());
-
-        let wc = WNDCLASSW {
-            style: WNDCLASS_STYLES(0),
-            lpfnWndProc: Some(smtc_wnd_proc),
-            cbClsExtra: 0,
-            cbWndExtra: 0,
-            hInstance: HINSTANCE(instance.0),
-            hIcon: HICON(std::ptr::null_mut()),
-            hCursor: HCURSOR(std::ptr::null_mut()),
-            hbrBackground: HBRUSH(std::ptr::null_mut()),
-            lpszMenuName: PCWSTR::null(),
-            lpszClassName: class_name_pcwstr,
-        };
-        RegisterClassW(&raw const wc);
-
-        let hwnd = CreateWindowExW(
-            WINDOW_EX_STYLE(0),
-            class_name_pcwstr,
-            PCWSTR::null(),
-            WINDOW_STYLE(0),
-            0, 0, 0, 0,
-            Some(HWND_MESSAGE),
-            None,
-            Some(HINSTANCE(instance.0)),
-            None,
-        )?;
-        Ok(hwnd)
     }
 }

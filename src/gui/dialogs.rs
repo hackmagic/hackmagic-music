@@ -215,7 +215,7 @@ fn slider_config(
             let k2 = key;
             Button::new("sd").label("−").compact().ghost().on_click(move |_, _, cx| {
                 let new_val = value.saturating_sub(step);
-                let _ = crate::config::Config::set(&k2, &new_val.to_string());
+                let _ = crate::config::Config::set(k2, &new_val.to_string());
                 let _ = e.update(cx, |_, cx| cx.notify());
             })
         })
@@ -231,7 +231,7 @@ fn slider_config(
             let key = config_key;
             Button::new("si").label("+").compact().ghost().on_click(move |_, _, cx| {
                 let new_val = (value + step).min(max);
-                let _ = crate::config::Config::set(&key, &new_val.to_string());
+                let _ = crate::config::Config::set(key, &new_val.to_string());
                 let _ = e.update(cx, |_, cx| cx.notify());
             })
         })
@@ -732,7 +732,7 @@ pub fn render_search_panel(
                     h_flex().flex_grow().h(px(24.0))
                         .bg(c.panel).rounded(px(4.0)).px_2()
                         .child(
-                        Input::new(&search_input)
+                        Input::new(search_input)
 
                                 .w_full()
                         )

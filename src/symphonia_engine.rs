@@ -19,6 +19,12 @@ pub struct SymphoniaEngine {
 unsafe impl Send for SymphoniaEngine {}
 unsafe impl Sync for SymphoniaEngine {}
 
+impl Default for SymphoniaEngine {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SymphoniaEngine {
     pub fn new() -> Self {
         Self { backend: RodioBackend::new() }
@@ -47,7 +53,7 @@ impl SymphoniaEngine {
         let sample_rate = codec_params.sample_rate.unwrap_or(44100);
         let num_channels = codec_params
             .channels
-            .map(|c| c.count() as usize)
+            .map(|c| c.count())
             .unwrap_or(2);
         let mut decoder = symphonia::default::get_codecs()
             .make(&codec_params, &DecoderOptions::default())

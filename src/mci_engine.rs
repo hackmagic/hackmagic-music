@@ -64,6 +64,12 @@ pub struct MciEngine {
 unsafe impl Send for MciEngine {}
 unsafe impl Sync for MciEngine {}
 
+impl Default for MciEngine {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MciEngine {
     pub fn new() -> Self {
         Self {
@@ -293,7 +299,7 @@ mod tests {
         assert_eq!(*engine.state.lock().unwrap(), EngineState::Stopped);
         assert_eq!(*engine.duration.lock().unwrap(), Duration::ZERO);
         assert_eq!(*engine.volume.lock().unwrap(), 0.8);
-        assert_eq!(*engine.opened.lock().unwrap(), false);
+        assert!(!(*engine.opened.lock().unwrap()));
     }
 
     #[test]

@@ -8,6 +8,12 @@ pub struct SongMultiVersion {
     duplicate_songs: HashMap<String, Vec<Track>>,
 }
 
+impl Default for SongMultiVersion {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SongMultiVersion {
     pub fn new() -> Self {
         Self { duplicate_songs: HashMap::new() }

@@ -15,6 +15,12 @@ pub struct RodioEngine {
 unsafe impl Send for RodioEngine {}
 unsafe impl Sync for RodioEngine {}
 
+impl Default for RodioEngine {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RodioEngine {
     pub fn new() -> Self {
         Self { backend: RodioBackend::new() }

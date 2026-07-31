@@ -193,7 +193,7 @@ pub fn extract_embedding(samples: &[f32], sample_rate: u32) -> Vec<f32> {
     }
 
     // Fallback: mel mean-pooling
-    let seg_size = (n_frames + 3) / 4;
+    let seg_size = n_frames.div_ceil(4);
     let mut emb = Vec::with_capacity(EMBEDDING_DIM);
     for seg in 0..4 {
         let start = seg * seg_size;

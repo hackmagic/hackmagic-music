@@ -100,9 +100,9 @@ fn split_quoted(input: &str) -> Vec<String> {
     let mut args = Vec::new();
     let mut current = String::new();
     let mut in_quote = false;
-    let mut chars = input.chars().peekable();
+    let chars = input.chars().peekable();
 
-    while let Some(ch) = chars.next() {
+    for ch in chars {
         match ch {
             '"' => {
                 in_quote = !in_quote;

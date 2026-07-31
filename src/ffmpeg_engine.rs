@@ -24,6 +24,12 @@ pub struct FfmpegEngine {
 unsafe impl Send for FfmpegEngine {}
 unsafe impl Sync for FfmpegEngine {}
 
+impl Default for FfmpegEngine {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl FfmpegEngine {
     pub fn new() -> Self {
         Self {

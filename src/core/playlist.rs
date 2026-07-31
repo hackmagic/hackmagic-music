@@ -669,8 +669,8 @@ impl Playlist {
 
             if trimmed.is_empty() || trimmed.starts_with('#') {
                 // Parse EXTINF line: #EXTINF:duration,artist - title
-                if trimmed.starts_with("#EXTINF:") {
-                    let content = &trimmed[8..]; // Skip "#EXTINF:"
+                if let Some(content) = trimmed.strip_prefix("#EXTINF:") {
+                    // Skip "#EXTINF:"
                     if let Some(comma_idx) = content.find(',') {
                         let meta = &content[comma_idx + 1..];
                         if let Some(dash_idx) = meta.find(" - ") {
