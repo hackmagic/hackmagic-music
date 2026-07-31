@@ -103,6 +103,7 @@ rfd = "0.15"
 async-channel = "2"
 gpui = "0.2.2"
 gpui-component = "0.5.1"
+tokenizers = "0.21"
 
 # Windows SMTC integration
 [target.'cfg(windows)'.dependencies]

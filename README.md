@@ -23,7 +23,7 @@ Cross-platform music player with native GPUI, five audio engines, AI-powered sim
 ```bash
 cargo run -- help
 cargo run -- play path/to/music.flac
-cargo run -- gui          # launch GUI
+cargo run --bin hm-gui    # launch GUI (or use start.bat)
 ```
 
 ## Build
