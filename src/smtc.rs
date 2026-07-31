@@ -163,6 +163,12 @@ pub struct BluetoothMonitor {
     event_tx: mpsc::Sender<BluetoothEvent>,
 }
 
+impl Default for BluetoothMonitor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl BluetoothMonitor {
     /// Create a new `BluetoothMonitor`. Starts with an initial scan.
     pub fn new() -> Self {

@@ -7,7 +7,7 @@ use rodio::Source;
 use std::io::BufReader;
 
 pub struct RodioEngine {
-    backend: RodioBackend,
+    backend: std::sync::Arc<RodioBackend>,
 }
 
 unsafe impl Send for RodioEngine {}
@@ -21,7 +21,7 @@ impl Default for RodioEngine {
 
 impl RodioEngine {
     pub fn new() -> Self {
-        Self { backend: RodioBackend::new() }
+        Self { backend: std::sync::Arc::new(RodioBackend::new()) }
     }
 
     fn decode_to_buffer(path: &str) -> Result<(Vec<f32>, u32, usize)> {

@@ -91,19 +91,19 @@ fn mel_filterbank(n_fft: usize, n_mels: usize, sample_rate: u32) -> Vec<Vec<f32>
     let mel_high = hz_to_mel(high_hz);
     let mel_step = (mel_high - mel_low) / (n_mels + 1) as f32;
     let mut filterbank = vec![vec![0.0f32; n_bins]; n_mels];
-    for m in 0..n_mels {
+    for (m, row) in filterbank.iter_mut().enumerate() {
         let center = mel_to_hz(mel_low + (m + 1) as f32 * mel_step);
         let left = if m == 0 { low_hz } else { mel_to_hz(mel_low + m as f32 * mel_step) };
         let right = if m == n_mels - 1 { high_hz } else { mel_to_hz(mel_low + (m + 2) as f32 * mel_step) };
         let center_bin = center / high_hz * (n_bins - 1) as f32;
         let left_bin = left / high_hz * (n_bins - 1) as f32;
         let right_bin = right / high_hz * (n_bins - 1) as f32;
-        for b in 0..n_bins {
+        for (b, fb_cell) in row.iter_mut().enumerate() {
             let fb = b as f32;
             if fb >= left_bin && fb <= center_bin {
-                filterbank[m][b] = (fb - left_bin) / (center_bin - left_bin + 1e-10);
+                *fb_cell = (fb - left_bin) / (center_bin - left_bin + 1e-10);
             } else if fb > center_bin && fb <= right_bin {
-                filterbank[m][b] = (right_bin - fb) / (right_bin - center_bin + 1e-10);
+                *fb_cell = (right_bin - fb) / (right_bin - center_bin + 1e-10);
             }
         }
     }

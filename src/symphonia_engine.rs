@@ -11,7 +11,7 @@ use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
 
 pub struct SymphoniaEngine {
-    backend: RodioBackend,
+    backend: std::sync::Arc<RodioBackend>,
 }
 
 unsafe impl Send for SymphoniaEngine {}
@@ -25,7 +25,7 @@ impl Default for SymphoniaEngine {
 
 impl SymphoniaEngine {
     pub fn new() -> Self {
-        Self { backend: RodioBackend::new() }
+        Self { backend: std::sync::Arc::new(RodioBackend::new()) }
     }
 
     fn decode_to_buffer(path: &str) -> Result<(Vec<f32>, u32, usize)> {

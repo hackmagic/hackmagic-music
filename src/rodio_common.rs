@@ -61,6 +61,8 @@ pub struct RodioBackend {
     pub sample_rate: AtomicU32,
     pub channels: Mutex<usize>,
     pub total_frames: AtomicU64,
+    /// Decoded PCM for the next track (gapless preload): (path, samples, sample_rate, channels).
+    pub preloaded: Mutex<Option<(String, Vec<f32>, u32, usize)>>,
     pub state: Mutex<EngineState>,
     pub play_pos: Arc<AtomicU64>,
     pub volume: Mutex<f32>,
@@ -89,6 +91,7 @@ impl RodioBackend {
             sample_rate: AtomicU32::new(44100),
             channels: Mutex::new(2),
             total_frames: AtomicU64::new(0),
+            preloaded: Mutex::new(None),
             state: Mutex::new(EngineState::Stopped),
             play_pos: Arc::new(AtomicU64::new(0)),
             volume: Mutex::new(0.8),
@@ -115,15 +118,32 @@ impl RodioBackend {
     pub fn uninit(&self) -> Result<()> {
         *self.sink.lock().unwrap() = None;
         *self.output_stream.lock().unwrap() = None;
+        *self.preloaded.lock().unwrap() = None;
         Ok(())
     }
 
     pub fn close(&self) -> Result<()> {
         *self.sink.lock().unwrap() = None;
         *self.output_stream.lock().unwrap() = None;
+        *self.preloaded.lock().unwrap() = None;
         *self.state.lock().unwrap() = EngineState::Stopped;
         self.play_pos.store(0, Ordering::SeqCst);
         Ok(())
+    }
+
+    /// Store a decoded buffer for the given path (called by the preload thread).
+    pub fn store_preloaded(&self, path: String, samples: Vec<f32>, sample_rate: u32, channels: usize) {
+        *self.preloaded.lock().unwrap() = Some((path, samples, sample_rate, channels));
+    }
+
+    /// Take the preloaded buffer if it belongs to `path` (consumes it).
+    pub fn take_preloaded(&self, path: &str) -> Option<(Vec<f32>, u32, usize)> {
+        let mut slot = self.preloaded.lock().unwrap();
+        if slot.as_ref().map(|(p, _, _, _)| p == path).unwrap_or(false) {
+            slot.take().map(|(_, samples, sample_rate, channels)| (samples, sample_rate, channels))
+        } else {
+            None
+        }
     }
 
     pub fn play(&self) -> Result<()> {
@@ -344,9 +364,28 @@ macro_rules! impl_rodio_backend_engine {
             }
 
             fn open(&self, path: &str) -> crate::error::Result<()> {
+                if let Some((samples, sample_rate, channels)) = self.backend.take_preloaded(path) {
+                    self.backend.set_buffer(samples, sample_rate, channels);
+                    tracing::info!("[{}] using preloaded buffer for {}", $engine_name, path);
+                    return Ok(());
+                }
                 let (samples, sample_rate, channels) = Self::decode_to_buffer(path)?;
                 self.backend.set_buffer(samples, sample_rate, channels);
                 Ok(())
+            }
+
+            fn preload_next(&self, path: &str) {
+                let backend = self.backend.clone();
+                let path = path.to_string();
+                std::thread::spawn(move || {
+                    match Self::decode_to_buffer(&path) {
+                        Ok((samples, sample_rate, channels)) => {
+                            backend.store_preloaded(path.clone(), samples, sample_rate, channels);
+                            tracing::info!("[{}] preloaded {}", $engine_name, path);
+                        }
+                        Err(e) => tracing::warn!("[{}] preload failed for {}: {}", $engine_name, path, e),
+                    }
+                });
             }
 
             fn close(&self) -> crate::error::Result<()> {
@@ -441,3 +480,45 @@ macro_rules! impl_rodio_backend_engine {
 }
 
 pub(crate) use impl_rodio_backend_engine;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn preloaded_buffer_roundtrip() {
+        let backend = RodioBackend::new();
+        backend.store_preloaded("/a.flac".into(), vec![0.1, 0.2, 0.3], 44100, 2);
+
+        let taken = backend.take_preloaded("/a.flac");
+        assert!(taken.is_some());
+        let (samples, sample_rate, channels) = taken.unwrap();
+        assert_eq!(samples, vec![0.1, 0.2, 0.3]);
+        assert_eq!(sample_rate, 44100);
+        assert_eq!(channels, 2);
+
+        // The cache is consumed by `take_preloaded`.
+        assert!(backend.take_preloaded("/a.flac").is_none());
+    }
+
+    #[test]
+    fn preloaded_buffer_path_mismatch_keeps_cache() {
+        let backend = RodioBackend::new();
+        backend.store_preloaded("/a.flac".into(), vec![1.0], 48000, 1);
+
+        // Different path: nothing is taken and the cache survives.
+        assert!(backend.take_preloaded("/b.flac").is_none());
+        let taken = backend.take_preloaded("/a.flac");
+        assert!(taken.is_some());
+        let (samples, _, _) = taken.unwrap();
+        assert_eq!(samples, vec![1.0]);
+    }
+
+    #[test]
+    fn close_clears_preloaded_buffer() {
+        let backend = RodioBackend::new();
+        backend.store_preloaded("/a.flac".into(), vec![1.0], 48000, 1);
+        backend.close().unwrap();
+        assert!(backend.take_preloaded("/a.flac").is_none());
+    }
+}
