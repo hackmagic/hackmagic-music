@@ -1,6 +1,5 @@
 //! Internationalization (i18n) system.
 
-
 /// Supported languages.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Lang {
@@ -53,7 +52,32 @@ pub fn global_tr() -> &'static Tr {
 }
 
 pub fn set_global_lang(lang: Lang) {
-    GLOBAL_LANG.store(match lang { Lang::EnUs => 0, Lang::ZhCn => 1 }, Ordering::Relaxed);
+    GLOBAL_LANG.store(
+        match lang {
+            Lang::EnUs => 0,
+            Lang::ZhCn => 1,
+        },
+        Ordering::Relaxed,
+    );
+}
+
+/// Format an i18n template at runtime, replacing each "{}" placeholder in order.
+/// (`format!` only accepts literal format strings, so templates must be formatted manually.)
+pub fn tr_fmt(template: &str, args: &[&dyn std::fmt::Display]) -> String {
+    let mut out = String::with_capacity(template.len() + 32);
+    let mut rest = template;
+    for arg in args {
+        match rest.find("{}") {
+            Some(pos) => {
+                out.push_str(&rest[..pos]);
+                out.push_str(&arg.to_string());
+                rest = &rest[pos + 2..];
+            }
+            None => break,
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 /// Static translation table (one per language).
@@ -139,7 +163,7 @@ pub struct Tr {
     pub pq_sort: &'static str,
     pub pq_clear: &'static str,
     pub pq_empty: &'static str,
-    pub pq_count: &'static str,             // "{} songs"
+    pub pq_count: &'static str, // "{} songs"
     pub pq_unknown: &'static str,
 
     // -- Player info (compact) --
@@ -214,10 +238,10 @@ pub struct Tr {
     pub menu_rating_5: &'static str,
 
     // -- Dialog content texts --
-    pub cover_info: &'static str,         // "This track has {} cover image(s)\nFormat: {}\nSize: {} KB"
-    pub cover_none: &'static str,         // "No embedded cover"
-    pub cover_error: &'static str,        // "Failed to read cover: {}"
-    pub format_unsupported: &'static str,// "Unsupported format"
+    pub cover_info: &'static str, // "This track has {} cover image(s)\nFormat: {}\nSize: {} KB"
+    pub cover_none: &'static str, // "No embedded cover"
+    pub cover_error: &'static str, // "Failed to read cover: {}"
+    pub format_unsupported: &'static str, // "Unsupported format"
 
     // -- Desktop lyric --
     pub menu_close_desktop_lyric: &'static str,
@@ -248,6 +272,8 @@ pub struct Tr {
     pub about_original: &'static str,
     pub about_platforms: &'static str,
     pub about_copyright: &'static str,
+    pub about_version: &'static str,
+    pub about_tagline: &'static str,
 
     // -- Repeat mode labels (displayed in status bar) --
     pub repeat_loop_pl: &'static str,
@@ -258,8 +284,8 @@ pub struct Tr {
     pub repeat_single: &'static str,
 
     // -- Status bar --
-    pub status_fps: &'static str,           // "FPS: {:.0}"
-    pub status_next: &'static str,           // "Next: {}"
+    pub status_fps: &'static str,  // "FPS: {:.0}"
+    pub status_next: &'static str, // "Next: {}"
     pub status_next_empty: &'static str,
 
     // -- Settings dialog --
@@ -276,6 +302,14 @@ pub struct Tr {
     pub settings_check_update: &'static str,
     pub settings_minimize_tray: &'static str,
     pub settings_theme_label: &'static str,
+    pub theme_default: &'static str,
+    pub theme_ocean: &'static str,
+    pub theme_forest: &'static str,
+    pub theme_lavender: &'static str,
+    pub theme_sunset: &'static str,
+    pub theme_midnight: &'static str,
+    pub theme_autumn: &'static str,
+    pub theme_spring: &'static str,
     pub settings_dark_mode: &'static str,
     pub settings_show_spectrum: &'static str,
     pub settings_window_opacity: &'static str,
@@ -344,6 +378,7 @@ pub struct Tr {
     pub settings_label_bg_cover: &'static str,
     pub settings_label_gaussian_blur: &'static str,
     pub settings_label_blur_radius: &'static str,
+    pub settings_unit_seconds: &'static str, // "{}秒"
     pub settings_label_error_stop: &'static str,
     pub settings_label_taskbar_progress: &'static str,
     pub settings_label_taskbar_icon: &'static str,
@@ -437,6 +472,7 @@ pub struct Tr {
     pub eq_vocal_boost: &'static str,
     pub eq_enabled: &'static str,
     pub eq_disabled: &'static str,
+    pub eq_unsupported: &'static str, // "{} ({}) 不支持均衡器"
 
     // -- Media library --
     pub media_lib_title: &'static str,
@@ -454,6 +490,7 @@ pub struct Tr {
     // -- Buttons --
     pub btn_refresh: &'static str,
     pub btn_save: &'static str,
+    pub btn_lyrics: &'static str, // "词"
 
     // -- Lyric download panel --
     pub lyd_title: &'static str,
@@ -468,6 +505,26 @@ pub struct Tr {
     pub lyd_save_to_lyrics_dir: &'static str,
     pub lyd_status_enter_keyword: &'static str,
     pub lyd_status_searching: &'static str,
+    pub lyd_status_found: &'static str,       // "找到 {} 条结果"
+    pub lyd_status_downloaded: &'static str,  // "下载成功: {}"
+    pub lyd_status_save_failed: &'static str, // "保存失败: {}"
+    pub lyd_status_download_failed: &'static str, // "下载失败: {}"
+    pub lyd_status_search_failed: &'static str, // "搜索失败: {}"
+    pub lyd_status_progress: &'static str,    // "正在下载... {}/{}"
+    pub lyd_status_downloading_track: &'static str, // "正在下载: {}"
+    pub lyd_batch_progress: &'static str,     // "批量下载歌词: {}/{}"
+    pub lyd_btn_download: &'static str,       // "下载"
+    pub lyd_btn_downloading: &'static str,    // "下载中"
+    pub lyd_source_label: &'static str,       // "来源: {}"
+    pub lyd_click_hint: &'static str,         // "单击选中 • 点击下载"
+    pub lyd_status_ready: &'static str,       // "就绪"
+    pub lyd_results_count: &'static str,      // "{} 条结果"
+    pub lyd_save_path_hint: &'static str,     // "先播放一首歌曲以自动保存歌词到其目录"
+    pub lyd_save_to_path: &'static str,       // "保存到: {}"
+    pub lyd_empty_title: &'static str,        // "🔍 搜索歌词"
+    pub lyd_empty_hint: &'static str,         // "输入歌曲名称和艺术家，然后按搜索"
+    pub lyd_empty_sources: &'static str,      // "支持网易云音乐和QQ音乐搜索"
+    pub lyd_searching_desc: &'static str,     // "正在从在线音乐库搜索歌词"
 
     // -- Status bar / playback status --
     pub status_playing: &'static str,
@@ -475,45 +532,54 @@ pub struct Tr {
     pub status_stopped: &'static str,
     pub status_rpc_online: &'static str,
     pub status_rpc_offline: &'static str,
-    pub status_track_count: &'static str,    // "{} 首"
+    pub status_track_count: &'static str, // "{} 首"
 
     // -- Playlist dock --
-    pub pq_filter_all: &'static str,         // "全部 ({})"
-    pub pq_filter_fav: &'static str,         // "喜欢 ({})"
-    pub pq_filter_recent: &'static str,      // "最近 ({})"
-    pub pq_btn_add: &'static str,            // "+ 添加"
-    pub pq_btn_remove: &'static str,         // "× 删除"
-    pub pq_btn_sort: &'static str,           // "↕ 排序"
-    pub pq_btn_detail: &'static str,         // "≡ 详情"
-    pub pq_btn_compact: &'static str,        // "≡ 简洁"
-    pub pq_btn_edit: &'static str,           // "✏ 编辑"
+    pub pq_filter_all: &'static str,    // "全部 ({})"
+    pub pq_filter_fav: &'static str,    // "喜欢 ({})"
+    pub pq_filter_recent: &'static str, // "最近 ({})"
+    pub pq_btn_add: &'static str,       // "+ 添加"
+    pub pq_btn_remove: &'static str,    // "× 删除"
+    pub pq_btn_sort: &'static str,      // "↕ 排序"
+    pub pq_btn_detail: &'static str,    // "≡ 详情"
+    pub pq_btn_compact: &'static str,   // "≡ 简洁"
+    pub pq_btn_edit: &'static str,      // "✏ 编辑"
 
     // -- Playlist column headers --
     pub pq_col_title: &'static str,
     pub pq_col_artist: &'static str,
     pub pq_col_album: &'static str,
     pub pq_col_duration: &'static str,
-    pub pq_col_asc: &'static str,            // " ▲"
-    pub pq_col_desc: &'static str,           // " ▼"
+    pub pq_col_asc: &'static str,  // " ▲"
+    pub pq_col_desc: &'static str, // " ▼"
 
     // -- Playlist header text --
-    pub pq_header_all: &'static str,         // "播放列表 ({} 首)"
-    pub pq_header_fav: &'static str,         // "我喜欢的音乐 ({} 首)"
-    pub pq_header_recent: &'static str,      // "最近播放 ({} 首)"
-    pub pq_header_filtered: &'static str,    // "筛选结果: {} / {}"
+    pub pq_header_all: &'static str,      // "播放列表 ({} 首)"
+    pub pq_header_fav: &'static str,      // "我喜欢的音乐 ({} 首)"
+    pub pq_header_recent: &'static str,   // "最近播放 ({} 首)"
+    pub pq_header_filtered: &'static str, // "筛选结果: {} / {}"
+
+    // -- Playlist misc --
+    pub pl_repair_title: &'static str, // "修复: {}"
+    pub pl_copy_suffix: &'static str,  // "{} (副本)"
+    pub pl_new_list: &'static str,     // "新列表 {}"
+    pub pq_chip_all: &'static str,     // "全部"
+    pub pq_chip_artist: &'static str,  // "艺术家"
+    pub pq_chip_album: &'static str,   // "专辑"
+    pub pq_chip_fav: &'static str,     // "收藏"
 
     // -- Input placeholders --
-    pub ph_search_media: &'static str,       // "搜索媒体库..."
+    pub ph_search_media: &'static str, // "搜索媒体库..."
     pub ph_title: &'static str,
     pub ph_artist: &'static str,
     pub ph_album: &'static str,
     pub ph_genre: &'static str,
     pub ph_year: &'static str,
     pub ph_track_num: &'static str,
-    pub ph_rating: &'static str,             // "评分 (0-5)"
+    pub ph_rating: &'static str, // "评分 (0-5)"
 
     // -- Track editor --
-    pub ed_title: &'static str,              // "编辑曲目信息"
+    pub ed_title: &'static str, // "编辑曲目信息"
     pub ed_label_title: &'static str,
     pub ed_label_artist: &'static str,
     pub ed_label_album: &'static str,
@@ -535,11 +601,19 @@ pub struct Tr {
     pub info_key_favourite: &'static str,
     pub info_key_path: &'static str,
     pub info_hint: &'static str,
+    pub info_yes: &'static str,      // "是"
+    pub info_no: &'static str,       // "否"
+    pub info_advanced: &'static str, // 高级信息模板（12 个占位符）
 
     // -- Format convert --
     pub fmt_convert_title: &'static str,
     pub fmt_convert_hint: &'static str,
     pub fmt_convert_close: &'static str,
+    pub fmt_convert_to: &'static str,          // "转为 .{}"
+    pub fmt_convert_done: &'static str,        // "转换完成: {}"
+    pub fmt_convert_failed_code: &'static str, // "转换失败（ffmpeg 退出码 {}）"
+    pub fmt_convert_failed: &'static str,      // "转换失败: {}"
+    pub fmt_convert_error: &'static str,       // "转换任务异常: {}"
 
     // -- URL dialog --
     pub url_title: &'static str,
@@ -557,24 +631,28 @@ pub struct Tr {
     pub lyr_ed_delete: &'static str,
     pub lyr_ed_shift_all: &'static str,
     pub lyr_ed_help: &'static str,
-    pub lyr_ed_empty_line: &'static str,     // "(空)"
+    pub lyr_ed_empty_line: &'static str, // "(空)"
+    pub lyr_ed_row_count: &'static str,  // "{} 行{}"
+    pub lyr_ed_selected: &'static str,   // "选中: #{}"
+    pub lyr_ed_none: &'static str,       // "未选中"
+    pub lyr_ed_tip: &'static str,        // "提示：选中的行可以使用时间偏移按钮调整时序"
 
     // -- Media library --
-    pub ml_header: &'static str,             // "媒体库 ({} 首 | {})"
-    pub ml_unknown: &'static str,            // "(未知)"
-    pub ml_stars: &'static str,              // "{} 星"
-    pub ml_overflow: &'static str,           // "... 及其他 {} 首 (共 {} 首)"
+    pub ml_header: &'static str,   // "媒体库 ({} 首 | {})"
+    pub ml_unknown: &'static str,  // "(未知)"
+    pub ml_stars: &'static str,    // "{} 星"
+    pub ml_overflow: &'static str, // "... 及其他 {} 首 (共 {} 首)"
 
     // -- File browser --
     pub fb_title: &'static str,
-    pub fb_entry_count: &'static str,        // "{} 项"
+    pub fb_entry_count: &'static str, // "{} 项"
 
     // -- Misc --
-    pub filter_audio_files: &'static str,    // "音频文件"
-    pub filter_playlists: &'static str,      // "M3U 播放列表"
+    pub filter_audio_files: &'static str, // "音频文件"
+    pub filter_playlists: &'static str,   // "M3U 播放列表"
     pub eq_custom: &'static str,
-    pub eq_preset_label: &'static str,       // "预设: {}"
-    pub similar_tracks_title: &'static str,  // "与 \"{}\" 相似的歌曲"
+    pub eq_preset_label: &'static str,      // "预设: {}"
+    pub similar_tracks_title: &'static str, // "与 \"{}\" 相似的歌曲"
     pub similar_tracks_empty: &'static str,
     pub default_list: &'static str,
 
@@ -583,12 +661,15 @@ pub struct Tr {
     pub dlg_folder_title: &'static str,
 
     // -- Playlist item format --
-    pub fmt_track: &'static str,            // "{}. {}"
+    pub fmt_track: &'static str, // "{}. {}"
 }
 
 impl Default for Locale {
     fn default() -> Self {
-        Self { lang: Lang::EnUs, tr: Tr::EN }
+        Self {
+            lang: Lang::EnUs,
+            tr: Tr::EN,
+        }
     }
 }
 
@@ -717,6 +798,14 @@ impl Tr {
         settings_check_update: "Check for updates on startup",
         settings_minimize_tray: "Minimize to system tray",
         settings_theme_label: "Theme color",
+        theme_default: "Default",
+        theme_ocean: "Ocean",
+        theme_forest: "Forest",
+        theme_lavender: "Lavender",
+        theme_sunset: "Sunset",
+        theme_midnight: "Midnight",
+        theme_autumn: "Autumn",
+        theme_spring: "Spring",
         settings_dark_mode: "Dark mode",
         settings_show_spectrum: "Show spectrum analyzer",
         settings_window_opacity: "Window opacity",
@@ -783,6 +872,7 @@ impl Tr {
         settings_label_bg_cover: "Use cover as background",
         settings_label_gaussian_blur: "Gaussian blur",
         settings_label_blur_radius: "Blur radius",
+        settings_unit_seconds: "{} s",
         settings_label_error_stop: "Stop on error",
         settings_label_taskbar_progress: "Show progress in taskbar",
         settings_label_taskbar_icon: "Show status icon in taskbar",
@@ -872,6 +962,7 @@ impl Tr {
         eq_vocal_boost: "Vocal Boost",
         eq_enabled: "Enabled",
         eq_disabled: "Disabled",
+        eq_unsupported: "{} ({}) does not support equalizer",
 
         media_lib_title: "Media Library",
         media_lib_scan: "Scan",
@@ -887,6 +978,7 @@ impl Tr {
         ml_cat_rating: "Rating",
         btn_refresh: "Refresh",
         btn_save: "Save Preset",
+        btn_lyrics: "LRC",
 
         lyd_title: "Lyric Download",
         lyd_source_netease: "NetEase",
@@ -900,6 +992,26 @@ impl Tr {
         lyd_save_to_lyrics_dir: "Save to Lyrics Directory",
         lyd_status_enter_keyword: "Please enter search keyword",
         lyd_status_searching: "Searching...",
+        lyd_status_found: "Found {} results",
+        lyd_status_downloaded: "Downloaded: {}",
+        lyd_status_save_failed: "Save failed: {}",
+        lyd_status_download_failed: "Download failed: {}",
+        lyd_status_search_failed: "Search failed: {}",
+        lyd_status_progress: "Downloading... {}/{}",
+        lyd_status_downloading_track: "Downloading: {}",
+        lyd_batch_progress: "Batch downloading lyrics: {}/{}",
+        lyd_btn_download: "Download",
+        lyd_btn_downloading: "Downloading",
+        lyd_source_label: "Source: {}",
+        lyd_click_hint: "Click to select • Click to download",
+        lyd_status_ready: "Ready",
+        lyd_results_count: "{} results",
+        lyd_save_path_hint: "Play a song first to auto-save lyrics to its folder",
+        lyd_save_to_path: "Save to: {}",
+        lyd_empty_title: "🔍 Search lyrics",
+        lyd_empty_hint: "Enter song name and artist, then search",
+        lyd_empty_sources: "Supports NetEase Cloud Music and QQ Music search",
+        lyd_searching_desc: "Searching lyrics from online music libraries",
 
         status_playing: "Playing",
         status_paused: "Paused",
@@ -929,6 +1041,13 @@ impl Tr {
         pq_header_fav: "Favorites ({} tracks)",
         pq_header_recent: "Recent ({} tracks)",
         pq_header_filtered: "Filtered: {} / {}",
+        pl_repair_title: "Repair: {}",
+        pl_copy_suffix: "{} (copy)",
+        pl_new_list: "New List {}",
+        pq_chip_all: "All",
+        pq_chip_artist: "Artists",
+        pq_chip_album: "Albums",
+        pq_chip_fav: "Favorites",
 
         ph_search_media: "Search media library...",
         ph_title: "Title",
@@ -960,10 +1079,18 @@ impl Tr {
         info_key_favourite: "Favorite",
         info_key_path: "File Path",
         info_hint: "Tip",
+        info_yes: "Yes",
+        info_no: "No",
+        info_advanced: "Title: {}\nArtist: {}\nAlbum: {}\nFilename: {}\nPath: {}\nDuration: {}\nFavorite: {}\nType: {}\nBitrate: {}\nSample rate: {}\n\n--- Advanced Info ---\nFile size: {}\nModified: {}",
 
         fmt_convert_title: "Format Convert",
         fmt_convert_hint: "Select target format, then pick audio files to convert (requires ffmpeg).",
         fmt_convert_close: "Close",
+        fmt_convert_to: "Convert to .{}",
+        fmt_convert_done: "Conversion complete: {}",
+        fmt_convert_failed_code: "Conversion failed (ffmpeg exit code {})",
+        fmt_convert_failed: "Conversion failed: {}",
+        fmt_convert_error: "Conversion task error: {}",
 
         url_title: "Open Audio Stream",
         url_hint: "Enter audio stream URL (supports http, https, mms):",
@@ -980,6 +1107,10 @@ impl Tr {
         lyr_ed_shift_all: "Shift All",
         lyr_ed_help: "◀/▶ Adjust timing • ➕/− Add/Delete • 💾 Save",
         lyr_ed_empty_line: "(empty)",
+        lyr_ed_row_count: "{} lines{}",
+        lyr_ed_selected: "Selected: #{}",
+        lyr_ed_none: "None selected",
+        lyr_ed_tip: "Tip: selected lines can be adjusted with the time offset buttons",
 
         ml_header: "Media Library ({} tracks | {})",
         ml_unknown: "(unknown)",
@@ -1075,6 +1206,8 @@ impl Tr {
         about_original: "Original: MusicPlayer2 by zhongyang219",
         about_platforms: "Platforms: Windows / macOS / Linux",
         about_copyright: "© 2026 HackMagic Team",
+        about_version: "Version 1.0.0",
+        about_tagline: "Rewritten in Rust + GPUI",
     };
 
     const ZH: &'static Tr = &Tr {
@@ -1186,6 +1319,14 @@ impl Tr {
         settings_check_update: "启动时检查更新",
         settings_minimize_tray: "最小化到系统托盘",
         settings_theme_label: "主题颜色",
+        theme_default: "默认",
+        theme_ocean: "海洋",
+        theme_forest: "森林",
+        theme_lavender: "薰衣草",
+        theme_sunset: "日落",
+        theme_midnight: "午夜",
+        theme_autumn: "秋色",
+        theme_spring: "春意",
         settings_dark_mode: "深色模式",
         settings_show_spectrum: "显示频谱分析",
         settings_window_opacity: "窗口透明度",
@@ -1252,6 +1393,7 @@ impl Tr {
         settings_label_bg_cover: "使用专辑封面作为背景",
         settings_label_gaussian_blur: "背景高斯模糊",
         settings_label_blur_radius: "高斯模糊半径",
+        settings_unit_seconds: "{}秒",
         settings_label_error_stop: "出现错误时停止播放",
         settings_label_taskbar_progress: "在任务栏显示播放进度",
         settings_label_taskbar_icon: "在任务栏显示播放状态图标",
@@ -1341,6 +1483,7 @@ impl Tr {
         eq_vocal_boost: "人声增强",
         eq_enabled: "已启用",
         eq_disabled: "已禁用",
+        eq_unsupported: "{} ({}) 不支持均衡器",
 
         media_lib_title: "媒体库",
         media_lib_scan: "扫描",
@@ -1356,6 +1499,7 @@ impl Tr {
         ml_cat_rating: "评级",
         btn_refresh: "刷新",
         btn_save: "保存预设",
+        btn_lyrics: "词",
 
         lyd_title: "歌词下载",
         lyd_source_netease: "网易云",
@@ -1369,6 +1513,26 @@ impl Tr {
         lyd_save_to_lyrics_dir: "保存到歌词目录",
         lyd_status_enter_keyword: "请输入搜索关键词",
         lyd_status_searching: "正在搜索...",
+        lyd_status_found: "找到 {} 条结果",
+        lyd_status_downloaded: "下载成功: {}",
+        lyd_status_save_failed: "保存失败: {}",
+        lyd_status_download_failed: "下载失败: {}",
+        lyd_status_search_failed: "搜索失败: {}",
+        lyd_status_progress: "正在下载... {}/{}",
+        lyd_status_downloading_track: "正在下载: {}",
+        lyd_batch_progress: "批量下载歌词: {}/{}",
+        lyd_btn_download: "下载",
+        lyd_btn_downloading: "下载中",
+        lyd_source_label: "来源: {}",
+        lyd_click_hint: "单击选中 • 点击下载",
+        lyd_status_ready: "就绪",
+        lyd_results_count: "{} 条结果",
+        lyd_save_path_hint: "先播放一首歌曲以自动保存歌词到其目录",
+        lyd_save_to_path: "保存到: {}",
+        lyd_empty_title: "🔍 搜索歌词",
+        lyd_empty_hint: "输入歌曲名称和艺术家，然后按搜索",
+        lyd_empty_sources: "支持网易云音乐和QQ音乐搜索",
+        lyd_searching_desc: "正在从在线音乐库搜索歌词",
 
         status_playing: "播放中",
         status_paused: "已暂停",
@@ -1398,6 +1562,13 @@ impl Tr {
         pq_header_fav: "我喜欢的音乐 ({} 首)",
         pq_header_recent: "最近播放 ({} 首)",
         pq_header_filtered: "筛选结果: {} / {}",
+        pl_repair_title: "修复: {}",
+        pl_copy_suffix: "{} (副本)",
+        pl_new_list: "新列表 {}",
+        pq_chip_all: "全部",
+        pq_chip_artist: "艺术家",
+        pq_chip_album: "专辑",
+        pq_chip_fav: "收藏",
 
         ph_search_media: "搜索媒体库...",
         ph_title: "标题",
@@ -1429,10 +1600,18 @@ impl Tr {
         info_key_favourite: "收藏",
         info_key_path: "文件路径",
         info_hint: "提示",
+        info_yes: "是",
+        info_no: "否",
+        info_advanced: "标题: {}\n艺术家: {}\n专辑: {}\n文件名: {}\n路径: {}\n时长: {}\n收藏: {}\n类型: {}\n比特率: {}\n采样率: {}\n\n--- 高级信息 ---\n文件大小: {}\n修改日期: {}",
 
         fmt_convert_title: "格式转换",
         fmt_convert_hint: "选择目标格式，然后挑选要转换的音频文件（需系统已安装 ffmpeg）。",
         fmt_convert_close: "关闭",
+        fmt_convert_to: "转为 .{}",
+        fmt_convert_done: "转换完成: {}",
+        fmt_convert_failed_code: "转换失败（ffmpeg 退出码 {}）",
+        fmt_convert_failed: "转换失败: {}",
+        fmt_convert_error: "转换任务异常: {}",
 
         url_title: "打开网络音频流",
         url_hint: "输入音频流 URL（支持常见流媒体协议如 http、https、mms）：",
@@ -1449,6 +1628,10 @@ impl Tr {
         lyr_ed_shift_all: "全部偏移",
         lyr_ed_help: "◀/▶ 调整时序 • ➕/− 增删行 • 💾 保存",
         lyr_ed_empty_line: "(空)",
+        lyr_ed_row_count: "{} 行{}",
+        lyr_ed_selected: "选中: #{}",
+        lyr_ed_none: "未选中",
+        lyr_ed_tip: "提示：选中的行可以使用时间偏移按钮调整时序",
 
         ml_header: "媒体库 ({} 首 | {})",
         ml_unknown: "(未知)",
@@ -1544,6 +1727,8 @@ impl Tr {
         about_original: "原始项目: MusicPlayer2 by zhongyang219",
         about_platforms: "支持: Windows / macOS / Linux",
         about_copyright: "© 2026 HackMagic Team",
+        about_version: "版本 1.0.0",
+        about_tagline: "基于 Rust + GPUI 重写",
     };
 }
 

@@ -1,34 +1,34 @@
-pub mod theme;
-pub mod styles;
+pub mod desktop_lyrics;
+pub mod dialogs;
 pub mod i18n;
 pub mod layout;
-pub mod responsive;
-pub mod desktop_lyrics;
-pub mod lyric_editor;
 pub mod lyric_download;
-pub mod dialogs;
+pub mod lyric_editor;
+pub mod responsive;
+pub mod styles;
+pub mod theme;
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU8, Ordering};
-use std::path::PathBuf;
-use std::collections::VecDeque;
-use std::hash::{Hash, Hasher};
-use lru::LruCache;
-use async_channel::unbounded;
-use gpui::*;
-use gpui_component::scroll::ScrollableElement;
-use gpui_component::{h_flex, v_flex, IconName, Root};
-use gpui_component::button::{Button, ButtonVariants};
-use gpui_component::menu::{ContextMenuExt, PopupMenuItem};
-use gpui_component::slider::{Slider, SliderState, SliderValue};
-use gpui_component::input::{Input, InputState};
-use i18n::{Locale, Tr};
-use theme::{UiColors, LEFT_PANEL_WIDTH};
 use crate::config::Config;
 use crate::core::engine_trait::EngineType;
 use crate::core::player::Player;
 use crate::core::playlist::Track;
+use async_channel::unbounded;
+use gpui::*;
+use gpui_component::button::{Button, ButtonVariants};
+use gpui_component::input::{Input, InputState};
+use gpui_component::menu::{ContextMenuExt, PopupMenuItem};
+use gpui_component::scroll::ScrollableElement;
+use gpui_component::slider::{Slider, SliderState, SliderValue};
+use gpui_component::{h_flex, v_flex, IconName, Root};
+use i18n::{Locale, Tr};
+use lru::LruCache;
 use responsive::{LayoutMode, ResponsiveState};
+use std::collections::VecDeque;
+use std::hash::{Hash, Hasher};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::Arc;
+use theme::{UiColors, LEFT_PANEL_WIDTH};
 
 static ACTIVE_PANEL: AtomicU8 = AtomicU8::new(0);
 static MINI_MODE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -36,12 +36,16 @@ static MINI_MODE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool:
 static PRE_MINI_SIZE: std::sync::Mutex<Option<(f32, f32)>> = std::sync::Mutex::new(None);
 static STATUSBAR_VISIBLE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 static MENUBAR_VISIBLE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
-static _MEDIA_LIB_SCANNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static _MEDIA_LIB_SCANNING: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 static FB_PENDING_DIR: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
-static RPC_SERVER_RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-static SLEEP_TIMER_ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static RPC_SERVER_RUNNING: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+static SLEEP_TIMER_ACTIVE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 static ALWAYS_ON_TOP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-static DESKTOP_LYRICS_WINDOW_OPEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static DESKTOP_LYRICS_WINDOW_OPEN: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 fn runtime() -> &'static tokio::runtime::Runtime {
     crate::runtime()
@@ -92,41 +96,68 @@ impl Panel {
 
 pub fn run(cx: &mut App) {
     tracing::info!("[GUI] run() entered — opening window");
-    let _ = cx.open_window(WindowOptions {
-        titlebar: Some(TitlebarOptions {
-            title: Some("HackMagic Music Player".into()),
+    let _ = cx.open_window(
+        WindowOptions {
+            titlebar: Some(TitlebarOptions {
+                title: Some("HackMagic Music Player".into()),
+                ..Default::default()
+            }),
+            window_bounds: Some(WindowBounds::Windowed(Bounds {
+                origin: Point::default(),
+                size: gpui::Size {
+                    width: px(1200.0),
+                    height: px(800.0),
+                },
+            })),
+            window_min_size: Some(gpui::Size {
+                width: px(480.0),
+                height: px(360.0),
+            }),
             ..Default::default()
-        }),
-        window_bounds: Some(WindowBounds::Windowed(Bounds {
-            origin: Point::default(),
-            size: gpui::Size { width: px(1200.0), height: px(800.0) },
-        })),
-        window_min_size: Some(gpui::Size { width: px(480.0), height: px(360.0) }),
-        ..Default::default()
-    }, |window, cx| {
-        tracing::info!("[GUI] Window callback entered — creating InputStates");
-        let url_state = cx.new(|c| InputState::new(window, c));
-        let global_tr = i18n::global_tr();
-        let search_input = cx.new(|c| InputState::new(window, c).placeholder(global_tr.ph_search_media));
-        let editor_title_input = cx.new(|c| InputState::new(window, c).placeholder(global_tr.ph_title));
-        let editor_artist_input = cx.new(|c| InputState::new(window, c).placeholder(global_tr.ph_artist));
-        let editor_album_input = cx.new(|c| InputState::new(window, c).placeholder(global_tr.ph_album));
-        let editor_genre_input = cx.new(|c| InputState::new(window, c).placeholder(global_tr.ph_genre));
-        let editor_year_input = cx.new(|c| InputState::new(window, c).placeholder(global_tr.ph_year));
-        let editor_track_num_input = cx.new(|c| InputState::new(window, c).placeholder(global_tr.ph_track_num));
-        let editor_rating_input = cx.new(|c| InputState::new(window, c).placeholder(global_tr.ph_rating));
-        tracing::info!("[GUI] InputStates created — creating MusicPlayer entity");
-        let content = cx.new(|cx| MusicPlayer::new(cx, url_state, search_input,
-            editor_title_input, editor_artist_input, editor_album_input,
-            editor_genre_input, editor_year_input, editor_track_num_input,
-            editor_rating_input));
-        tracing::info!("[GUI] MusicPlayer entity created — creating Root");
-        cx.new(|c| {
-            let root = Root::new(content, window, c);
-            tracing::info!("[GUI] Root entity created — window callback returning");
-            root
-        })
-    });
+        },
+        |window, cx| {
+            tracing::info!("[GUI] Window callback entered — creating InputStates");
+            let url_state = cx.new(|c| InputState::new(window, c));
+            let global_tr = i18n::global_tr();
+            let search_input =
+                cx.new(|c| InputState::new(window, c).placeholder(global_tr.ph_search_media));
+            let editor_title_input =
+                cx.new(|c| InputState::new(window, c).placeholder(global_tr.ph_title));
+            let editor_artist_input =
+                cx.new(|c| InputState::new(window, c).placeholder(global_tr.ph_artist));
+            let editor_album_input =
+                cx.new(|c| InputState::new(window, c).placeholder(global_tr.ph_album));
+            let editor_genre_input =
+                cx.new(|c| InputState::new(window, c).placeholder(global_tr.ph_genre));
+            let editor_year_input =
+                cx.new(|c| InputState::new(window, c).placeholder(global_tr.ph_year));
+            let editor_track_num_input =
+                cx.new(|c| InputState::new(window, c).placeholder(global_tr.ph_track_num));
+            let editor_rating_input =
+                cx.new(|c| InputState::new(window, c).placeholder(global_tr.ph_rating));
+            tracing::info!("[GUI] InputStates created — creating MusicPlayer entity");
+            let content = cx.new(|cx| {
+                MusicPlayer::new(
+                    cx,
+                    url_state,
+                    search_input,
+                    editor_title_input,
+                    editor_artist_input,
+                    editor_album_input,
+                    editor_genre_input,
+                    editor_year_input,
+                    editor_track_num_input,
+                    editor_rating_input,
+                )
+            });
+            tracing::info!("[GUI] MusicPlayer entity created — creating Root");
+            cx.new(|c| {
+                let root = Root::new(content, window, c);
+                tracing::info!("[GUI] Root entity created — window callback returning");
+                root
+            })
+        },
+    );
 }
 
 /// Modal dialogs shown as an overlay on top of the main window.
@@ -143,10 +174,15 @@ enum ModalKind {
 
 /// Copy text to the system clipboard using platform utilities (no extra deps).
 fn format_size(bytes: u64) -> String {
-    if bytes < 1024 { format!("{} B", bytes) }
-    else if bytes < 1024 * 1024 { format!("{:.1} KB", bytes as f64 / 1024.0) }
-    else if bytes < 1024 * 1024 * 1024 { format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0)) }
-    else { format!("{:.2} GB", bytes as f64 / (1024.0 * 1024.0 * 1024.0)) }
+    if bytes < 1024 {
+        format!("{} B", bytes)
+    } else if bytes < 1024 * 1024 {
+        format!("{:.1} KB", bytes as f64 / 1024.0)
+    } else if bytes < 1024 * 1024 * 1024 {
+        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+    } else {
+        format!("{:.2} GB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
+    }
 }
 
 pub(crate) fn copy_text_to_clipboard(text: &str) {
@@ -171,7 +207,11 @@ pub(crate) fn copy_text_to_clipboard(text: &str) {
     }
     #[cfg(all(not(windows), not(target_os = "macos")))]
     {
-        let _ = std::process::Command::new("xclip").arg("-selection").arg("clipboard").arg(text).status();
+        let _ = std::process::Command::new("xclip")
+            .arg("-selection")
+            .arg("clipboard")
+            .arg(text)
+            .status();
     }
 }
 
@@ -422,11 +462,8 @@ fn run_blocking_dialog_app<T, F, A>(
 }
 
 /// Typed-context variant — `Context::spawn` already provides the `WeakEntity`.
-fn run_blocking_dialog<T, F, A>(
-    cx: &mut Context<MusicPlayer>,
-    build: F,
-    apply: A,
-) where
+fn run_blocking_dialog<T, F, A>(cx: &mut Context<MusicPlayer>, build: F, apply: A)
+where
     T: Send + 'static,
     F: FnOnce() -> T + Send + 'static,
     A: FnOnce(T, &mut MusicPlayer, &mut Context<MusicPlayer>) + 'static,
@@ -486,7 +523,10 @@ impl MusicPlayer {
             fallback
         } else {
             player.set_volume(cfg.play.default_volume).ok();
-            tracing::info!("[GUI] Primary engine initialized, volume set to {}", cfg.play.default_volume);
+            tracing::info!(
+                "[GUI] Primary engine initialized, volume set to {}",
+                cfg.play.default_volume
+            );
             player
         };
 
@@ -498,12 +538,20 @@ impl MusicPlayer {
 
         let vol = cfg.play.default_volume;
         let volume_slider = cx.new(|_cx| {
-            SliderState::new().min(0.0).max(100.0).step(1.0).default_value(vol as f32)
+            SliderState::new()
+                .min(0.0)
+                .max(100.0)
+                .step(1.0)
+                .default_value(vol as f32)
         });
 
         let speed_val = cfg.play.speed;
         let speed_slider = cx.new(|_cx| {
-            SliderState::new().min(0.5).max(2.0).step(0.05).default_value(speed_val as f32)
+            SliderState::new()
+                .min(0.5)
+                .max(2.0)
+                .step(0.05)
+                .default_value(speed_val as f32)
         });
         let _sp_slider = speed_slider.clone();
         let sp_player = player.clone();
@@ -538,7 +586,9 @@ impl MusicPlayer {
                         match crate::media::scan_directory(dir, true, None) {
                             Ok(entries) => {
                                 let mut lib = crate::media::MediaLib::load();
-                                for e in entries { lib.upsert(e); }
+                                for e in entries {
+                                    lib.upsert(e);
+                                }
                                 let _ = lib.save();
                             }
                             Err(e) => tracing::warn!("Scan failed {}: {}", dir, e),
@@ -548,7 +598,10 @@ impl MusicPlayer {
                     // Cache refresh deferred — cannot use cx in std::thread
                 });
             } else {
-                tracing::info!("[MediaLib] 跳过自动扫描（已有 {} 条记录）", existing.entries.len());
+                tracing::info!(
+                    "[MediaLib] 跳过自动扫描（已有 {} 条记录）",
+                    existing.entries.len()
+                );
             }
         }
         tracing::info!("[GUI] Media lib check done — setting up 30fps timer");
@@ -570,12 +623,15 @@ impl MusicPlayer {
                     continue;
                 }
                 // Process deferred track-change I/O (lyrics + cover) on background thread
-                let pending_info = this.update(cx, |this, _| {
-                    let path = this.pending_track_path.take();
-                    let show_trans = this.lyric_show_translation;
-                    let pos_ms = ((this.position * 1000.0) as i64 + this.lyric_offset_ms).max(0) as u64;
-                    (path, show_trans, pos_ms)
-                }).ok();
+                let pending_info = this
+                    .update(cx, |this, _| {
+                        let path = this.pending_track_path.take();
+                        let show_trans = this.lyric_show_translation;
+                        let pos_ms =
+                            ((this.position * 1000.0) as i64 + this.lyric_offset_ms).max(0) as u64;
+                        (path, show_trans, pos_ms)
+                    })
+                    .ok();
                 if let Some((Some(ref p), show_trans, pos_ms)) = pending_info {
                     if !p.is_empty() {
                         let lyrics = Self::load_lyrics_raw(p, show_trans, pos_ms);
@@ -732,11 +788,14 @@ impl MusicPlayer {
             editor_rating_input,
             similar_tracks: Vec::new(),
             similar_tracks_source: String::new(),
-            fb_current_dir: std::env::current_dir().map_or_else(|_| "C:\\".to_string(), |h| h.to_string_lossy().to_string()),
+            fb_current_dir: std::env::current_dir()
+                .map_or_else(|_| "C:\\".to_string(), |h| h.to_string_lossy().to_string()),
             fb_entries: Vec::new(),
             playlist_scroll_handle: UniformListScrollHandle::default(),
             config_cache: cfg,
-            cover_cache: std::sync::Mutex::new(LruCache::new(std::num::NonZeroUsize::new(100).unwrap())),
+            cover_cache: std::sync::Mutex::new(LruCache::new(
+                std::num::NonZeroUsize::new(100).unwrap(),
+            )),
         }
     }
 
@@ -813,9 +872,15 @@ impl MusicPlayer {
             } else {
                 String::new()
             };
-            if self.title != display { self.title = display; }
-            if self.artist != artist { self.artist = artist; }
-            if self.album != album { self.album = album; }
+            if self.title != display {
+                self.title = display;
+            }
+            if self.artist != artist {
+                self.artist = artist;
+            }
+            if self.album != album {
+                self.album = album;
+            }
             self.is_favourite = snap.current_track_is_favourite;
 
             // Auto-load lyrics when track changes
@@ -833,9 +898,12 @@ impl MusicPlayer {
             }
             // Update download state keyword from current track
             if (!snap.current_track_title.is_empty() || !snap.current_track_artist.is_empty())
-                && (self.download_state.keyword.is_empty() || self.download_state.track_title != snap.current_track_title) {
-                    self.download_state.auto_fill(&snap.current_track_title, &snap.current_track_artist);
-                }
+                && (self.download_state.keyword.is_empty()
+                    || self.download_state.track_title != snap.current_track_title)
+            {
+                self.download_state
+                    .auto_fill(&snap.current_track_title, &snap.current_track_artist);
+            }
         }
 
         // Apply offset delta from desktop lyrics context menu
@@ -930,7 +998,12 @@ impl MusicPlayer {
         let lyrics_dir_lrc = lyrics_dir.join(format!("{}.lrc", file_stem));
         let lyrics_dir_lrc_lower = lyrics_dir.join(format!("{}.lrc", file_stem.to_lowercase()));
 
-        for candidate in [&sibling_lrc, &sibling_lrc_lower, &lyrics_dir_lrc, &lyrics_dir_lrc_lower] {
+        for candidate in [
+            &sibling_lrc,
+            &sibling_lrc_lower,
+            &lyrics_dir_lrc,
+            &lyrics_dir_lrc_lower,
+        ] {
             if candidate.exists() {
                 match crate::lyric::load_lyric_file(candidate.to_str().unwrap_or("")) {
                     Ok(mut lyrics) => {
@@ -941,7 +1014,8 @@ impl MusicPlayer {
                             crate::lyric::TranslateMode::Hidden
                         };
                         tracing::info!("[Lyric] Loaded: {:?}", candidate);
-                        self.lyric_state.update(Some(lyrics), (self.position * 1000.0) as u64);
+                        self.lyric_state
+                            .update(Some(lyrics), (self.position * 1000.0) as u64);
                         return;
                     }
                     Err(e) => {
@@ -953,11 +1027,16 @@ impl MusicPlayer {
 
         // No lyrics found — clear state
         tracing::debug!("[Lyric] No lyrics found for: {}", audio_path);
-        self.lyric_state.update(None, (self.position * 1000.0) as u64);
+        self.lyric_state
+            .update(None, (self.position * 1000.0) as u64);
     }
 
     /// Stateless lyrics loader for background use (no &mut self needed).
-    fn load_lyrics_raw(audio_path: &str, show_translation: bool, _position_ms: u64) -> Option<crate::lyric::Lyrics> {
+    fn load_lyrics_raw(
+        audio_path: &str,
+        show_translation: bool,
+        _position_ms: u64,
+    ) -> Option<crate::lyric::Lyrics> {
         if audio_path.is_empty() {
             return None;
         }
@@ -969,7 +1048,12 @@ impl MusicPlayer {
         let lyrics_dir = parent.join("lyrics");
         let lyrics_dir_lrc = lyrics_dir.join(format!("{}.lrc", file_stem));
         let lyrics_dir_lrc_lower = lyrics_dir.join(format!("{}.lrc", file_stem.to_lowercase()));
-        for candidate in [&sibling_lrc, &sibling_lrc_lower, &lyrics_dir_lrc, &lyrics_dir_lrc_lower] {
+        for candidate in [
+            &sibling_lrc,
+            &sibling_lrc_lower,
+            &lyrics_dir_lrc,
+            &lyrics_dir_lrc_lower,
+        ] {
             if candidate.exists() {
                 match crate::lyric::load_lyric_file(candidate.to_str().unwrap_or("")) {
                     Ok(mut lyrics) => {
@@ -1000,11 +1084,13 @@ impl MusicPlayer {
                                 let count = items.len();
                                 self.download_state.results = items;
                                 self.download_state.selected_index = None;
-                                self.download_state.status = format!("找到 {} 条结果", count);
+                                self.download_state.status =
+                                    self.tr.lyd_status_found.replace("{}", &count.to_string());
                                 tracing::info!("[LyricDownload] 搜索完成: {} 条结果", count);
                             }
                             Err(e) => {
-                                self.download_state.status = e.clone();
+                                self.download_state.status =
+                                    self.tr.lyd_status_search_failed.replace("{}", &e);
                                 tracing::warn!("[LyricDownload] 搜索失败: {}", e);
                             }
                         }
@@ -1017,8 +1103,10 @@ impl MusicPlayer {
                                 let save_path = self.compute_lyric_save_path();
                                 match std::fs::write(&save_path, &lrc_text) {
                                     Ok(()) => {
-                                        self.download_state.status =
-                                            format!("下载成功: {}", save_path.display());
+                                        self.download_state.status = self
+                                            .tr
+                                            .lyd_status_downloaded
+                                            .replace("{}", &save_path.display().to_string());
                                         tracing::info!(
                                             "[Lyric下载] 保存到: {}",
                                             save_path.display()
@@ -1034,16 +1122,15 @@ impl MusicPlayer {
                                                 );
                                             }
                                             Err(e) => {
-                                                tracing::warn!(
-                                                    "[Lyric下载] 加载歌词失败: {}",
-                                                    e
-                                                );
+                                                tracing::warn!("[Lyric下载] 加载歌词失败: {}", e);
                                             }
                                         }
                                     }
                                     Err(e) => {
-                                        self.download_state.status =
-                                            format!("保存失败: {}", e);
+                                        self.download_state.status = self
+                                            .tr
+                                            .lyd_status_save_failed
+                                            .replace("{}", &e.to_string());
                                         tracing::error!(
                                             "[Lyric下载] 保存失败 {}: {}",
                                             save_path.display(),
@@ -1053,7 +1140,8 @@ impl MusicPlayer {
                                 }
                             }
                             Err(e) => {
-                                self.download_state.status = e.clone();
+                                self.download_state.status =
+                                    self.tr.lyd_status_download_failed.replace("{}", &e);
                                 tracing::warn!("[Lyric下载] 下载失败: {}", e);
                             }
                         }
@@ -1066,13 +1154,20 @@ impl MusicPlayer {
                             0.0
                         };
                         self.download_state.total_tracks = total;
-                        self.download_state.status =
-                            format!("正在下载... {}/{}", current, total);
+                        self.download_state.status = self
+                            .tr
+                            .lyd_status_progress
+                            .replacen("{}", &current.to_string(), 1)
+                            .replacen("{}", &total.to_string(), 1);
                     }
                 }
             }
             // Clear channel if done
-            if self.pending_download_rx.as_ref().is_some_and(|rx| rx.try_recv().is_err()) {
+            if self
+                .pending_download_rx
+                .as_ref()
+                .is_some_and(|rx| rx.try_recv().is_err())
+            {
                 // Check if we have any more events pending - if not, clear after a short check
                 if !self.download_state.searching && !self.download_state.downloading {
                     self.pending_download_rx = None;
@@ -1085,8 +1180,7 @@ impl MusicPlayer {
     fn compute_lyric_save_path(&self) -> std::path::PathBuf {
         if self.current_track_path_for_download.is_empty() {
             // Fallback to lyrics directory in current dir
-            return std::path::PathBuf::from("lyrics")
-                .join("downloaded.lrc");
+            return std::path::PathBuf::from("lyrics").join("downloaded.lrc");
         }
 
         let track_path = std::path::Path::new(&self.current_track_path_for_download);
@@ -1119,7 +1213,10 @@ impl Render for MusicPlayer {
         let tr = self.tr;
         // Re-resolve colours on every render so theme/dark mode changes take effect immediately
         let cfg = crate::config::Config::load();
-        self.colours = UiColors::build(cfg.appearance.dark_mode, &theme::ThemeName::from_config(&cfg.appearance.theme));
+        self.colours = UiColors::build(
+            cfg.appearance.dark_mode,
+            &theme::ThemeName::from_config(&cfg.appearance.theme),
+        );
         self.config_cache = cfg;
         let c = &self.colours;
 
@@ -1156,12 +1253,16 @@ impl Render for MusicPlayer {
             let player_repeat = self.player.clone();
             let pos_str_mini = format!(
                 "{:02}:{:02} / {:02}:{:02}",
-                (self.position as u32) / 60, (self.position as u32) % 60,
-                (self.duration as u32) / 60, (self.duration as u32) % 60
+                (self.position as u32) / 60,
+                (self.position as u32) % 60,
+                (self.duration as u32) / 60,
+                (self.duration as u32) % 60
             );
             let seek_pct = if self.duration > 0.0 {
                 (self.position / self.duration * 100.0) as f32
-            } else { 0.0 };
+            } else {
+                0.0
+            };
             let repeat_label_m = match self.player.repeat_mode() {
                 crate::core::playlist::RepeatMode::LoopPlaylist => "🔁",
                 crate::core::playlist::RepeatMode::LoopTrack => "🔂",
@@ -1176,74 +1277,174 @@ impl Render for MusicPlayer {
                 .bg(c.bg)
                 .child(
                     // Top row: cover | controls | fav/mini
-                    h_flex().w_full().flex_grow().items_center().px_2().gap_2()
+                    h_flex()
+                        .w_full()
+                        .flex_grow()
+                        .items_center()
+                        .px_2()
+                        .gap_2()
                         // Left: small album cover (46px in original)
                         .child(self.album_art_element(px(56.0), c))
                         // Center: prev/play/next + repeat + play_time + showPlaylist
                         .child(
-                            h_flex().flex_1().items_center().justify_center().gap_1()
-                                .child(Button::new("mini_prev").label("◀").ghost().compact().on_click(move |_, _, _| { let p = player_p.clone(); runtime().spawn_blocking(move || { let _ = p.prev(); }); }))
-                                .child(Button::new("mini_play").label(play_label).primary().compact().on_click(move |_, _, _| {
-                                    if player_n.is_playing() || player_n.is_paused() {
-                                        let _ = player_n.toggle_pause();
-                                    } else {
-                                        let p = player_n.clone();
-                                        let idx = p.playlist().current_index().unwrap_or(0);
-                                        runtime().spawn_blocking(move || { let _ = p.play_at_index(idx); });
-                                    }
-                                }))
-                                .child(Button::new("mini_next").label("▶").ghost().compact().on_click(move |_, _, _| { let p = player_s.clone(); runtime().spawn_blocking(move || { let _ = p.next(); }); }))
-                                .child(Button::new("mini_repeat").label(repeat_label_m).ghost().compact().on_click(move |_, _, _| {
-                                    use crate::core::playlist::RepeatMode;
-                                    let modes = [RepeatMode::PlayOrder, RepeatMode::LoopPlaylist, RepeatMode::LoopTrack, RepeatMode::PlayShuffle, RepeatMode::PlayRandom];
-                                    let cur = player_repeat.repeat_mode();
-                                    let idx = modes.iter().position(|m| *m == cur).unwrap_or(0);
-                                    player_repeat.set_repeat_mode(modes[(idx + 1) % modes.len()]);
-                                }))
+                            h_flex()
+                                .flex_1()
+                                .items_center()
+                                .justify_center()
+                                .gap_1()
+                                .child(
+                                    Button::new("mini_prev")
+                                        .label("◀")
+                                        .ghost()
+                                        .compact()
+                                        .on_click(move |_, _, _| {
+                                            let p = player_p.clone();
+                                            runtime().spawn_blocking(move || {
+                                                let _ = p.prev();
+                                            });
+                                        }),
+                                )
+                                .child(
+                                    Button::new("mini_play")
+                                        .label(play_label)
+                                        .primary()
+                                        .compact()
+                                        .on_click(move |_, _, _| {
+                                            if player_n.is_playing() || player_n.is_paused() {
+                                                let _ = player_n.toggle_pause();
+                                            } else {
+                                                let p = player_n.clone();
+                                                let idx = p.playlist().current_index().unwrap_or(0);
+                                                runtime().spawn_blocking(move || {
+                                                    let _ = p.play_at_index(idx);
+                                                });
+                                            }
+                                        }),
+                                )
+                                .child(
+                                    Button::new("mini_next")
+                                        .label("▶")
+                                        .ghost()
+                                        .compact()
+                                        .on_click(move |_, _, _| {
+                                            let p = player_s.clone();
+                                            runtime().spawn_blocking(move || {
+                                                let _ = p.next();
+                                            });
+                                        }),
+                                )
+                                .child(
+                                    Button::new("mini_repeat")
+                                        .label(repeat_label_m)
+                                        .ghost()
+                                        .compact()
+                                        .on_click(move |_, _, _| {
+                                            use crate::core::playlist::RepeatMode;
+                                            let modes = [
+                                                RepeatMode::PlayOrder,
+                                                RepeatMode::LoopPlaylist,
+                                                RepeatMode::LoopTrack,
+                                                RepeatMode::PlayShuffle,
+                                                RepeatMode::PlayRandom,
+                                            ];
+                                            let cur = player_repeat.repeat_mode();
+                                            let idx =
+                                                modes.iter().position(|m| *m == cur).unwrap_or(0);
+                                            player_repeat
+                                                .set_repeat_mode(modes[(idx + 1) % modes.len()]);
+                                        }),
+                                )
                                 .child(layout::txt(&pos_str_mini, 10.0, c.text_dim))
-                                .child(Button::new("mini_rew").label("«").ghost().compact().on_click(move |_, _, _| {
-                                    let pos = player_rew.position();
-                                    let _ = player_rew.seek(pos.saturating_sub(std::time::Duration::from_secs(5)));
-                                }))
-                                .child(Button::new("mini_ff").label("»").ghost().compact().on_click(move |_, _, _| {
-                                    let dur = player_ff.duration();
-                                    let pos = player_ff.position();
-                                    let _ = player_ff.seek((pos + std::time::Duration::from_secs(5)).min(dur));
-                                }))
-                                .child(Button::new("mini_list").label("☰").ghost().compact().on_click(|_, _, _| {
-                                    ACTIVE_PANEL.store(0, Ordering::Relaxed);
-                                }))
+                                .child(
+                                    Button::new("mini_rew")
+                                        .label("«")
+                                        .ghost()
+                                        .compact()
+                                        .on_click(move |_, _, _| {
+                                            let pos = player_rew.position();
+                                            let _ =
+                                                player_rew.seek(pos.saturating_sub(
+                                                    std::time::Duration::from_secs(5),
+                                                ));
+                                        }),
+                                )
+                                .child(
+                                    Button::new("mini_ff")
+                                        .label("»")
+                                        .ghost()
+                                        .compact()
+                                        .on_click(move |_, _, _| {
+                                            let dur = player_ff.duration();
+                                            let pos = player_ff.position();
+                                            let _ = player_ff.seek(
+                                                (pos + std::time::Duration::from_secs(5)).min(dur),
+                                            );
+                                        }),
+                                )
+                                .child(
+                                    Button::new("mini_list")
+                                        .label("☰")
+                                        .ghost()
+                                        .compact()
+                                        .on_click(|_, _, _| {
+                                            ACTIVE_PANEL.store(0, Ordering::Relaxed);
+                                        }),
+                                ),
                         )
                         // Right: favorite + exit-mini button
                         .child(
-                            h_flex().items_center().gap_1()
+                            h_flex()
+                                .items_center()
+                                .gap_1()
                                 .child({
                                     let p_fav = self.player.clone();
-                                    Button::new("mini_fav").label(if self.is_favourite { "♥" } else { "♡" }).ghost().compact().on_click(move |_, _, _| {
-                                        let idx = p_fav.playlist().current_index().unwrap_or(0);
-                                        p_fav.playlist_mut().toggle_favourite(idx);
-                                    })
+                                    Button::new("mini_fav")
+                                        .label(if self.is_favourite { "♥" } else { "♡" })
+                                        .ghost()
+                                        .compact()
+                                        .on_click(move |_, _, _| {
+                                            let idx = p_fav.playlist().current_index().unwrap_or(0);
+                                            p_fav.playlist_mut().toggle_favourite(idx);
+                                        })
                                 })
-                                .child(Button::new("mini_mute").label(if self.is_muted { "🔇" } else { "🔊" }).ghost().compact().on_click(cx.listener(|this, _, _, cx| {
-                                    if this.is_muted {
-                                        let _ = this.player.set_volume(this.volume_before_mute);
-                                        this.is_muted = false;
-                                    } else {
-                                        this.volume_before_mute = this.volume;
-                                        let _ = this.player.set_volume(0);
-                                        this.is_muted = true;
-                                    }
-                                    cx.notify();
-                                })))
-                                .child(Button::new("mini_exit").label("⤢").ghost().compact().on_click(|_, window, _| {
-                                    MINI_MODE.store(false, Ordering::Relaxed);
-                                    if let Some((w, h)) = PRE_MINI_SIZE.lock().unwrap().take() {
-                                        window.resize(gpui::Size { width: px(w), height: px(h) });
-                                    }
-                                }))
-                    )
-            )
-            .child(
+                                .child(
+                                    Button::new("mini_mute")
+                                        .label(if self.is_muted { "🔇" } else { "🔊" })
+                                        .ghost()
+                                        .compact()
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            if this.is_muted {
+                                                let _ =
+                                                    this.player.set_volume(this.volume_before_mute);
+                                                this.is_muted = false;
+                                            } else {
+                                                this.volume_before_mute = this.volume;
+                                                let _ = this.player.set_volume(0);
+                                                this.is_muted = true;
+                                            }
+                                            cx.notify();
+                                        })),
+                                )
+                                .child(
+                                    Button::new("mini_exit")
+                                        .label("⤢")
+                                        .ghost()
+                                        .compact()
+                                        .on_click(|_, window, _| {
+                                            MINI_MODE.store(false, Ordering::Relaxed);
+                                            if let Some((w, h)) =
+                                                PRE_MINI_SIZE.lock().unwrap().take()
+                                            {
+                                                window.resize(gpui::Size {
+                                                    width: px(w),
+                                                    height: px(h),
+                                                });
+                                            }
+                                        }),
+                                ),
+                        ),
+                )
+                .child(
                     // Bottom: 2px progress bar (miniMode01.xml: <progressBar height="2"/>)
                     h_flex()
                         .id("mini-progress")
@@ -1251,13 +1452,19 @@ impl Render for MusicPlayer {
                         .h(px(3.0))
                         .cursor(gpui::CursorStyle::PointingHand)
                         .bg(c.progress_track)
-                        .child(div().h_full().w(DefiniteLength::Fraction(seek_pct / 100.0)).bg(c.accent))
+                        .child(
+                            div()
+                                .h_full()
+                                .w(DefiniteLength::Fraction(seek_pct / 100.0))
+                                .bg(c.accent),
+                        )
                         .on_mouse_down(gpui::MouseButton::Left, move |e, window, _cx| {
                             let win_w: f32 = window.bounds().size.width.into();
                             let mouse_x: f32 = e.position.x.into();
                             let ratio = (mouse_x / win_w).clamp(0.0, 1.0);
-                            let _ = player_seek_m.seek(std::time::Duration::from_secs_f64(dur_m * ratio as f64));
-                        })
+                            let _ = player_seek_m
+                                .seek(std::time::Duration::from_secs_f64(dur_m * ratio as f64));
+                        }),
                 )
                 .into_any_element();
         }
@@ -1327,7 +1534,13 @@ impl Render for MusicPlayer {
             Panel::Search => {
                 let search_query = self.search_input.read(cx).value().to_string();
                 let search_el = crate::gui::dialogs::render_search_panel(
-                    tr, c, &search_query, &self.search_input, self.player.clone(), window, cx,
+                    tr,
+                    c,
+                    &search_query,
+                    &self.search_input,
+                    self.player.clone(),
+                    window,
+                    cx,
                 );
                 main_layout = main_layout.child(search_el);
                 return main_layout.into_any_element();
@@ -1339,17 +1552,23 @@ impl Render for MusicPlayer {
             }
             Panel::LyricEditor => {
                 let colours = self.colours.clone();
-                main_layout = main_layout.child(self.render_lyric_editor_panel(&colours, window, cx));
+                main_layout =
+                    main_layout.child(self.render_lyric_editor_panel(&colours, window, cx));
                 return main_layout.into_any_element();
             }
             Panel::LyricDownload => {
                 let colours = self.colours.clone();
-                main_layout = main_layout.child(self.render_lyric_download_panel(&colours, window, cx));
+                main_layout =
+                    main_layout.child(self.render_lyric_download_panel(&colours, window, cx));
                 return main_layout.into_any_element();
             }
             Panel::Settings => {
                 let settings_el = crate::gui::dialogs::render_settings_panel(
-                    tr, c, self.settings_tab, window, cx,
+                    tr,
+                    c,
+                    self.settings_tab,
+                    window,
+                    cx,
                 );
                 main_layout = main_layout.child(settings_el);
                 return main_layout.into_any_element();
@@ -1371,20 +1590,37 @@ impl Render for MusicPlayer {
             .bg(c.bg)
             // Status line: "已暂停 081 ..." + format info
             .child(
-                v_flex().w_full().px_4().pt_2().gap_0()
+                v_flex()
+                    .w_full()
+                    .px_4()
+                    .pt_2()
+                    .gap_0()
                     .child(
-                        h_flex().items_center().gap_2()
+                        h_flex()
+                            .items_center()
+                            .gap_2()
                             .child(layout::txt(
-                                if self.is_playing { tr.status_playing } else { tr.status_paused },
-                                10.0, c.text_dim))
-                            .child(layout::txt(&self.title, 10.0, c.text))
+                                if self.is_playing {
+                                    tr.status_playing
+                                } else {
+                                    tr.status_paused
+                                },
+                                10.0,
+                                c.text_dim,
+                            ))
+                            .child(layout::txt(&self.title, 10.0, c.text)),
                     )
-                    .child(layout::txt(&self.format_line(), 9.0, c.text_dim))
+                    .child(layout::txt(&self.format_line(), 9.0, c.text_dim)),
             )
             // Now-playing center: view switcher with pagination dots
             .child({
                 let view = self.now_playing_view;
-                let has_lyrics = has_track && self.lyric_state.lyrics.as_ref().is_some_and(|l| !l.lines.is_empty());
+                let has_lyrics = has_track
+                    && self
+                        .lyric_state
+                        .lyrics
+                        .as_ref()
+                        .is_some_and(|l| !l.lines.is_empty());
                 let show_spectrum = layout_mode.show_spectrum();
                 let title = self.title.clone();
                 let artist = self.artist.clone();
@@ -1393,22 +1629,42 @@ impl Render for MusicPlayer {
                 let weak = cx.entity().downgrade();
 
                 let view_content: AnyElement = match view {
-                    NowPlayingView::Cover => {
-                        v_flex().flex_grow().items_center().justify_center()
-                            .child(self.album_art_element(px(200.0), c))
-                            .child(v_flex().items_center().gap_1().px_4().mt_2()
+                    NowPlayingView::Cover => v_flex()
+                        .flex_grow()
+                        .items_center()
+                        .justify_center()
+                        .child(self.album_art_element(px(200.0), c))
+                        .child(
+                            v_flex()
+                                .items_center()
+                                .gap_1()
+                                .px_4()
+                                .mt_2()
                                 .child(layout::txt(&title, 14.0, c.text_title))
-                                .child(layout::txt(&artist, 11.0, c.text_dim))
-                            )
-                            .into_any_element()
-                    }
+                                .child(layout::txt(&artist, 11.0, c.text_dim)),
+                        )
+                        .into_any_element(),
                     NowPlayingView::Lyrics => {
                         if has_lyrics {
-                            v_flex().flex_grow().items_center().justify_center().px_4()
-                                .child(desktop_lyrics::render_lyrics_panel(&self.lyric_state, self.tr, c).into_any_element())
+                            v_flex()
+                                .flex_grow()
+                                .items_center()
+                                .justify_center()
+                                .px_4()
+                                .child(
+                                    desktop_lyrics::render_lyrics_panel(
+                                        &self.lyric_state,
+                                        self.tr,
+                                        c,
+                                    )
+                                    .into_any_element(),
+                                )
                                 .into_any_element()
                         } else {
-                            v_flex().flex_grow().items_center().justify_center()
+                            v_flex()
+                                .flex_grow()
+                                .items_center()
+                                .justify_center()
                                 .child(layout::txt("♫", 48.0, c.text_dim))
                                 .child(layout::txt(&title, 14.0, c.text_title))
                                 .child(layout::txt(&artist, 11.0, c.text_dim))
@@ -1417,144 +1673,295 @@ impl Render for MusicPlayer {
                     }
                     NowPlayingView::Spectrum => {
                         if show_spectrum {
-                            self.render_spectrum_strip(&raw_spec_clone, &raw_peaks_clone, 48, c).into_any_element()
+                            self.render_spectrum_strip(&raw_spec_clone, &raw_peaks_clone, 48, c)
+                                .into_any_element()
                         } else {
-                            v_flex().flex_grow().items_center().justify_center()
+                            v_flex()
+                                .flex_grow()
+                                .items_center()
+                                .justify_center()
                                 .child(layout::txt("Spectrum", 14.0, c.text_dim))
                                 .into_any_element()
                         }
                     }
                 };
 
-                let dots = h_flex().items_center().justify_center().gap_2().py_2()
+                let dots = h_flex()
+                    .items_center()
+                    .justify_center()
+                    .gap_2()
+                    .py_2()
                     .child({
                         let w = weak.clone();
                         Button::new("npv_cover")
-                            .label(if view == NowPlayingView::Cover { "●" } else { "○" })
-                            .ghost().compact()
-                            .on_click(move |_, _, cx| { let _ = w.update(cx, |s, cx| { s.now_playing_view = NowPlayingView::Cover; cx.notify(); }); })
+                            .label(if view == NowPlayingView::Cover {
+                                "●"
+                            } else {
+                                "○"
+                            })
+                            .ghost()
+                            .compact()
+                            .on_click(move |_, _, cx| {
+                                let _ = w.update(cx, |s, cx| {
+                                    s.now_playing_view = NowPlayingView::Cover;
+                                    cx.notify();
+                                });
+                            })
                     })
                     .child({
                         let w = weak.clone();
                         Button::new("npv_lyrics")
-                            .label(if view == NowPlayingView::Lyrics { "●" } else { "○" })
-                            .ghost().compact()
-                            .on_click(move |_, _, cx| { let _ = w.update(cx, |s, cx| { s.now_playing_view = NowPlayingView::Lyrics; cx.notify(); }); })
+                            .label(if view == NowPlayingView::Lyrics {
+                                "●"
+                            } else {
+                                "○"
+                            })
+                            .ghost()
+                            .compact()
+                            .on_click(move |_, _, cx| {
+                                let _ = w.update(cx, |s, cx| {
+                                    s.now_playing_view = NowPlayingView::Lyrics;
+                                    cx.notify();
+                                });
+                            })
                     })
                     .child({
                         Button::new("npv_spectrum")
-                            .label(if view == NowPlayingView::Spectrum { "●" } else { "○" })
-                            .ghost().compact()
-                            .on_click(move |_, _, cx| { let _ = weak.update(cx, |s, cx| { s.now_playing_view = NowPlayingView::Spectrum; cx.notify(); }); })
+                            .label(if view == NowPlayingView::Spectrum {
+                                "●"
+                            } else {
+                                "○"
+                            })
+                            .ghost()
+                            .compact()
+                            .on_click(move |_, _, cx| {
+                                let _ = weak.update(cx, |s, cx| {
+                                    s.now_playing_view = NowPlayingView::Spectrum;
+                                    cx.notify();
+                                });
+                            })
                     });
 
-                v_flex().flex_grow().w_full()
+                v_flex()
+                    .flex_grow()
+                    .w_full()
                     .child(view_content)
                     .child(dots)
                     .into_any_element()
             })
             // Toolbar icons row (matching original: playlist/settings/eq/favourite/search/translate/brightness/AB/lyrics)
             .child(
-                h_flex().w_full().px_4().py_1().gap_2().items_center()
-                    .child(Button::new("tb_playlist").label("☰").ghost().compact().on_click(|_, _, _| {
-                        ACTIVE_PANEL.store(0, Ordering::Relaxed);
-                    }))
-                    .child(Button::new("tb_settings").label("⚙").ghost().compact().on_click(cx.listener(|this, _, _, cx| {
-                        this.modal = Some(ModalKind::Settings);
-                        cx.notify();
-                    })))
-                    .child(Button::new("tb_eq").label("EQ").ghost().compact().on_click(cx.listener(|this, _, _, cx| {
-                        this.modal = Some(ModalKind::Equalizer);
-                        cx.notify();
-                    })))
+                h_flex()
+                    .w_full()
+                    .px_4()
+                    .py_1()
+                    .gap_2()
+                    .items_center()
+                    .child(
+                        Button::new("tb_playlist")
+                            .label("☰")
+                            .ghost()
+                            .compact()
+                            .on_click(|_, _, _| {
+                                ACTIVE_PANEL.store(0, Ordering::Relaxed);
+                            }),
+                    )
+                    .child(
+                        Button::new("tb_settings")
+                            .label("⚙")
+                            .ghost()
+                            .compact()
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.modal = Some(ModalKind::Settings);
+                                cx.notify();
+                            })),
+                    )
+                    .child(Button::new("tb_eq").label("EQ").ghost().compact().on_click(
+                        cx.listener(|this, _, _, cx| {
+                            this.modal = Some(ModalKind::Equalizer);
+                            cx.notify();
+                        }),
+                    ))
                     .child({
                         let p_fav = self.player.clone();
-                        Button::new("tb_fav").label(if self.is_favourite { "♥" } else { "♡" }).ghost().compact().on_click(move |_, _, _| {
-                            let idx = p_fav.playlist().current_index().unwrap_or(0);
-                            p_fav.playlist_mut().toggle_favourite(idx);
-                        })
+                        Button::new("tb_fav")
+                            .label(if self.is_favourite { "♥" } else { "♡" })
+                            .ghost()
+                            .compact()
+                            .on_click(move |_, _, _| {
+                                let idx = p_fav.playlist().current_index().unwrap_or(0);
+                                p_fav.playlist_mut().toggle_favourite(idx);
+                            })
                     })
-                    .child(Button::new("tb_search").icon(IconName::Search).ghost().compact().on_click(|_, _, _| {
-                        ACTIVE_PANEL.store(3, Ordering::Relaxed);
-                    }))
+                    .child(
+                        Button::new("tb_search")
+                            .icon(IconName::Search)
+                            .ghost()
+                            .compact()
+                            .on_click(|_, _, _| {
+                                ACTIVE_PANEL.store(3, Ordering::Relaxed);
+                            }),
+                    )
                     .child({
                         let p_ab = self.player.clone();
-                        Button::new("tb_ab").label("A-B").ghost().compact().on_click(move |_, _, _| {
-                            let status = p_ab.ab_status();
-                            match status.mode {
-                                crate::core::player::ABRepeatMode::None => { let _ = p_ab.ab_set_a(); }
-                                crate::core::player::ABRepeatMode::ASelected => { let _ = p_ab.ab_set_b(); }
-                                _ => { p_ab.ab_reset(); }
-                            }
-                        })
+                        Button::new("tb_ab")
+                            .label("A-B")
+                            .ghost()
+                            .compact()
+                            .on_click(move |_, _, _| {
+                                let status = p_ab.ab_status();
+                                match status.mode {
+                                    crate::core::player::ABRepeatMode::None => {
+                                        let _ = p_ab.ab_set_a();
+                                    }
+                                    crate::core::player::ABRepeatMode::ASelected => {
+                                        let _ = p_ab.ab_set_b();
+                                    }
+                                    _ => {
+                                        p_ab.ab_reset();
+                                    }
+                                }
+                            })
                     })
-                    .child(Button::new("tb_lyrics").label("词").ghost().compact().on_click(|_, _, _| {
-                        ACTIVE_PANEL.store(4, Ordering::Relaxed);
-                    }))
+                    .child(
+                        Button::new("tb_lyrics")
+                            .label(self.tr.btn_lyrics)
+                            .ghost()
+                            .compact()
+                            .on_click(|_, _, _| {
+                                ACTIVE_PANEL.store(4, Ordering::Relaxed);
+                            }),
+                    )
                     .child(div().flex_grow())
                     // Volume on the right side of toolbar
-                    .child(Button::new("mute").label(if self.is_muted { "🔇" } else { "🔊" }).ghost().compact().on_click(cx.listener(|this, _, _, cx| {
-                        if this.is_muted {
-                            let _ = this.player.set_volume(this.volume_before_mute);
-                            this.is_muted = false;
-                        } else {
-                            this.volume_before_mute = this.volume;
-                            let _ = this.player.set_volume(0);
-                            this.is_muted = true;
-                        }
-                        cx.notify();
-                    })))
-                    .child(Slider::new(&self.volume_slider).horizontal().w(px(vol_width)))
+                    .child(
+                        Button::new("mute")
+                            .label(if self.is_muted { "🔇" } else { "🔊" })
+                            .ghost()
+                            .compact()
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                if this.is_muted {
+                                    let _ = this.player.set_volume(this.volume_before_mute);
+                                    this.is_muted = false;
+                                } else {
+                                    this.volume_before_mute = this.volume;
+                                    let _ = this.player.set_volume(0);
+                                    this.is_muted = true;
+                                }
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        Slider::new(&self.volume_slider)
+                            .horizontal()
+                            .w(px(vol_width)),
+                    ),
             )
             // Transport controls: stop / prev / rew / play / ff / next + time
             .child(
-                h_flex().w_full().px_4().py_2().gap_3().items_center().justify_center()
-                    .child(Button::new("stop").label("⏹").ghost().compact().on_click(move |_, _, _| { let _ = player_stop.stop(); }))
-                    .child(Button::new("prev").label("⏮").ghost().compact().on_click(move |_, _, _| { let p = player_prev.clone(); runtime().spawn_blocking(move || { let _ = p.prev(); }); }))
-                    .child(Button::new("rew").label("⏪").ghost().compact().on_click(move |_, _, _| {
-                        let pos = player_rew.position();
-                        let _ = player_rew.seek(pos.saturating_sub(std::time::Duration::from_secs(5)));
-                    }))
-                    .child(Button::new("play").label(play_label).primary().compact().on_click({
-                        let p = player_play.clone();
+                h_flex()
+                    .w_full()
+                    .px_4()
+                    .py_2()
+                    .gap_3()
+                    .items_center()
+                    .justify_center()
+                    .child(Button::new("stop").label("⏹").ghost().compact().on_click(
                         move |_, _, _| {
-                            if p.is_playing() || p.is_paused() {
-                                let _ = p.toggle_pause();
-                            } else if p.playlist().is_empty() {
-                                let p_clone = p.clone();
-                                runtime().spawn_blocking(move || {
-                                    if let Some(file) = rfd::FileDialog::new()
-                                        .add_filter(i18n::global_tr().filter_audio_files, &["mp3", "flac", "wav", "ogg", "aac", "m4a", "wma", "ape", "cue"])
-                                        .pick_file()
-                                    {
-                                        let path = file.to_string_lossy().to_string();
-                                        let _ = p_clone.play_file(&path);
+                            let _ = player_stop.stop();
+                        },
+                    ))
+                    .child(Button::new("prev").label("⏮").ghost().compact().on_click(
+                        move |_, _, _| {
+                            let p = player_prev.clone();
+                            runtime().spawn_blocking(move || {
+                                let _ = p.prev();
+                            });
+                        },
+                    ))
+                    .child(Button::new("rew").label("⏪").ghost().compact().on_click(
+                        move |_, _, _| {
+                            let pos = player_rew.position();
+                            let _ = player_rew
+                                .seek(pos.saturating_sub(std::time::Duration::from_secs(5)));
+                        },
+                    ))
+                    .child(
+                        Button::new("play")
+                            .label(play_label)
+                            .primary()
+                            .compact()
+                            .on_click({
+                                let p = player_play.clone();
+                                move |_, _, _| {
+                                    if p.is_playing() || p.is_paused() {
+                                        let _ = p.toggle_pause();
+                                    } else if p.playlist().is_empty() {
+                                        let p_clone = p.clone();
+                                        runtime().spawn_blocking(move || {
+                                            if let Some(file) = rfd::FileDialog::new()
+                                                .add_filter(
+                                                    i18n::global_tr().filter_audio_files,
+                                                    &[
+                                                        "mp3", "flac", "wav", "ogg", "aac", "m4a",
+                                                        "wma", "ape", "cue",
+                                                    ],
+                                                )
+                                                .pick_file()
+                                            {
+                                                let path = file.to_string_lossy().to_string();
+                                                let _ = p_clone.play_file(&path);
+                                            }
+                                        });
+                                    } else {
+                                        let idx = p.playlist().current_index().unwrap_or(0);
+                                        let p2 = p.clone();
+                                        runtime().spawn_blocking(move || {
+                                            let _ = p2.play_at_index(idx);
+                                        });
                                     }
-                                });
-                            } else {
-                                let idx = p.playlist().current_index().unwrap_or(0);
-                                let p2 = p.clone();
-                                runtime().spawn_blocking(move || { let _ = p2.play_at_index(idx); });
-                            }
-                        }
-                    }))
-                    .child(Button::new("ff").label("⏩").ghost().compact().on_click(move |_, _, _| {
-                        let dur = player_ff.duration();
-                        let pos = player_ff.position();
-                        let _ = player_ff.seek((pos + std::time::Duration::from_secs(5)).min(dur));
-                    }))
-                    .child(Button::new("next").label("⏭").ghost().compact().on_click(move |_, _, _| { let p = player_next.clone(); runtime().spawn_blocking(move || { let _ = p.next(); }); }))
+                                }
+                            }),
+                    )
+                    .child(Button::new("ff").label("⏩").ghost().compact().on_click(
+                        move |_, _, _| {
+                            let dur = player_ff.duration();
+                            let pos = player_ff.position();
+                            let _ =
+                                player_ff.seek((pos + std::time::Duration::from_secs(5)).min(dur));
+                        },
+                    ))
+                    .child(Button::new("next").label("⏭").ghost().compact().on_click(
+                        move |_, _, _| {
+                            let p = player_next.clone();
+                            runtime().spawn_blocking(move || {
+                                let _ = p.next();
+                            });
+                        },
+                    ))
                     .child(div().w(px(1.0)).h(px(20.0)).bg(c.border))
                     .child(layout::txt(&pos_str, 11.0, c.text_dim))
                     // Repeat mode
-                    .child(Button::new("repeat").label(repeat_label).ghost().compact().on_click(move |_, _, _| {
-                        use crate::core::playlist::RepeatMode;
-                        let modes = [RepeatMode::PlayOrder, RepeatMode::LoopPlaylist, RepeatMode::LoopTrack, RepeatMode::PlayShuffle, RepeatMode::PlayRandom];
-                        let current = player_repeat.repeat_mode();
-                        let idx = modes.iter().position(|m| *m == current).unwrap_or(0);
-                        let next = modes[(idx + 1) % modes.len()];
-                        player_repeat.set_repeat_mode(next);
-                    }))
+                    .child(
+                        Button::new("repeat")
+                            .label(repeat_label)
+                            .ghost()
+                            .compact()
+                            .on_click(move |_, _, _| {
+                                use crate::core::playlist::RepeatMode;
+                                let modes = [
+                                    RepeatMode::PlayOrder,
+                                    RepeatMode::LoopPlaylist,
+                                    RepeatMode::LoopTrack,
+                                    RepeatMode::PlayShuffle,
+                                    RepeatMode::PlayRandom,
+                                ];
+                                let current = player_repeat.repeat_mode();
+                                let idx = modes.iter().position(|m| *m == current).unwrap_or(0);
+                                let next = modes[(idx + 1) % modes.len()];
+                                player_repeat.set_repeat_mode(next);
+                            }),
+                    ),
             )
             // Progress bar (full width, click-to-seek)
             .child(
@@ -1564,14 +1971,12 @@ impl Render for MusicPlayer {
                     .h(px(layout_mode.progress_bar_height()))
                     .cursor(gpui::CursorStyle::PointingHand)
                     .child(
-                        h_flex().w_full().h_full()
-                            .bg(c.progress_track)
-                            .child(
-                                div()
-                                    .h_full()
-                                    .w(DefiniteLength::Fraction(seek_pct / 100.0))
-                                    .bg(c.accent),
-                            ),
+                        h_flex().w_full().h_full().bg(c.progress_track).child(
+                            div()
+                                .h_full()
+                                .w(DefiniteLength::Fraction(seek_pct / 100.0))
+                                .bg(c.accent),
+                        ),
                     )
                     .on_mouse_down(gpui::MouseButton::Left, move |e, window, _cx| {
                         let win_w: f32 = window.bounds().size.width.into();
@@ -1580,12 +1985,19 @@ impl Render for MusicPlayer {
                         let ratio = (mouse_x / win_w).clamp(0.0, 1.0);
                         let seek_to = dur * ratio as f64;
                         let _ = player_seek.seek(std::time::Duration::from_secs_f64(seek_to));
-                    })
+                    }),
             );
 
         // ── Right panel: playlist dock (Big mode only) ─────────────────────
         let right_panel = if layout_mode.show_right_panel() {
-            Some(self.render_playlist_dock(&playlist_tracks, current_idx, layout_mode, c, window, cx))
+            Some(self.render_playlist_dock(
+                &playlist_tracks,
+                current_idx,
+                layout_mode,
+                c,
+                window,
+                cx,
+            ))
         } else {
             None
         };
@@ -1619,9 +2031,15 @@ impl Render for MusicPlayer {
                     .items_center()
                     .w_full()
                     .h(px(theme::STATUSBAR_HEIGHT))
-                    .px_3().gap_4()
+                    .px_3()
+                    .gap_4()
                     .bg(c.statusbar_bg)
-                    .child(layout::txt(&tr.status_track_count.replace("{}", &track_count.to_string()), 10.0, c.text_dim))
+                    .child(layout::txt(
+                        &tr.status_track_count
+                            .replace("{}", &track_count.to_string()),
+                        10.0,
+                        c.text_dim,
+                    ))
                     .child(div().w(px(1.0)).h(px(12.0)).bg(c.border))
                     .child(layout::txt(&total_dur.to_string(), 10.0, c.text_dim))
                     .child(div().w(px(1.0)).h(px(12.0)).bg(c.border))
@@ -1634,20 +2052,41 @@ impl Render for MusicPlayer {
                     .child(layout::txt(&self.format_line(), 10.0, c.text_dim))
                     .child(div().flex_grow())
                     .child(
-                        h_flex().items_center().gap_2()
+                        h_flex()
+                            .items_center()
+                            .gap_2()
                             .child(div().size(px(6.0)).rounded(px(3.0)).bg(
                                 if RPC_SERVER_RUNNING.load(Ordering::Relaxed) {
-                                    Hsla { h: 120.0/360.0, s: 0.8, l: 0.45, a: 1.0 }
+                                    Hsla {
+                                        h: 120.0 / 360.0,
+                                        s: 0.8,
+                                        l: 0.45,
+                                        a: 1.0,
+                                    }
                                 } else {
-                                    Hsla { h: 0.0, s: 0.8, l: 0.45, a: 1.0 }
-                                }
+                                    Hsla {
+                                        h: 0.0,
+                                        s: 0.8,
+                                        l: 0.45,
+                                        a: 1.0,
+                                    }
+                                },
                             ))
-                            .child(layout::txt(if RPC_SERVER_RUNNING.load(Ordering::Relaxed) { tr.status_rpc_online } else { tr.status_rpc_offline }, 10.0, c.text_dim))
-                    )
+                            .child(layout::txt(
+                                if RPC_SERVER_RUNNING.load(Ordering::Relaxed) {
+                                    tr.status_rpc_online
+                                } else {
+                                    tr.status_rpc_offline
+                                },
+                                10.0,
+                                c.text_dim,
+                            )),
+                    ),
             );
         }
 
-        div().child(main_layout)
+        div()
+            .child(main_layout)
             .context_menu({
                 let p = self.player.clone();
                 let tr = self.tr;
@@ -1662,31 +2101,57 @@ impl Render for MusicPlayer {
                     let s_repeat_loop_pl = tr.repeat_loop_pl;
                     let s_repeat_loop_trk = tr.repeat_loop_trk;
                     let s_repeat_single = tr.repeat_single;
-                    menu.item(PopupMenuItem::new(tr.ctrl_toggle_play).on_click(move |_, _, _| { let _ = p1.toggle_pause(); }))
-                        .item(PopupMenuItem::new(tr.ctrl_stop).on_click(move |_, _, _| { let _ = p2.stop(); }))
-                        .item(PopupMenuItem::new(tr.ctrl_prev).on_click(move |_, _, _| { let p = p3.clone(); runtime().spawn_blocking(move || { let _ = p.prev(); }); }))
-                        .item(PopupMenuItem::new(tr.ctrl_next).on_click(move |_, _, _| { let p = p4.clone(); runtime().spawn_blocking(move || { let _ = p.next(); }); }))
-                        .separator()
-                        .item(PopupMenuItem::new(s_repeat_order).on_click({
-                            let p = p5.clone();
-                            move |_, _, _| { p.set_repeat_mode(crate::core::playlist::RepeatMode::PlayOrder); }
-                        }))
-                        .item(PopupMenuItem::new(s_repeat_random).on_click({
-                            let p = p5.clone();
-                            move |_, _, _| { p.set_repeat_mode(crate::core::playlist::RepeatMode::PlayRandom); }
-                        }))
-                        .item(PopupMenuItem::new(s_repeat_loop_pl).on_click({
-                            let p = p5.clone();
-                            move |_, _, _| { p.set_repeat_mode(crate::core::playlist::RepeatMode::LoopPlaylist); }
-                        }))
-                        .item(PopupMenuItem::new(s_repeat_loop_trk).on_click({
-                            let p = p5.clone();
-                            move |_, _, _| { p.set_repeat_mode(crate::core::playlist::RepeatMode::LoopTrack); }
-                        }))
-                        .item(PopupMenuItem::new(s_repeat_single).on_click({
-                            let p = p5.clone();
-                            move |_, _, _| { p.set_repeat_mode(crate::core::playlist::RepeatMode::PlayTrack); }
-                        }))
+                    menu.item(
+                        PopupMenuItem::new(tr.ctrl_toggle_play).on_click(move |_, _, _| {
+                            let _ = p1.toggle_pause();
+                        }),
+                    )
+                    .item(PopupMenuItem::new(tr.ctrl_stop).on_click(move |_, _, _| {
+                        let _ = p2.stop();
+                    }))
+                    .item(PopupMenuItem::new(tr.ctrl_prev).on_click(move |_, _, _| {
+                        let p = p3.clone();
+                        runtime().spawn_blocking(move || {
+                            let _ = p.prev();
+                        });
+                    }))
+                    .item(PopupMenuItem::new(tr.ctrl_next).on_click(move |_, _, _| {
+                        let p = p4.clone();
+                        runtime().spawn_blocking(move || {
+                            let _ = p.next();
+                        });
+                    }))
+                    .separator()
+                    .item(PopupMenuItem::new(s_repeat_order).on_click({
+                        let p = p5.clone();
+                        move |_, _, _| {
+                            p.set_repeat_mode(crate::core::playlist::RepeatMode::PlayOrder);
+                        }
+                    }))
+                    .item(PopupMenuItem::new(s_repeat_random).on_click({
+                        let p = p5.clone();
+                        move |_, _, _| {
+                            p.set_repeat_mode(crate::core::playlist::RepeatMode::PlayRandom);
+                        }
+                    }))
+                    .item(PopupMenuItem::new(s_repeat_loop_pl).on_click({
+                        let p = p5.clone();
+                        move |_, _, _| {
+                            p.set_repeat_mode(crate::core::playlist::RepeatMode::LoopPlaylist);
+                        }
+                    }))
+                    .item(PopupMenuItem::new(s_repeat_loop_trk).on_click({
+                        let p = p5.clone();
+                        move |_, _, _| {
+                            p.set_repeat_mode(crate::core::playlist::RepeatMode::LoopTrack);
+                        }
+                    }))
+                    .item(PopupMenuItem::new(s_repeat_single).on_click({
+                        let p = p5.clone();
+                        move |_, _, _| {
+                            p.set_repeat_mode(crate::core::playlist::RepeatMode::PlayTrack);
+                        }
+                    }))
                 }
             })
             .into_any_element()
@@ -1697,9 +2162,21 @@ impl MusicPlayer {
     /// One-line format/file info string shown on the now-playing screen.
     fn format_line(&self) -> String {
         if let Some(track) = self.player.playlist().current_track() {
-            let ft = if !track.file_type.is_empty() { track.file_type.clone() } else { "--".into() };
-            let bit = if track.bitrate > 0 { format!("{} kbps", track.bitrate) } else { "--".into() };
-            let sr = if track.sample_rate > 0 { format!("{} Hz", track.sample_rate) } else { "--".into() };
+            let ft = if !track.file_type.is_empty() {
+                track.file_type.clone()
+            } else {
+                "--".into()
+            };
+            let bit = if track.bitrate > 0 {
+                format!("{} kbps", track.bitrate)
+            } else {
+                "--".into()
+            };
+            let sr = if track.sample_rate > 0 {
+                format!("{} Hz", track.sample_rate)
+            } else {
+                "--".into()
+            };
             format!("{}  ·  {}  ·  {}", ft, bit, sr)
         } else {
             String::new()
@@ -1913,7 +2390,8 @@ impl MusicPlayer {
             .items_center()
             .w_full()
             .h(px(theme::MENUBAR_HEIGHT))
-            .px_2().gap_1()
+            .px_2()
+            .gap_1()
             .bg(c.control_bar_bg)
             // File menu
             .child(self.render_menu_file(tr, &weak_file))
@@ -1932,11 +2410,7 @@ impl MusicPlayer {
     }
 
     /// File menu: open file/folder/URL/playlist, save as new playlist, exit.
-    fn render_menu_file(
-        &self,
-        tr: &Tr,
-        weak: &gpui::WeakEntity<MusicPlayer>,
-    ) -> impl IntoElement {
+    fn render_menu_file(&self, tr: &Tr, weak: &gpui::WeakEntity<MusicPlayer>) -> impl IntoElement {
         let s_file = tr.menu_file;
         let s_open_file = tr.menu_open_file;
         let s_open_folder = tr.menu_open_folder;
@@ -1950,22 +2424,35 @@ impl MusicPlayer {
             menu.item(PopupMenuItem::new(s_open_file).on_click({
                 let weak_ = weak.clone();
                 move |_, _, cx| {
-                    run_blocking_dialog_app(cx, &weak_,
-                        || rfd::FileDialog::new()
-                            .add_filter(i18n::global_tr().filter_audio_files, &["mp3", "flac", "wav", "ogg", "aac", "m4a", "wma", "ape", "cue"])
-                            .pick_file(),
+                    run_blocking_dialog_app(
+                        cx,
+                        &weak_,
+                        || {
+                            rfd::FileDialog::new()
+                                .add_filter(
+                                    i18n::global_tr().filter_audio_files,
+                                    &[
+                                        "mp3", "flac", "wav", "ogg", "aac", "m4a", "wma", "ape",
+                                        "cue",
+                                    ],
+                                )
+                                .pick_file()
+                        },
                         |file, this, cx| {
                             if let Some(file) = file {
                                 let _ = this.player.play_file(file.to_str().unwrap_or_default());
                             }
                             cx.notify();
-                        });
+                        },
+                    );
                 }
             }))
             .item(PopupMenuItem::new(s_open_folder).on_click({
                 let weak_ = weak.clone();
                 move |_, _, cx| {
-                    run_blocking_dialog_app(cx, &weak_,
+                    run_blocking_dialog_app(
+                        cx,
+                        &weak_,
                         || rfd::FileDialog::new().pick_folder(),
                         |folder, this, cx| {
                             if let Some(folder) = folder {
@@ -1975,25 +2462,36 @@ impl MusicPlayer {
                                         let mut pl = this.player.playlist_mut();
                                         let first_idx = pl.len();
                                         for e in &entries {
-                                            pl.add_track(crate::core::playlist::Track::new(&e.file_path));
+                                            pl.add_track(crate::core::playlist::Track::new(
+                                                &e.file_path,
+                                            ));
                                         }
                                         drop(pl);
                                         let mut lib = crate::media::MediaLib::load();
-                                        for e in &entries { lib.upsert(e.clone()); }
+                                        for e in &entries {
+                                            lib.upsert(e.clone());
+                                        }
                                         let _ = lib.save();
                                         this.media_lib_cache = Some(lib);
-                                        this.media_lib_cache_key = (MediaLibCategory::AllTracks, None);
+                                        this.media_lib_cache_key =
+                                            (MediaLibCategory::AllTracks, None);
                                         if !entries.is_empty() {
                                             let p = this.player.clone();
-                                            runtime().spawn_blocking(move || { let _ = p.play_at_index(first_idx); });
+                                            runtime().spawn_blocking(move || {
+                                                let _ = p.play_at_index(first_idx);
+                                            });
                                         }
-                                        tracing::info!("[Menu] Loaded {} tracks from folder", entries.len());
+                                        tracing::info!(
+                                            "[Menu] Loaded {} tracks from folder",
+                                            entries.len()
+                                        );
                                     }
                                     Err(e) => tracing::warn!("Scan folder failed: {}", e),
                                 }
                             }
                             cx.notify();
-                        });
+                        },
+                    );
                 }
             }))
             .item(PopupMenuItem::new(s_open_url).on_click({
@@ -2002,56 +2500,85 @@ impl MusicPlayer {
                     weak.update(cx, |this, cx| {
                         this.url_dialog_open = true;
                         cx.notify();
-                    }).ok();
+                    })
+                    .ok();
                 }
             }))
             .item(PopupMenuItem::new(s_open_playlist).on_click({
                 let weak = weak.clone();
                 move |_, _, cx| {
-                    run_blocking_dialog_app(cx, &weak,
-                        || rfd::FileDialog::new()
-                            .add_filter(i18n::global_tr().nav_playlists, &["m3u", "m3u8", "wpl", "ttpl", "playlist"])
-                            .pick_file(),
+                    run_blocking_dialog_app(
+                        cx,
+                        &weak,
+                        || {
+                            rfd::FileDialog::new()
+                                .add_filter(
+                                    i18n::global_tr().nav_playlists,
+                                    &["m3u", "m3u8", "wpl", "ttpl", "playlist"],
+                                )
+                                .pick_file()
+                        },
                         |file, this, cx| {
                             if let Some(file) = file {
                                 let path = file.to_string_lossy().to_string();
-                                let ext = std::path::Path::new(&path).extension()
-                                    .and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
-                                let result: Result<Vec<crate::core::playlist::Track>, String> = match ext.as_str() {
-                                    "m3u" | "m3u8" => crate::core::playlist::Playlist::import_m3u(&path).map_err(|e| e.to_string()),
-                                    "wpl" | "ttpl" | "playlist" => {
-                                        match crate::playlist_format::read_playlist(&path) {
-                                            Ok(paths) => Ok(paths.into_iter().map(|p| crate::core::playlist::Track::new(&p)).collect()),
-                                            Err(e) => Err(e.to_string()),
+                                let ext = std::path::Path::new(&path)
+                                    .extension()
+                                    .and_then(|e| e.to_str())
+                                    .unwrap_or("")
+                                    .to_lowercase();
+                                let result: Result<Vec<crate::core::playlist::Track>, String> =
+                                    match ext.as_str() {
+                                        "m3u" | "m3u8" => {
+                                            crate::core::playlist::Playlist::import_m3u(&path)
+                                                .map_err(|e| e.to_string())
                                         }
-                                    }
-                                    _ => Err(crate::gui::i18n::global_tr().format_unsupported.to_string()),
-                                };
+                                        "wpl" | "ttpl" | "playlist" => {
+                                            match crate::playlist_format::read_playlist(&path) {
+                                                Ok(paths) => Ok(paths
+                                                    .into_iter()
+                                                    .map(|p| crate::core::playlist::Track::new(&p))
+                                                    .collect()),
+                                                Err(e) => Err(e.to_string()),
+                                            }
+                                        }
+                                        _ => Err(crate::gui::i18n::global_tr()
+                                            .format_unsupported
+                                            .to_string()),
+                                    };
                                 match result {
                                     Ok(tracks) => {
                                         let mut pl = this.player.playlist_mut();
                                         pl.clear();
                                         pl.add_tracks(tracks);
                                         let p = this.player.clone();
-                                        runtime().spawn_blocking(move || { let _ = p.play_at_index(0); });
+                                        runtime().spawn_blocking(move || {
+                                            let _ = p.play_at_index(0);
+                                        });
                                         tracing::info!("[Menu] Loaded playlist: {}", path);
                                     }
-                                    Err(e) => tracing::error!("[Menu] Failed to load playlist: {}", e),
+                                    Err(e) => {
+                                        tracing::error!("[Menu] Failed to load playlist: {}", e)
+                                    }
                                 }
                             }
                             cx.notify();
-                        });
+                        },
+                    );
                 }
             }))
             .separator()
             .item(PopupMenuItem::new(s_save_as_new).on_click({
                 let weak = weak.clone();
                 move |_, _, cx| {
-                    run_blocking_dialog_app(cx, &weak,
-                        || rfd::FileDialog::new()
-                            .add_filter(i18n::global_tr().filter_playlists, &["m3u", "m3u8"])
-                            .set_file_name("playlist.m3u")
-                            .save_file(),
+                    run_blocking_dialog_app(
+                        cx,
+                        &weak,
+                        || {
+                            rfd::FileDialog::new()
+                                .add_filter(i18n::global_tr().filter_playlists, &["m3u", "m3u8"])
+                                .set_file_name("playlist.m3u")
+                                .save_file()
+                        },
                         |file, this, cx| {
                             if let Some(file) = file {
                                 let path = file.to_string_lossy().to_string();
@@ -2061,7 +2588,8 @@ impl MusicPlayer {
                                 }
                             }
                             cx.notify();
-                        });
+                        },
+                    );
                 }
             }))
             .separator()
@@ -2105,38 +2633,74 @@ impl MusicPlayer {
             let s_ab_b = tr.menu_ab_set_b;
             let s_ab_cont = tr.menu_ab_continue;
             let s_ab_clear = tr.menu_ab_clear;
-            menu.item(PopupMenuItem::new(s_toggle).on_click(move |_, _, _| { let _ = p1.toggle_pause(); }))
-                .item(PopupMenuItem::new(s_stop).on_click(move |_, _, _| { let _ = p2.stop(); }))
-                .item(PopupMenuItem::new(s_prev).on_click(move |_, _, _| { let p = p3.clone(); runtime().spawn_blocking(move || { let _ = p.prev(); }); }))
-                .item(PopupMenuItem::new(s_next).on_click(move |_, _, _| { let p = p4.clone(); runtime().spawn_blocking(move || { let _ = p.next(); }); }))
-                .separator()
-                .item(PopupMenuItem::new(s_rewind5).on_click({
-                    let p = p14.clone();
-                    move |_, _, _| {
-                        let pos = p.position();
-                        let _ = p.seek(std::time::Duration::from_secs_f64((pos.as_secs_f64() - 5.0).max(0.0)));
-                    }
-                }))
-                .item(PopupMenuItem::new(s_forward5).on_click(move |_, _, _| {
-                    let pos = p14.position();
-                    let _ = p14.seek(std::time::Duration::from_secs_f64(pos.as_secs_f64() + 5.0));
-                }))
-                .separator()
-                .item(PopupMenuItem::new(s_speed_up).on_click(move |_, _, _| { let _ = p5.speed_up(); }))
-                .item(PopupMenuItem::new(s_slow_down).on_click(move |_, _, _| { let _ = p6.speed_down(); }))
-                .item(PopupMenuItem::new(s_orig_speed).on_click(move |_, _, _| { let _ = p7.set_speed(1.0); }))
-                .separator()
-                .item(PopupMenuItem::new(s_pitch_up).on_click(move |_, _, _| { let _ = p8.pitch_up(); }))
-                .item(PopupMenuItem::new(s_pitch_down).on_click(move |_, _, _| { let _ = p9.pitch_down(); }))
-                .item(PopupMenuItem::new(s_orig_pitch).on_click(move |_, _, _| { let _ = p10.set_pitch(0); }))
-                .separator()
-                .item(PopupMenuItem::new(s_ab_a).on_click(move |_, _, _| { let _ = p11.ab_set_a(); }))
-                .item(PopupMenuItem::new(s_ab_b).on_click(move |_, _, _| { let _ = p12.ab_set_b(); }))
-                .item(PopupMenuItem::new(s_ab_cont).on_click({
-                    let p = p13.clone();
-                    move |_, _, _| { let _ = p.ab_continue(); }
-                }))
-                .item(PopupMenuItem::new(s_ab_clear).on_click(move |_, _, _| { p13.ab_reset(); }))
+            menu.item(PopupMenuItem::new(s_toggle).on_click(move |_, _, _| {
+                let _ = p1.toggle_pause();
+            }))
+            .item(PopupMenuItem::new(s_stop).on_click(move |_, _, _| {
+                let _ = p2.stop();
+            }))
+            .item(PopupMenuItem::new(s_prev).on_click(move |_, _, _| {
+                let p = p3.clone();
+                runtime().spawn_blocking(move || {
+                    let _ = p.prev();
+                });
+            }))
+            .item(PopupMenuItem::new(s_next).on_click(move |_, _, _| {
+                let p = p4.clone();
+                runtime().spawn_blocking(move || {
+                    let _ = p.next();
+                });
+            }))
+            .separator()
+            .item(PopupMenuItem::new(s_rewind5).on_click({
+                let p = p14.clone();
+                move |_, _, _| {
+                    let pos = p.position();
+                    let _ = p.seek(std::time::Duration::from_secs_f64(
+                        (pos.as_secs_f64() - 5.0).max(0.0),
+                    ));
+                }
+            }))
+            .item(PopupMenuItem::new(s_forward5).on_click(move |_, _, _| {
+                let pos = p14.position();
+                let _ = p14.seek(std::time::Duration::from_secs_f64(pos.as_secs_f64() + 5.0));
+            }))
+            .separator()
+            .item(PopupMenuItem::new(s_speed_up).on_click(move |_, _, _| {
+                let _ = p5.speed_up();
+            }))
+            .item(PopupMenuItem::new(s_slow_down).on_click(move |_, _, _| {
+                let _ = p6.speed_down();
+            }))
+            .item(PopupMenuItem::new(s_orig_speed).on_click(move |_, _, _| {
+                let _ = p7.set_speed(1.0);
+            }))
+            .separator()
+            .item(PopupMenuItem::new(s_pitch_up).on_click(move |_, _, _| {
+                let _ = p8.pitch_up();
+            }))
+            .item(PopupMenuItem::new(s_pitch_down).on_click(move |_, _, _| {
+                let _ = p9.pitch_down();
+            }))
+            .item(PopupMenuItem::new(s_orig_pitch).on_click(move |_, _, _| {
+                let _ = p10.set_pitch(0);
+            }))
+            .separator()
+            .item(PopupMenuItem::new(s_ab_a).on_click(move |_, _, _| {
+                let _ = p11.ab_set_a();
+            }))
+            .item(PopupMenuItem::new(s_ab_b).on_click(move |_, _, _| {
+                let _ = p12.ab_set_b();
+            }))
+            .item(PopupMenuItem::new(s_ab_cont).on_click({
+                let p = p13.clone();
+                move |_, _, _| {
+                    let _ = p.ab_continue();
+                }
+            }))
+            .item(PopupMenuItem::new(s_ab_clear).on_click(move |_, _, _| {
+                p13.ab_reset();
+            }))
         })
     }
 
@@ -2173,37 +2737,56 @@ impl MusicPlayer {
             menu.item(PopupMenuItem::new(s_add_file).on_click({
                 let weak = weak_playlist.clone();
                 move |_, _, cx| {
-                    run_blocking_dialog_app(cx, &weak,
-                        || rfd::FileDialog::new()
-                            .add_filter(i18n::global_tr().filter_audio_files, &["mp3", "flac", "wav", "ogg", "aac", "m4a", "wma", "ape"])
-                            .pick_files(),
+                    run_blocking_dialog_app(
+                        cx,
+                        &weak,
+                        || {
+                            rfd::FileDialog::new()
+                                .add_filter(
+                                    i18n::global_tr().filter_audio_files,
+                                    &["mp3", "flac", "wav", "ogg", "aac", "m4a", "wma", "ape"],
+                                )
+                                .pick_files()
+                        },
                         |paths, this, cx| {
                             if let Some(paths) = paths {
                                 let mut pl = this.player.playlist_mut();
                                 for path in &paths {
-                                    pl.add_track(crate::core::playlist::Track::new(path.to_str().unwrap_or_default()));
+                                    pl.add_track(crate::core::playlist::Track::new(
+                                        path.to_str().unwrap_or_default(),
+                                    ));
                                 }
                             }
                             cx.notify();
-                        });
+                        },
+                    );
                 }
             }))
             .item(PopupMenuItem::new(s_add_folder).on_click({
                 let weak = weak_playlist.clone();
                 move |_, _, cx| {
-                    run_blocking_dialog_app(cx, &weak,
+                    run_blocking_dialog_app(
+                        cx,
+                        &weak,
                         || rfd::FileDialog::new().pick_folder(),
                         |folder, this, cx| {
                             if let Some(folder) = folder {
-                                if let Ok(entries) = crate::media::scan_directory(folder.to_str().unwrap_or_default(), true, None) {
+                                if let Ok(entries) = crate::media::scan_directory(
+                                    folder.to_str().unwrap_or_default(),
+                                    true,
+                                    None,
+                                ) {
                                     let mut pl = this.player.playlist_mut();
                                     for e in entries {
-                                        pl.add_track(crate::core::playlist::Track::new(&e.file_path));
+                                        pl.add_track(crate::core::playlist::Track::new(
+                                            &e.file_path,
+                                        ));
                                     }
                                 }
                             }
                             cx.notify();
-                        });
+                        },
+                    );
                 }
             }))
             .item(PopupMenuItem::new(s_add_from_lib).on_click({
@@ -2224,7 +2807,8 @@ impl MusicPlayer {
                     weak.update(cx, |this, cx| {
                         this.url_dialog_open = true;
                         cx.notify();
-                    }).ok();
+                    })
+                    .ok();
                 }
             }))
             .item(PopupMenuItem::new(s_remove_sel).on_click({
@@ -2237,7 +2821,8 @@ impl MusicPlayer {
                         }
                         // Collect selected indices descending so removal
                         // doesn't shift the indices still to remove.
-                        let mut indices: Vec<usize> = this.playlist_selected.iter().copied().collect();
+                        let mut indices: Vec<usize> =
+                            this.playlist_selected.iter().copied().collect();
                         indices.sort_unstable_by(|a, b| b.cmp(a));
                         let mut pl = this.player.playlist_mut();
                         for idx in &indices {
@@ -2247,7 +2832,8 @@ impl MusicPlayer {
                         this.playlist_selected.clear();
                         tracing::info!("[Playlist] 删除选中 {} 首", removed);
                         cx.notify();
-                    }).ok();
+                    })
+                    .ok();
                 }
             }))
             .item(PopupMenuItem::new(s_delete_disk).on_click({
@@ -2259,7 +2845,8 @@ impl MusicPlayer {
                             return;
                         }
                         let indices: Vec<usize> = {
-                            let mut v: Vec<usize> = this.playlist_selected.iter().copied().collect();
+                            let mut v: Vec<usize> =
+                                this.playlist_selected.iter().copied().collect();
                             v.sort_unstable_by(|a, b| b.cmp(a));
                             v
                         };
@@ -2282,12 +2869,10 @@ impl MusicPlayer {
                             }
                         }
                         this.playlist_selected.clear();
-                        tracing::info!(
-                            "[Playlist] 从磁盘删除: {} 成功, {} 失败",
-                            deleted, failed
-                        );
+                        tracing::info!("[Playlist] 从磁盘删除: {} 成功, {} 失败", deleted, failed);
                         cx.notify();
-                    }).ok();
+                    })
+                    .ok();
                 }
             }))
             .item(PopupMenuItem::new(s_clear_list).on_click({
@@ -2316,35 +2901,51 @@ impl MusicPlayer {
                 let player = player.clone();
                 move |_, _, cx| {
                     let player_build = player.clone();
-                    run_blocking_dialog_app(cx, &weak, move || {
-                        let pl = player_build.playlist();
-                        let missing: Vec<(usize, String)> = (0..pl.len())
-                            .filter_map(|i| {
-                                pl.get(i).filter(|t| !std::path::Path::new(&t.file_path).exists()).map(|t| {
-                                    let name = if !t.title.is_empty() { t.title.clone() } else { t.file_name.clone() };
-                                    (i, name)
+                    run_blocking_dialog_app(
+                        cx,
+                        &weak,
+                        move || {
+                            let pl = player_build.playlist();
+                            let missing: Vec<(usize, String)> = (0..pl.len())
+                                .filter_map(|i| {
+                                    pl.get(i)
+                                        .filter(|t| !std::path::Path::new(&t.file_path).exists())
+                                        .map(|t| {
+                                            let name = if !t.title.is_empty() {
+                                                t.title.clone()
+                                            } else {
+                                                t.file_name.clone()
+                                            };
+                                            (i, name)
+                                        })
                                 })
-                            })
-                            .collect();
-                        drop(pl);
-                        let mut replacements = Vec::new();
-                        for (i, name) in missing {
-                            if let Some(new_path) = rfd::FileDialog::new().set_title(format!("修复: {}", name)).pick_file() {
-                                replacements.push((i, new_path.to_string_lossy().to_string()));
+                                .collect();
+                            drop(pl);
+                            let mut replacements = Vec::new();
+                            for (i, name) in missing {
+                                if let Some(new_path) = rfd::FileDialog::new()
+                                    .set_title(
+                                        i18n::global_tr().pl_repair_title.replace("{}", &name),
+                                    )
+                                    .pick_file()
+                                {
+                                    replacements.push((i, new_path.to_string_lossy().to_string()));
+                                }
                             }
-                        }
-                        replacements
-                    }, |replacements, this, _cx| {
-                        let count = replacements.len();
-                        for (i, new_path) in replacements {
-                            if let Some(track) = this.player.playlist_mut().get_mut(i) {
-                                track.file_path = new_path;
+                            replacements
+                        },
+                        |replacements, this, _cx| {
+                            let count = replacements.len();
+                            for (i, new_path) in replacements {
+                                if let Some(track) = this.player.playlist_mut().get_mut(i) {
+                                    track.file_path = new_path;
+                                }
                             }
-                        }
-                        if count > 0 {
-                            tracing::info!("[修复] 已修复 {} 个曲目路径", count);
-                        }
-                    });
+                            if count > 0 {
+                                tracing::info!("[修复] 已修复 {} 个曲目路径", count);
+                            }
+                        },
+                    );
                 }
             }))
             .separator()
@@ -2360,7 +2961,7 @@ impl MusicPlayer {
                 let p = player.clone();
                 move |_, _, _| {
                     let name = p.active_playlist_name();
-                    let new_name = format!("{} (副本)", name);
+                    let new_name = i18n::global_tr().pl_copy_suffix.replace("{}", &name);
                     let _ = p.create_playlist(&new_name);
                     let _ = p.switch_playlist(&new_name);
                     let _ = p.save_current_playlist();
@@ -2372,42 +2973,48 @@ impl MusicPlayer {
                 let p = player.clone();
                 move |_, _, _| {
                     // Default sort by title ascending
-                    p.playlist_mut().sort(crate::core::playlist::SortMode::Title, false);
+                    p.playlist_mut()
+                        .sort(crate::core::playlist::SortMode::Title, false);
                     tracing::info!("Playlist sorted by title");
                 }
             }))
             .item(PopupMenuItem::new(s_sort_artist).on_click({
                 let p = player.clone();
                 move |_, _, _| {
-                    p.playlist_mut().sort(crate::core::playlist::SortMode::Artist, false);
+                    p.playlist_mut()
+                        .sort(crate::core::playlist::SortMode::Artist, false);
                     tracing::info!("Playlist sorted by artist");
                 }
             }))
             .item(PopupMenuItem::new(s_sort_album).on_click({
                 let p = player.clone();
                 move |_, _, _| {
-                    p.playlist_mut().sort(crate::core::playlist::SortMode::Album, false);
+                    p.playlist_mut()
+                        .sort(crate::core::playlist::SortMode::Album, false);
                     tracing::info!("Playlist sorted by album");
                 }
             }))
             .item(PopupMenuItem::new(s_sort_duration).on_click({
                 let p = player.clone();
                 move |_, _, _| {
-                    p.playlist_mut().sort(crate::core::playlist::SortMode::Time, false);
+                    p.playlist_mut()
+                        .sort(crate::core::playlist::SortMode::Time, false);
                     tracing::info!("Playlist sorted by duration");
                 }
             }))
             .item(PopupMenuItem::new(s_sort_filename).on_click({
                 let p = player.clone();
                 move |_, _, _| {
-                    p.playlist_mut().sort(crate::core::playlist::SortMode::FileName, false);
+                    p.playlist_mut()
+                        .sort(crate::core::playlist::SortMode::FileName, false);
                     tracing::info!("Playlist sorted by filename");
                 }
             }))
             .item(PopupMenuItem::new(s_sort_random).on_click({
                 let p = player.clone();
                 move |_, _, _| {
-                    p.playlist_mut().sort(crate::core::playlist::SortMode::Random, false);
+                    p.playlist_mut()
+                        .sort(crate::core::playlist::SortMode::Random, false);
                     tracing::info!("Playlist shuffled");
                 }
             }))
@@ -2422,11 +3029,7 @@ impl MusicPlayer {
     }
 
     /// Lyric menu: show/hide, reload, copy, edit, download, offset, save, embed.
-    fn render_menu_lyric(
-        &self,
-        tr: &Tr,
-        weak: &gpui::WeakEntity<MusicPlayer>,
-    ) -> impl IntoElement {
+    fn render_menu_lyric(&self, tr: &Tr, weak: &gpui::WeakEntity<MusicPlayer>) -> impl IntoElement {
         let s_lyric_label = tr.menu_lyric;
         let s_reload_lyric = tr.menu_reload_lyric;
         let s_copy_line = tr.menu_copy_current_line;
@@ -2443,7 +3046,11 @@ impl MusicPlayer {
         let s_assoc_lyric = tr.menu_associate_lyric;
         let s_embed_lyric = tr.menu_embed_lyric;
         let lyric_visible_now = self.lyric_visible;
-        let s_hide_show = if lyric_visible_now { tr.menu_hide_lyric.to_string() } else { tr.menu_show_lyric.to_string() };
+        let s_hide_show = if lyric_visible_now {
+            tr.menu_hide_lyric.to_string()
+        } else {
+            tr.menu_show_lyric.to_string()
+        };
         let weak = weak.clone();
         let player = self.player.clone();
         layout::menu_dropdown(s_lyric_label, IconName::BookOpen, {
@@ -2459,7 +3066,8 @@ impl MusicPlayer {
                         weak.update(cx, |this, cx| {
                             this.lyric_visible = !this.lyric_visible;
                             cx.notify();
-                        }).ok();
+                        })
+                        .ok();
                     }
                 }))
                 .item(PopupMenuItem::new(s_reload_lyric).on_click({
@@ -2470,7 +3078,8 @@ impl MusicPlayer {
                                 this.load_lyrics_for_track(&track.file_path);
                             }
                             cx.notify();
-                        }).ok();
+                        })
+                        .ok();
                     }
                 }))
                 .item(PopupMenuItem::new(s_copy_line).on_click({
@@ -2485,7 +3094,8 @@ impl MusicPlayer {
                                     }
                                 }
                             }
-                        }).ok();
+                        })
+                        .ok();
                     }
                 }))
                 .item(PopupMenuItem::new(s_copy_all).on_click({
@@ -2493,11 +3103,16 @@ impl MusicPlayer {
                     move |_, _, cx| {
                         weak.update(cx, |this, _cx| {
                             if let Some(lyrics) = &this.lyric_state.lyrics {
-                                let all: Vec<String> = lyrics.lines.iter().map(|l| lyrics.display_text(l)).collect();
+                                let all: Vec<String> = lyrics
+                                    .lines
+                                    .iter()
+                                    .map(|l| lyrics.display_text(l))
+                                    .collect();
                                 copy_text_to_clipboard(&all.join("\n"));
                                 tracing::info!("[Lyric] Copied all lyrics");
                             }
-                        }).ok();
+                        })
+                        .ok();
                     }
                 }))
                 .item(PopupMenuItem::new(s_edit_lyric).on_click(move |_, _, _| {
@@ -2505,18 +3120,24 @@ impl MusicPlayer {
                     if let Some(track) = p3.playlist().current_track() {
                         let path = std::path::Path::new(&track.file_path);
                         if let Some(parent) = path.parent() {
-                            let stem = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+                            let stem = path
+                                .file_stem()
+                                .map(|s| s.to_string_lossy().to_string())
+                                .unwrap_or_default();
                             let lrc_path = parent.join(format!("{}.lrc", stem));
                             let path_str = lrc_path.to_string_lossy().to_string();
                             tracing::info!("Opening lyric editor for: {}", path_str);
                             // Would open editor window here
                             #[cfg(windows)]
                             {
-                                let _ = std::process::Command::new("notepad").arg(&path_str).spawn();
+                                let _ =
+                                    std::process::Command::new("notepad").arg(&path_str).spawn();
                             }
                             #[cfg(not(windows))]
                             {
-                                let _ = std::process::Command::new("xdg-open").arg(&path_str).spawn();
+                                let _ = std::process::Command::new("xdg-open")
+                                    .arg(&path_str)
+                                    .spawn();
                             }
                         }
                     }
@@ -2541,10 +3162,16 @@ impl MusicPlayer {
                         let _ = weak.update(cx, |this, _cx| {
                             let tracks = this.player.playlist().tracks().to_vec();
                             let total = tracks.len();
-                            if total == 0 { return; }
+                            if total == 0 {
+                                return;
+                            }
                             this.download_state.total_tracks = total;
                             this.download_state.progress = 0.0;
-                            this.download_state.status = format!("批量下载歌词: 0/{}", total);
+                            this.download_state.status = this
+                                .tr
+                                .lyd_batch_progress
+                                .replacen("{}", "0", 1)
+                                .replacen("{}", &total.to_string(), 1);
                             let source = this.download_state.source.clone();
                             let include_trans = this.download_state.include_translation;
                             let _save_to_song = this.download_state.save_to_song_dir;
@@ -2553,42 +3180,64 @@ impl MusicPlayer {
                             this.pending_download_tx = Some(tx.clone());
                             runtime().spawn(async move {
                                 for (i, track) in tracks.iter().enumerate() {
-                                    let keyword = if !track.artist.is_empty() && !track.title.is_empty() {
-                                        format!("{} {}", track.artist, track.title)
-                                    } else {
-                                        std::path::Path::new(&track.file_path)
-                                            .file_stem()
-                                            .and_then(|s| s.to_str())
-                                            .unwrap_or("")
-                                            .to_string()
-                                    };
-                                    if keyword.is_empty() { continue; }
-                                    if let Ok(results) = lyric_download::search_lyrics(&source, &keyword).await {
+                                    let keyword =
+                                        if !track.artist.is_empty() && !track.title.is_empty() {
+                                            format!("{} {}", track.artist, track.title)
+                                        } else {
+                                            std::path::Path::new(&track.file_path)
+                                                .file_stem()
+                                                .and_then(|s| s.to_str())
+                                                .unwrap_or("")
+                                                .to_string()
+                                        };
+                                    if keyword.is_empty() {
+                                        continue;
+                                    }
+                                    if let Ok(results) =
+                                        lyric_download::search_lyrics(&source, &keyword).await
+                                    {
                                         if let Some(best) = results.first() {
                                             match lyric_download::download_lyric(
-                                                &source, &best.id, include_trans,
-                                            ).await {
+                                                &source,
+                                                &best.id,
+                                                include_trans,
+                                            )
+                                            .await
+                                            {
                                                 Ok(lrc_text) => {
                                                     // Compute save path for this track
-                                                    let track_path = std::path::Path::new(&track.file_path);
-                                                    let stem = track_path.file_stem().and_then(|s| s.to_str()).unwrap_or("unknown");
-                                                    let parent = track_path.parent().unwrap_or(std::path::Path::new("."));
-                                                    let save_path = parent.join("lyrics").join(format!("{}.lrc", stem));
+                                                    let track_path =
+                                                        std::path::Path::new(&track.file_path);
+                                                    let stem = track_path
+                                                        .file_stem()
+                                                        .and_then(|s| s.to_str())
+                                                        .unwrap_or("unknown");
+                                                    let parent = track_path
+                                                        .parent()
+                                                        .unwrap_or(std::path::Path::new("."));
+                                                    let save_path = parent
+                                                        .join("lyrics")
+                                                        .join(format!("{}.lrc", stem));
                                                     if let Some(parent_dir) = save_path.parent() {
                                                         let _ = std::fs::create_dir_all(parent_dir);
                                                     }
                                                     let _ = std::fs::write(&save_path, &lrc_text);
                                                 }
                                                 Err(e) => {
-                                                    tracing::warn!("[BatchLyric] 下载失败 {}: {}", keyword, e);
+                                                    tracing::warn!(
+                                                        "[BatchLyric] 下载失败 {}: {}",
+                                                        keyword,
+                                                        e
+                                                    );
                                                 }
                                             }
                                         }
                                     }
-                                    let _ = tx.send(lyric_download::DownloadEvent::ProgressUpdate {
-                                        current: i + 1,
-                                        total,
-                                    });
+                                    let _ =
+                                        tx.send(lyric_download::DownloadEvent::ProgressUpdate {
+                                            current: i + 1,
+                                            total,
+                                        });
                                 }
                             });
                         });
@@ -2604,7 +3253,8 @@ impl MusicPlayer {
                                 this.load_lyrics_for_track(&track.file_path);
                             }
                             cx.notify();
-                        }).ok();
+                        })
+                        .ok();
                     }
                 }))
                 .item(PopupMenuItem::new(s_show_desktop).on_click({
@@ -2623,13 +3273,20 @@ impl MusicPlayer {
                                     }),
                                     window_bounds: Some(WindowBounds::Windowed(Bounds {
                                         origin: Point::default(),
-                                        size: gpui::Size { width: px(600.0), height: px(200.0) },
+                                        size: gpui::Size {
+                                            width: px(600.0),
+                                            height: px(200.0),
+                                        },
                                     })),
-                                    window_min_size: Some(gpui::Size { width: px(300.0), height: px(80.0) }),
+                                    window_min_size: Some(gpui::Size {
+                                        width: px(300.0),
+                                        height: px(80.0),
+                                    }),
                                     ..Default::default()
                                 },
                                 |window, cx| {
-                                    let view = cx.new(|cx| DesktopLyricsView::new(player, window, cx));
+                                    let view =
+                                        cx.new(|cx| DesktopLyricsView::new(player, window, cx));
                                     cx.new(|cx| Root::new(view, window, cx))
                                 },
                             );
@@ -2642,7 +3299,8 @@ impl MusicPlayer {
                         weak.update(cx, |this, _cx| {
                             this.lyric_state.locked = !this.lyric_state.locked;
                             desktop_lyrics::set_locked(this.lyric_state.locked);
-                        }).ok();
+                        })
+                        .ok();
                     }
                 }))
                 .separator()
@@ -2653,7 +3311,8 @@ impl MusicPlayer {
                             this.lyric_offset_ms += 500;
                             cx.notify();
                             tracing::info!("[Lyric] offset +0.5s -> {}ms", this.lyric_offset_ms);
-                        }).ok();
+                        })
+                        .ok();
                     }
                 }))
                 .item(PopupMenuItem::new(s_lyric_ret).on_click({
@@ -2663,7 +3322,8 @@ impl MusicPlayer {
                             this.lyric_offset_ms -= 500;
                             cx.notify();
                             tracing::info!("[Lyric] offset -0.5s -> {}ms", this.lyric_offset_ms);
-                        }).ok();
+                        })
+                        .ok();
                     }
                 }))
                 .separator()
@@ -2676,17 +3336,23 @@ impl MusicPlayer {
                             if let Some(lyrics) = &this.lyric_state.lyrics.clone() {
                                 if let Some(track) = this.player.playlist().current_track() {
                                     let path = std::path::Path::new(&track.file_path);
-                                    let stem = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+                                    let stem = path
+                                        .file_stem()
+                                        .map(|s| s.to_string_lossy().to_string())
+                                        .unwrap_or_default();
                                     let parent = path.parent().unwrap_or(std::path::Path::new("."));
                                     let lrc_path = parent.join(format!("{}.lrc", stem));
                                     let lrc_text = lyrics_to_lrc_string(lyrics);
                                     match std::fs::write(&lrc_path, lrc_text.as_bytes()) {
-                                        Ok(()) => tracing::info!("[Lyric] 保存到: {}", lrc_path.display()),
+                                        Ok(()) => {
+                                            tracing::info!("[Lyric] 保存到: {}", lrc_path.display())
+                                        }
                                         Err(e) => tracing::warn!("[Lyric] 保存失败: {}", e),
                                     }
                                 }
                             }
-                        }).ok();
+                        })
+                        .ok();
                     }
                 }))
                 .item(PopupMenuItem::new(s_assoc_lyric).on_click({
@@ -2694,14 +3360,24 @@ impl MusicPlayer {
                     move |_, _window, cx| {
                         // Pick a .lrc file, then copy/rename it next to the
                         // current track so it gets auto-loaded.
-                        run_blocking_dialog_app(cx, &weak,
-                            || rfd::FileDialog::new().add_filter("LRC", &["lrc"]).pick_file(),
+                        run_blocking_dialog_app(
+                            cx,
+                            &weak,
+                            || {
+                                rfd::FileDialog::new()
+                                    .add_filter("LRC", &["lrc"])
+                                    .pick_file()
+                            },
                             |path, this, cx| {
                                 if let Some(path) = path {
                                     if let Some(track) = this.player.playlist().current_track() {
                                         let audio = std::path::Path::new(&track.file_path);
-                                        let stem = audio.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
-                                        let parent = audio.parent().unwrap_or(std::path::Path::new("."));
+                                        let stem = audio
+                                            .file_stem()
+                                            .map(|s| s.to_string_lossy().to_string())
+                                            .unwrap_or_default();
+                                        let parent =
+                                            audio.parent().unwrap_or(std::path::Path::new("."));
                                         let dest = parent.join(format!("{}.lrc", stem));
                                         let _ = std::fs::copy(&path, &dest);
                                         this.load_lyrics_for_track(&track.file_path);
@@ -2709,7 +3385,8 @@ impl MusicPlayer {
                                     }
                                 }
                                 cx.notify();
-                            });
+                            },
+                        );
                     }
                 }))
                 .item(PopupMenuItem::new(s_embed_lyric).on_click({
@@ -2721,12 +3398,19 @@ impl MusicPlayer {
                                 this.lyric_state.lyrics.clone(),
                             ) {
                                 let lrc_text = lyrics_to_lrc_string(&lyrics);
-                                match crate::tag::writer::set_tag_field(&track.file_path, "lyrics", &lrc_text) {
-                                    Ok(()) => tracing::info!("[Lyric] 内嵌歌词成功: {}", track.file_path),
+                                match crate::tag::writer::set_tag_field(
+                                    &track.file_path,
+                                    "lyrics",
+                                    &lrc_text,
+                                ) {
+                                    Ok(()) => {
+                                        tracing::info!("[Lyric] 内嵌歌词成功: {}", track.file_path)
+                                    }
                                     Err(e) => tracing::warn!("[Lyric] 内嵌歌词失败: {}", e),
                                 }
                             }
-                        }).ok();
+                        })
+                        .ok();
                     }
                 }))
             }
@@ -2734,11 +3418,7 @@ impl MusicPlayer {
     }
 
     /// View menu: panels, mini mode, fullscreen, dark/light theme, always-on-top.
-    fn render_menu_view(
-        &self,
-        tr: &Tr,
-        weak: &gpui::WeakEntity<MusicPlayer>,
-    ) -> impl IntoElement {
+    fn render_menu_view(&self, tr: &Tr, weak: &gpui::WeakEntity<MusicPlayer>) -> impl IntoElement {
         let s_view_label = tr.menu_view;
         let s_toggle_playlist = tr.menu_toggle_playlist;
         let s_float_playlist = tr.menu_float_playlist;
@@ -2751,80 +3431,91 @@ impl MusicPlayer {
         let s_always_on_top = tr.menu_always_on_top;
         let weak = weak.clone();
         let pl = self.player.clone();
-        layout::menu_dropdown(s_view_label, IconName::LayoutDashboard, move |menu, _, _| {
-            let cfg = crate::config::Config::load();
-            let dark = cfg.appearance.dark_mode;
-            menu.item(PopupMenuItem::new(s_toggle_playlist).on_click(|_, _, _| {
-                ACTIVE_PANEL.store(0, Ordering::Relaxed);
-            }))
-            .item(PopupMenuItem::new(s_float_playlist).on_click({
-                let pl = pl.clone();
-                move |_, _, cx| {
-                    open_floating_playlist(cx, pl.clone());
-                }
-            }))
-            .item(PopupMenuItem::new(s_toggle_menubar).on_click({
-                let weak = weak.clone();
-                move |_, _, cx| {
-                    MENUBAR_VISIBLE.fetch_xor(true, Ordering::Relaxed);
-                    weak.update(cx, |_, cx| cx.notify()).ok();
-                }
-            }))
-            .item(PopupMenuItem::new(s_toggle_statusbar).on_click({
-                let weak = weak.clone();
-                move |_, _, cx| {
-                    STATUSBAR_VISIBLE.fetch_xor(true, Ordering::Relaxed);
-                    weak.update(cx, |_, cx| cx.notify()).ok();
-                }
-            }))
-            .separator()
-            .item(PopupMenuItem::new(s_mini_mode).on_click(|_, window, _| {
-                let is_mini = MINI_MODE.fetch_xor(true, Ordering::Relaxed);
-                if is_mini {
-                    // Leaving mini mode: restore the pre-mini window size
-                    // instead of a hard-coded default.
-                    let saved = PRE_MINI_SIZE.lock().unwrap().take();
-                    let (w, h) = saved.unwrap_or((1200.0, 800.0));
-                    window.resize(gpui::Size { width: px(w), height: px(h) });
-                } else {
-                    // Entering mini mode: remember the current size.
-                    let b = window.bounds();
-                    let w: f32 = b.size.width.into();
-                    let h: f32 = b.size.height.into();
-                    *PRE_MINI_SIZE.lock().unwrap() = Some((w, h));
-                    window.resize(gpui::Size { width: px(340.0), height: px(520.0) });
-                }
-            }))
-            .item(PopupMenuItem::new(s_fullscreen).on_click(|_, window, _| {
-                window.toggle_fullscreen();
-            }))
-            .separator()
-            .item(PopupMenuItem::new(if dark { s_toggle_light } else { s_toggle_dark }).on_click({
-                let weak = weak.clone();
-                move |_, _, cx| {
-                    let mut cfg = crate::config::Config::load();
-                    cfg.appearance.dark_mode = !cfg.appearance.dark_mode;
-                    let _ = cfg.save();
-                    let d = cfg.appearance.dark_mode;
-                    let theme = theme::ThemeName::from_config(&cfg.appearance.theme);
-                    weak.update(cx, |this, cx| {
-                        this.colours = UiColors::build(d, &theme);
-                        cx.notify();
-                    }).ok();
-                }
-            }))
-            .item(PopupMenuItem::new(s_always_on_top).on_click(|_, _, _| {
-                toggle_always_on_top();
-            }))
-        })
+        layout::menu_dropdown(
+            s_view_label,
+            IconName::LayoutDashboard,
+            move |menu, _, _| {
+                let cfg = crate::config::Config::load();
+                let dark = cfg.appearance.dark_mode;
+                menu.item(PopupMenuItem::new(s_toggle_playlist).on_click(|_, _, _| {
+                    ACTIVE_PANEL.store(0, Ordering::Relaxed);
+                }))
+                .item(PopupMenuItem::new(s_float_playlist).on_click({
+                    let pl = pl.clone();
+                    move |_, _, cx| {
+                        open_floating_playlist(cx, pl.clone());
+                    }
+                }))
+                .item(PopupMenuItem::new(s_toggle_menubar).on_click({
+                    let weak = weak.clone();
+                    move |_, _, cx| {
+                        MENUBAR_VISIBLE.fetch_xor(true, Ordering::Relaxed);
+                        weak.update(cx, |_, cx| cx.notify()).ok();
+                    }
+                }))
+                .item(PopupMenuItem::new(s_toggle_statusbar).on_click({
+                    let weak = weak.clone();
+                    move |_, _, cx| {
+                        STATUSBAR_VISIBLE.fetch_xor(true, Ordering::Relaxed);
+                        weak.update(cx, |_, cx| cx.notify()).ok();
+                    }
+                }))
+                .separator()
+                .item(PopupMenuItem::new(s_mini_mode).on_click(|_, window, _| {
+                    let is_mini = MINI_MODE.fetch_xor(true, Ordering::Relaxed);
+                    if is_mini {
+                        // Leaving mini mode: restore the pre-mini window size
+                        // instead of a hard-coded default.
+                        let saved = PRE_MINI_SIZE.lock().unwrap().take();
+                        let (w, h) = saved.unwrap_or((1200.0, 800.0));
+                        window.resize(gpui::Size {
+                            width: px(w),
+                            height: px(h),
+                        });
+                    } else {
+                        // Entering mini mode: remember the current size.
+                        let b = window.bounds();
+                        let w: f32 = b.size.width.into();
+                        let h: f32 = b.size.height.into();
+                        *PRE_MINI_SIZE.lock().unwrap() = Some((w, h));
+                        window.resize(gpui::Size {
+                            width: px(340.0),
+                            height: px(520.0),
+                        });
+                    }
+                }))
+                .item(PopupMenuItem::new(s_fullscreen).on_click(|_, window, _| {
+                    window.toggle_fullscreen();
+                }))
+                .separator()
+                .item(
+                    PopupMenuItem::new(if dark { s_toggle_light } else { s_toggle_dark }).on_click(
+                        {
+                            let weak = weak.clone();
+                            move |_, _, cx| {
+                                let mut cfg = crate::config::Config::load();
+                                cfg.appearance.dark_mode = !cfg.appearance.dark_mode;
+                                let _ = cfg.save();
+                                let d = cfg.appearance.dark_mode;
+                                let theme = theme::ThemeName::from_config(&cfg.appearance.theme);
+                                weak.update(cx, |this, cx| {
+                                    this.colours = UiColors::build(d, &theme);
+                                    cx.notify();
+                                })
+                                .ok();
+                            }
+                        },
+                    ),
+                )
+                .item(PopupMenuItem::new(s_always_on_top).on_click(|_, _, _| {
+                    toggle_always_on_top();
+                }))
+            },
+        )
     }
 
     /// Tools menu: media library, find, browse, song info, equalizer, sleep timer, settings.
-    fn render_menu_tools(
-        &self,
-        tr: &Tr,
-        weak: &gpui::WeakEntity<MusicPlayer>,
-    ) -> impl IntoElement {
+    fn render_menu_tools(&self, tr: &Tr, weak: &gpui::WeakEntity<MusicPlayer>) -> impl IntoElement {
         let s_tools_label = tr.menu_tools;
         let s_media_lib = tr.media_lib_title;
         let s_find = tr.menu_find;
@@ -2855,7 +3546,8 @@ impl MusicPlayer {
                     weak.update(cx, |this, cx| {
                         this.modal = Some(ModalKind::SongInfo);
                         cx.notify();
-                    }).ok();
+                    })
+                    .ok();
                 }
             }))
             .item(PopupMenuItem::new(s_equalizer).on_click({
@@ -2864,7 +3556,8 @@ impl MusicPlayer {
                     weak.update(cx, |this, cx| {
                         this.modal = Some(ModalKind::Equalizer);
                         cx.notify();
-                    }).ok();
+                    })
+                    .ok();
                 }
             }))
             .item(PopupMenuItem::new(s_format_convert).on_click({
@@ -2873,21 +3566,28 @@ impl MusicPlayer {
                     weak.update(cx, |this, cx| {
                         this.modal = Some(ModalKind::FormatConvert);
                         cx.notify();
-                    }).ok();
+                    })
+                    .ok();
                 }
             }))
             .item(PopupMenuItem::new(s_online_tags).on_click({
                 let weak = weak_tools.clone();
                 move |_, _, cx| {
                     let weak = weak.clone();
-                    let current = weak.update(cx, |this, _cx| {
-                        this.player.playlist().current_index().and_then(|i| {
-                            this.player.playlist().get(i).map(|t| (i, t.title.clone(), t.artist.clone()))
+                    let current = weak
+                        .update(cx, |this, _cx| {
+                            this.player.playlist().current_index().and_then(|i| {
+                                this.player
+                                    .playlist()
+                                    .get(i)
+                                    .map(|t| (i, t.title.clone(), t.artist.clone()))
+                            })
                         })
-                    })
-                    .ok()
-                    .flatten();
-                    let Some((idx, title, artist)) = current else { return; };
+                        .ok()
+                        .flatten();
+                    let Some((idx, title, artist)) = current else {
+                        return;
+                    };
                     if title.trim().is_empty() && artist.trim().is_empty() {
                         tracing::info!("[OnlineTags] 当前曲目缺少标题/艺术家，跳过查询");
                         return;
@@ -2929,7 +3629,8 @@ impl MusicPlayer {
                     let _ = weak.update(cx, |this, cx| {
                         if let Some(lyrics) = this.lyric_state.lyrics.clone() {
                             let converted = crate::lyric::lyrics_to_simplified(&lyrics);
-                            this.lyric_state.update(Some(converted), (this.position * 1000.0) as u64);
+                            this.lyric_state
+                                .update(Some(converted), (this.position * 1000.0) as u64);
                             tracing::info!("[Lyric] 歌词已转为简体");
                             cx.notify();
                         }
@@ -2942,7 +3643,8 @@ impl MusicPlayer {
                     let _ = weak.update(cx, |this, cx| {
                         if let Some(lyrics) = this.lyric_state.lyrics.clone() {
                             let converted = crate::lyric::lyrics_to_traditional(&lyrics);
-                            this.lyric_state.update(Some(converted), (this.position * 1000.0) as u64);
+                            this.lyric_state
+                                .update(Some(converted), (this.position * 1000.0) as u64);
                             tracing::info!("[Lyric] 歌词已转为繁体");
                             cx.notify();
                         }
@@ -2974,18 +3676,15 @@ impl MusicPlayer {
                     weak.update(cx, |this, cx| {
                         this.modal = Some(ModalKind::Settings);
                         cx.notify();
-                    }).ok();
+                    })
+                    .ok();
                 }
             }))
         })
     }
 
     /// Help menu: online wiki, check updates, about dialog.
-    fn render_menu_help(
-        &self,
-        tr: &Tr,
-        weak: &gpui::WeakEntity<MusicPlayer>,
-    ) -> impl IntoElement {
+    fn render_menu_help(&self, tr: &Tr, weak: &gpui::WeakEntity<MusicPlayer>) -> impl IntoElement {
         let s_help_label = tr.menu_help;
         let s_help_content = tr.menu_help_content;
         let s_about = tr.menu_about;
@@ -2995,17 +3694,35 @@ impl MusicPlayer {
         layout::menu_dropdown(s_help_label, IconName::Info, move |menu, _, _| {
             menu.item(PopupMenuItem::new(s_help_content).on_click(|_, _, _| {
                 #[cfg(windows)]
-                let _ = std::process::Command::new("cmd").args(["/c", "start", "https://github.com/zhongyang219/MusicPlayer2/wiki"]).spawn();
+                let _ = std::process::Command::new("cmd")
+                    .args([
+                        "/c",
+                        "start",
+                        "https://github.com/zhongyang219/MusicPlayer2/wiki",
+                    ])
+                    .spawn();
                 #[cfg(target_os = "macos")]
-                let _ = std::process::Command::new("open").arg("https://github.com/zhongyang219/MusicPlayer2/wiki").spawn();
+                let _ = std::process::Command::new("open")
+                    .arg("https://github.com/zhongyang219/MusicPlayer2/wiki")
+                    .spawn();
                 #[cfg(all(not(windows), not(target_os = "macos")))]
-                let _ = std::process::Command::new("xdg-open").arg("https://github.com/zhongyang219/MusicPlayer2/wiki").spawn();
+                let _ = std::process::Command::new("xdg-open")
+                    .arg("https://github.com/zhongyang219/MusicPlayer2/wiki")
+                    .spawn();
             }))
             .item(PopupMenuItem::new(s_online_help).on_click(|_, _, _| {
                 #[cfg(windows)]
-                let _ = std::process::Command::new("cmd").args(["/c", "start", "https://github.com/zhongyang219/MusicPlayer2"]).spawn();
+                let _ = std::process::Command::new("cmd")
+                    .args([
+                        "/c",
+                        "start",
+                        "https://github.com/zhongyang219/MusicPlayer2",
+                    ])
+                    .spawn();
                 #[cfg(not(windows))]
-                let _ = std::process::Command::new("xdg-open").arg("https://github.com/zhongyang219/MusicPlayer2").spawn();
+                let _ = std::process::Command::new("xdg-open")
+                    .arg("https://github.com/zhongyang219/MusicPlayer2")
+                    .spawn();
             }))
             .item(PopupMenuItem::new(s_check_update).on_click(|_, _, _| {
                 crate::commands::system::check_update_background();
@@ -3017,7 +3734,8 @@ impl MusicPlayer {
                     weak.update(cx, |this, cx| {
                         this.modal = Some(ModalKind::About);
                         cx.notify();
-                    }).ok();
+                    })
+                    .ok();
                 }
             }))
         })
@@ -3039,18 +3757,16 @@ impl MusicPlayer {
             }));
 
         let card = match kind {
-            ModalKind::About => {
-                v_flex()
-                    .w(px(420.0))
-                    .max_h(px(520.0))
-                    .rounded(px(12.0))
-                    .bg(c.bg)
-                    .p_6()
-                    .gap_4()
-                    .child(dialogs::render_about_dialog(self.tr, c))
-                    .child(h_flex().w_full().justify_end().child(close_btn))
-                    .into_any_element()
-            }
+            ModalKind::About => v_flex()
+                .w(px(420.0))
+                .max_h(px(520.0))
+                .rounded(px(12.0))
+                .bg(c.bg)
+                .p_6()
+                .gap_4()
+                .child(dialogs::render_about_dialog(self.tr, c))
+                .child(h_flex().w_full().justify_end().child(close_btn))
+                .into_any_element(),
             ModalKind::SongInfo => {
                 let info = self.song_info_text();
                 v_flex()
@@ -3063,30 +3779,38 @@ impl MusicPlayer {
                     .child(layout::txt(self.tr.menu_song_info, 16.0, c.text_title))
                     .child(div().w_full().h(px(1.0)).bg(c.divider))
                     .child(
-                        v_flex().w_full().gap_1()
+                        v_flex()
+                            .w_full()
+                            .gap_1()
                             .children(info.iter().map(|(k, v)| {
-                                h_flex().w_full().gap_2()
-                                    .child(div().w(px(96.0)).child(layout::txt(k, 11.0, c.text_dim)))
+                                h_flex()
+                                    .w_full()
+                                    .gap_2()
+                                    .child(
+                                        div().w(px(96.0)).child(layout::txt(k, 11.0, c.text_dim)),
+                                    )
                                     .child(layout::txt(v, 12.0, c.text))
-                            }))
+                            })),
                     )
                     .child(h_flex().w_full().justify_end().child(close_btn))
                     .into_any_element()
             }
-            ModalKind::FormatConvert => {
-                self.render_format_convert_card(c, cx)
-            }
+            ModalKind::FormatConvert => self.render_format_convert_card(c, cx),
             ModalKind::TrackEditor => {
                 let weak = cx.entity().downgrade();
                 let weak_save = weak.clone();
                 // Apply a pending online-tag fill (title/artist/album/year)
                 // to the editor inputs before rendering them.
                 if let Some((t, a, al, y)) = self.pending_online_tags.take() {
-                    self.editor_title_input.update(cx, |s, cx| s.set_value(&t, window, cx));
-                    self.editor_artist_input.update(cx, |s, cx| s.set_value(&a, window, cx));
-                    self.editor_album_input.update(cx, |s, cx| s.set_value(&al, window, cx));
+                    self.editor_title_input
+                        .update(cx, |s, cx| s.set_value(&t, window, cx));
+                    self.editor_artist_input
+                        .update(cx, |s, cx| s.set_value(&a, window, cx));
+                    self.editor_album_input
+                        .update(cx, |s, cx| s.set_value(&al, window, cx));
                     if !y.is_empty() {
-                        self.editor_year_input.update(cx, |s, cx| s.set_value(&y, window, cx));
+                        self.editor_year_input
+                            .update(cx, |s, cx| s.set_value(&y, window, cx));
                     }
                 }
                 v_flex()
@@ -3098,39 +3822,108 @@ impl MusicPlayer {
                     .gap_3()
                     .child(layout::txt(self.tr.ed_title, 16.0, c.text_title))
                     .child(div().w_full().h(px(1.0)).bg(c.divider))
-                    .child(self.render_editor_field(self.tr.ed_label_title, &self.editor_title_input, c))
-                    .child(self.render_editor_field(self.tr.ed_label_artist, &self.editor_artist_input, c))
-                    .child(self.render_editor_field(self.tr.ed_label_album, &self.editor_album_input, c))
-                    .child(self.render_editor_field(self.tr.ed_label_genre, &self.editor_genre_input, c))
-                    .child(self.render_editor_field(self.tr.ed_label_year, &self.editor_year_input, c))
-                    .child(self.render_editor_field(self.tr.ed_label_track_num, &self.editor_track_num_input, c))
-                    .child(self.render_editor_field(self.tr.ed_label_rating, &self.editor_rating_input, c))
-                    .child(h_flex().w_full().justify_end().gap_2()
-                        .child(close_btn)
-                        .child(Button::new("editor_save").label(self.tr.ed_btn_save).on_click(move |_, _, cx| {
-                            let _ = weak_save.update(cx, |this, cx| {
-                                if let Some(idx) = this.editor_track_idx {
-                                    let title = this.editor_title_input.read(cx).value().to_string();
-                                    let artist = this.editor_artist_input.read(cx).value().to_string();
-                                    let album = this.editor_album_input.read(cx).value().to_string();
-                                    let genre = this.editor_genre_input.read(cx).value().to_string();
-                                    let year: u32 = this.editor_year_input.read(cx).value().parse().unwrap_or(0);
-                                    let track_num: u32 = this.editor_track_num_input.read(cx).value().parse().unwrap_or(0);
-                                    let rating: u32 = this.editor_rating_input.read(cx).value().parse().unwrap_or(0);
-                                    if let Some(track) = this.player.playlist_mut().get_mut(idx) {
-                                        track.title = title;
-                                        track.artist = artist;
-                                        track.album = album;
-                                        track.genre = genre;
-                                        track.year = year;
-                                        track.track_number = track_num;
-                                        track.rating = rating.min(5);
-                                    }
-                                    this.modal = None;
-                                }
-                                cx.notify();
-                            });
-                        }))
+                    .child(self.render_editor_field(
+                        self.tr.ed_label_title,
+                        &self.editor_title_input,
+                        c,
+                    ))
+                    .child(self.render_editor_field(
+                        self.tr.ed_label_artist,
+                        &self.editor_artist_input,
+                        c,
+                    ))
+                    .child(self.render_editor_field(
+                        self.tr.ed_label_album,
+                        &self.editor_album_input,
+                        c,
+                    ))
+                    .child(self.render_editor_field(
+                        self.tr.ed_label_genre,
+                        &self.editor_genre_input,
+                        c,
+                    ))
+                    .child(self.render_editor_field(
+                        self.tr.ed_label_year,
+                        &self.editor_year_input,
+                        c,
+                    ))
+                    .child(self.render_editor_field(
+                        self.tr.ed_label_track_num,
+                        &self.editor_track_num_input,
+                        c,
+                    ))
+                    .child(self.render_editor_field(
+                        self.tr.ed_label_rating,
+                        &self.editor_rating_input,
+                        c,
+                    ))
+                    .child(
+                        h_flex()
+                            .w_full()
+                            .justify_end()
+                            .gap_2()
+                            .child(close_btn)
+                            .child(
+                                Button::new("editor_save")
+                                    .label(self.tr.ed_btn_save)
+                                    .on_click(move |_, _, cx| {
+                                        let _ = weak_save.update(cx, |this, cx| {
+                                            if let Some(idx) = this.editor_track_idx {
+                                                let title = this
+                                                    .editor_title_input
+                                                    .read(cx)
+                                                    .value()
+                                                    .to_string();
+                                                let artist = this
+                                                    .editor_artist_input
+                                                    .read(cx)
+                                                    .value()
+                                                    .to_string();
+                                                let album = this
+                                                    .editor_album_input
+                                                    .read(cx)
+                                                    .value()
+                                                    .to_string();
+                                                let genre = this
+                                                    .editor_genre_input
+                                                    .read(cx)
+                                                    .value()
+                                                    .to_string();
+                                                let year: u32 = this
+                                                    .editor_year_input
+                                                    .read(cx)
+                                                    .value()
+                                                    .parse()
+                                                    .unwrap_or(0);
+                                                let track_num: u32 = this
+                                                    .editor_track_num_input
+                                                    .read(cx)
+                                                    .value()
+                                                    .parse()
+                                                    .unwrap_or(0);
+                                                let rating: u32 = this
+                                                    .editor_rating_input
+                                                    .read(cx)
+                                                    .value()
+                                                    .parse()
+                                                    .unwrap_or(0);
+                                                if let Some(track) =
+                                                    this.player.playlist_mut().get_mut(idx)
+                                                {
+                                                    track.title = title;
+                                                    track.artist = artist;
+                                                    track.album = album;
+                                                    track.genre = genre;
+                                                    track.year = year;
+                                                    track.track_number = track_num;
+                                                    track.rating = rating.min(5);
+                                                }
+                                                this.modal = None;
+                                            }
+                                            cx.notify();
+                                        });
+                                    }),
+                            ),
                     )
                     .into_any_element()
             }
@@ -3140,7 +3933,7 @@ impl MusicPlayer {
                 let source_name = std::path::Path::new(source)
                     .file_stem()
                     .and_then(|s| s.to_str())
-                    .unwrap_or("未知");
+                    .unwrap_or(self.tr.pq_unknown);
                 let close_btn2 = Button::new("modal_close2")
                     .label(self.tr.ctrl_stop)
                     .ghost()
@@ -3154,12 +3947,20 @@ impl MusicPlayer {
                     .bg(c.bg)
                     .p_6()
                     .gap_3()
-                    .child(layout::txt(&self.tr.similar_tracks_title.replace("{}", source_name), 16.0, c.text_title))
+                    .child(layout::txt(
+                        &self.tr.similar_tracks_title.replace("{}", source_name),
+                        16.0,
+                        c.text_title,
+                    ))
                     .child(div().w_full().h(px(1.0)).bg(c.divider))
                     .child(if hits.is_empty() {
-                        v_flex().child(layout::txt(self.tr.similar_tracks_empty, 12.0, c.text_dim)).into_any_element()
+                        v_flex()
+                            .child(layout::txt(self.tr.similar_tracks_empty, 12.0, c.text_dim))
+                            .into_any_element()
                     } else {
-                        v_flex().w_full().gap_1()
+                        v_flex()
+                            .w_full()
+                            .gap_1()
                             .children(hits.iter().enumerate().map(|(i, hit)| {
                                 let hit_name = std::path::Path::new(&hit.path)
                                     .file_stem()
@@ -3168,17 +3969,34 @@ impl MusicPlayer {
                                 let dist_str = format!("{:.3}", hit.distance);
                                 let p = self.player.clone();
                                 let hit_path = hit.path.clone();
-                                let bg = if i % 2 == 0 { c.playlist_item } else { c.playlist_item_hover };
-                                h_flex().w_full().h(px(28.0)).px_3().gap_2().rounded(px(4.0)).bg(bg)
+                                let bg = if i % 2 == 0 {
+                                    c.playlist_item
+                                } else {
+                                    c.playlist_item_hover
+                                };
+                                h_flex()
+                                    .w_full()
+                                    .h(px(28.0))
+                                    .px_3()
+                                    .gap_2()
+                                    .rounded(px(4.0))
+                                    .bg(bg)
                                     .hover(|s| s.bg(c.playlist_item_selected))
-                                    .items_center().cursor(gpui::CursorStyle::PointingHand)
+                                    .items_center()
+                                    .cursor(gpui::CursorStyle::PointingHand)
                                     .child(layout::txt(&(i + 1).to_string(), 11.0, c.text_dim))
-                                    .child(div().flex_grow().child(layout::txt(hit_name, 12.0, c.text)))
+                                    .child(
+                                        div()
+                                            .flex_grow()
+                                            .child(layout::txt(hit_name, 12.0, c.text)),
+                                    )
                                     .child(layout::txt(&dist_str, 10.0, c.text_dim))
                                     .on_mouse_down(gpui::MouseButton::Left, move |_, _, _| {
                                         let p2 = p.clone();
                                         let path2 = hit_path.clone();
-                                        crate::runtime().spawn_blocking(move || { let _ = p2.play_file(&path2); });
+                                        crate::runtime().spawn_blocking(move || {
+                                            let _ = p2.play_file(&path2);
+                                        });
                                     })
                                     .into_any_element()
                             }))
@@ -3187,29 +4005,32 @@ impl MusicPlayer {
                     .child(h_flex().w_full().justify_end().child(close_btn2))
                     .into_any_element()
             }
-            ModalKind::Settings => {
-                v_flex()
-                    .w(px(640.0))
-                    .max_h(px(560.0))
-                    .rounded(px(12.0))
-                    .bg(c.bg)
-                    .overflow_hidden()
-                    .child(dialogs::render_settings_panel(self.tr, c, self.settings_tab, window, cx))
-                    .into_any_element()
-            }
-            ModalKind::Equalizer => {
-                v_flex()
-                    .w(px(580.0))
-                    .max_h(px(560.0))
-                    .rounded(px(12.0))
-                    .bg(c.bg)
-                    .overflow_hidden()
-                    .child(self.render_equalizer_panel(c, window, cx))
-                    .into_any_element()
-            }
+            ModalKind::Settings => v_flex()
+                .w(px(640.0))
+                .max_h(px(560.0))
+                .rounded(px(12.0))
+                .bg(c.bg)
+                .overflow_hidden()
+                .child(dialogs::render_settings_panel(
+                    self.tr,
+                    c,
+                    self.settings_tab,
+                    window,
+                    cx,
+                ))
+                .into_any_element(),
+            ModalKind::Equalizer => v_flex()
+                .w(px(580.0))
+                .max_h(px(560.0))
+                .rounded(px(12.0))
+                .bg(c.bg)
+                .overflow_hidden()
+                .child(self.render_equalizer_panel(c, window, cx))
+                .into_any_element(),
         };
 
-        div().size_full()
+        div()
+            .size_full()
             .bg(gpui::black().opacity(0.45))
             .flex()
             .items_center()
@@ -3221,16 +4042,54 @@ impl MusicPlayer {
     fn song_info_text(&self) -> Vec<(String, String)> {
         let mut rows = Vec::new();
         if let Some(track) = self.player.playlist().current_track() {
-            rows.push((self.tr.info_key_title.into(), if track.title.is_empty() { track.file_name.clone() } else { track.title.clone() }));
+            rows.push((
+                self.tr.info_key_title.into(),
+                if track.title.is_empty() {
+                    track.file_name.clone()
+                } else {
+                    track.title.clone()
+                },
+            ));
             rows.push((self.tr.info_key_artist.into(), track.artist.clone()));
             rows.push((self.tr.info_key_album.into(), track.album.clone()));
             let d = track.duration;
-            rows.push((self.tr.info_key_duration.into(), format!("{:02}:{:02}", d.as_secs() / 60, d.as_secs() % 60)));
+            rows.push((
+                self.tr.info_key_duration.into(),
+                format!("{:02}:{:02}", d.as_secs() / 60, d.as_secs() % 60),
+            ));
             rows.push((self.tr.info_key_type.into(), track.file_type.clone()));
-            rows.push((self.tr.info_key_bitrate.into(), if track.bitrate > 0 { format!("{} kbps", track.bitrate) } else { "--".into() }));
-            rows.push((self.tr.info_key_sample_rate.into(), if track.sample_rate > 0 { format!("{} Hz", track.sample_rate) } else { "--".into() }));
-            rows.push((self.tr.info_key_channels.into(), if track.channels > 0 { format!("{}", track.channels) } else { "--".into() }));
-            rows.push((self.tr.info_key_favourite.into(), if track.is_favourite { "是".into() } else { "否".into() }));
+            rows.push((
+                self.tr.info_key_bitrate.into(),
+                if track.bitrate > 0 {
+                    format!("{} kbps", track.bitrate)
+                } else {
+                    "--".into()
+                },
+            ));
+            rows.push((
+                self.tr.info_key_sample_rate.into(),
+                if track.sample_rate > 0 {
+                    format!("{} Hz", track.sample_rate)
+                } else {
+                    "--".into()
+                },
+            ));
+            rows.push((
+                self.tr.info_key_channels.into(),
+                if track.channels > 0 {
+                    format!("{}", track.channels)
+                } else {
+                    "--".into()
+                },
+            ));
+            rows.push((
+                self.tr.info_key_favourite.into(),
+                if track.is_favourite {
+                    self.tr.info_yes.into()
+                } else {
+                    self.tr.info_no.into()
+                },
+            ));
             rows.push((self.tr.info_key_path.into(), track.file_path.clone()));
         } else {
             rows.push((self.tr.info_hint.into(), self.tr.info_no_track.into()));
@@ -3239,22 +4098,36 @@ impl MusicPlayer {
     }
 
     /// Render a labeled input row for the track editor modal.
-    fn render_editor_field(&self, label: &str, input: &Entity<InputState>, c: &UiColors) -> impl IntoElement {
-        h_flex().w_full().gap_2().items_center()
-            .child(div().w(px(64.0)).child(layout::txt(label, 11.0, c.text_dim)))
+    fn render_editor_field(
+        &self,
+        label: &str,
+        input: &Entity<InputState>,
+        c: &UiColors,
+    ) -> impl IntoElement {
+        h_flex()
+            .w_full()
+            .gap_2()
+            .items_center()
             .child(
-                h_flex().flex_grow().h(px(28.0)).bg(c.bg).rounded(px(4.0)).px_2().items_center()
-                    .child(Input::new(input))
+                div()
+                    .w(px(64.0))
+                    .child(layout::txt(label, 11.0, c.text_dim)),
+            )
+            .child(
+                h_flex()
+                    .flex_grow()
+                    .h(px(28.0))
+                    .bg(c.bg)
+                    .rounded(px(4.0))
+                    .px_2()
+                    .items_center()
+                    .child(Input::new(input)),
             )
     }
 
     /// Render the format-conversion modal card. Picking a target format opens a
     /// file picker and converts via the bundled ffmpeg (if available).
-    fn render_format_convert_card(
-        &self,
-        c: &UiColors,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
+    fn render_format_convert_card(&self, c: &UiColors, cx: &mut Context<Self>) -> AnyElement {
         let close_btn = Button::new("fc_close2")
             .label(self.tr.fmt_convert_close)
             .ghost()
@@ -3270,64 +4143,87 @@ impl MusicPlayer {
             ("fc_aac", "aac"),
             ("fc_m4a", "m4a"),
         ];
-        let fmt_btns: Vec<AnyElement> = formats.iter().map(|(id, fmt)| {
-            let fmt = *fmt;
-            Button::new(*id)
-                .label(format!("转为 .{}", fmt))
-                .compact()
-                .ghost()
-                .on_click(cx.listener(move |_this, _, _window, cx| {
-                    let weak = cx.entity().downgrade();
-                    let fmt = fmt;
-                    run_blocking_dialog_app(cx, &weak,
-                        || rfd::FileDialog::new()
-                            .add_filter(i18n::global_tr().filter_audio_files, &["mp3", "flac", "wav", "ogg", "aac", "m4a", "wma", "ape"])
-                            .pick_file(),
-                        move |file, _this, cx| {
-                            if let Some(file) = file {
-                                let src = file.to_string_lossy().to_string();
-                                let dst = std::path::Path::new(&src).with_extension(fmt).to_string_lossy().to_string();
-                                // Run the conversion off the UI thread and report
-                                // the result back into the dialog.
-                                cx.spawn(async move |weak_view, cx| {
-                                    let src_clone = src.clone();
-                                    let dst_clone = dst.clone();
-                                    let result = tokio::task::spawn_blocking(move || {
-                                        std::process::Command::new("ffmpeg")
-                                            .args(["-y", "-i", &src_clone, &dst_clone])
-                                            .status()
+        let fmt_btns: Vec<AnyElement> = formats
+            .iter()
+            .map(|(id, fmt)| {
+                let fmt = *fmt;
+                Button::new(*id)
+                    .label(self.tr.fmt_convert_to.replace("{}", fmt))
+                    .compact()
+                    .ghost()
+                    .on_click(cx.listener(move |this, _, _window, cx| {
+                        let weak = cx.entity().downgrade();
+                        let tr = this.tr;
+                        let fmt = fmt;
+                        run_blocking_dialog_app(
+                            cx,
+                            &weak,
+                            || {
+                                rfd::FileDialog::new()
+                                    .add_filter(
+                                        i18n::global_tr().filter_audio_files,
+                                        &["mp3", "flac", "wav", "ogg", "aac", "m4a", "wma", "ape"],
+                                    )
+                                    .pick_file()
+                            },
+                            move |file, _this, cx| {
+                                if let Some(file) = file {
+                                    let src = file.to_string_lossy().to_string();
+                                    let dst = std::path::Path::new(&src)
+                                        .with_extension(fmt)
+                                        .to_string_lossy()
+                                        .to_string();
+                                    // Run the conversion off the UI thread and report
+                                    // the result back into the dialog.
+                                    cx.spawn(async move |weak_view, cx| {
+                                        let src_clone = src.clone();
+                                        let dst_clone = dst.clone();
+                                        let result = tokio::task::spawn_blocking(move || {
+                                            std::process::Command::new("ffmpeg")
+                                                .args(["-y", "-i", &src_clone, &dst_clone])
+                                                .status()
+                                        })
+                                        .await;
+                                        let msg = match result {
+                                            Ok(Ok(status)) if status.success() => {
+                                                tracing::info!(
+                                                    "[Convert] 转换成功: {} -> {}",
+                                                    src,
+                                                    dst
+                                                );
+                                                tr.fmt_convert_done.replace("{}", &dst)
+                                            }
+                                            Ok(Ok(status)) => {
+                                                tracing::error!(
+                                                    "[Convert] ffmpeg 退出码: {:?}",
+                                                    status.code()
+                                                );
+                                                tr.fmt_convert_failed_code
+                                                    .replace("{}", &format!("{:?}", status.code()))
+                                            }
+                                            Ok(Err(e)) => {
+                                                tracing::error!("[Convert] 转换失败: {}", e);
+                                                tr.fmt_convert_failed.replace("{}", &e.to_string())
+                                            }
+                                            Err(e) => {
+                                                tracing::error!("[Convert] 转换任务异常: {}", e);
+                                                tr.fmt_convert_error.replace("{}", &e.to_string())
+                                            }
+                                        };
+                                        let _ = weak_view.update(cx, |this, cx| {
+                                            this.format_convert_status = Some(msg);
+                                            cx.notify();
+                                        });
                                     })
-                                    .await;
-                                    let msg = match result {
-                                        Ok(Ok(status)) if status.success() => {
-                                            tracing::info!("[Convert] 转换成功: {} -> {}", src, dst);
-                                            format!("转换完成: {}", dst)
-                                        }
-                                        Ok(Ok(status)) => {
-                                            tracing::error!("[Convert] ffmpeg 退出码: {:?}", status.code());
-                                            format!("转换失败（ffmpeg 退出码 {:?}）", status.code())
-                                        }
-                                        Ok(Err(e)) => {
-                                            tracing::error!("[Convert] 转换失败: {}", e);
-                                            format!("转换失败: {}", e)
-                                        }
-                                        Err(e) => {
-                                            tracing::error!("[Convert] 转换任务异常: {}", e);
-                                            format!("转换任务异常: {}", e)
-                                        }
-                                    };
-                                    let _ = weak_view.update(cx, |this, cx| {
-                                        this.format_convert_status = Some(msg);
-                                        cx.notify();
-                                    });
-                                })
-                                .detach();
-                            }
-                            cx.notify();
-                        });
-                }))
-                .into_any_element()
-        }).collect();
+                                    .detach();
+                                }
+                                cx.notify();
+                            },
+                        );
+                    }))
+                    .into_any_element()
+            })
+            .collect();
 
         v_flex()
             .w(px(440.0))
@@ -3339,10 +4235,7 @@ impl MusicPlayer {
             .child(layout::txt(self.tr.menu_format_convert, 16.0, c.text_title))
             .child(layout::txt(self.tr.fmt_convert_hint, 11.0, c.text_dim))
             .child(div().w_full().h(px(1.0)).bg(c.divider))
-            .child(
-                v_flex().w_full().gap_2()
-                    .children(fmt_btns)
-            )
+            .child(v_flex().w_full().gap_2().children(fmt_btns))
             .child(if let Some(status) = &self.format_convert_status {
                 layout::txt(status, 11.0, c.text_dim).into_any_element()
             } else {
@@ -3372,7 +4265,12 @@ impl MusicPlayer {
             .size_full()
             .justify_center()
             .items_center()
-            .bg(gpui::Hsla { h: 0.0, s: 0.0, l: 0.0, a: 0.4 })
+            .bg(gpui::Hsla {
+                h: 0.0,
+                s: 0.0,
+                l: 0.0,
+                a: 0.4,
+            })
             .child(
                 v_flex()
                     .w(px(440.0))
@@ -3391,26 +4289,28 @@ impl MusicPlayer {
                             .border_color(c.border)
                             .bg(c.panel)
                             .px_3()
-                            .child(
-                                gpui_component::input::Input::new(&self.url_state)
-                                    .w_full()
-                            )
+                            .child(gpui_component::input::Input::new(&self.url_state).w_full()),
                     )
                     .child(
-                        h_flex().w_full().justify_end().gap_2()
+                        h_flex()
+                            .w_full()
+                            .justify_end()
+                            .gap_2()
                             .child(close_btn)
-                            .child(Button::new("url_play")
-                                .label(self.tr.ctrl_play)
-                                .primary()
-                                .on_click(cx.listener(|this, _, _window, _cx| {
-                                    let url = this.url_state.read(_cx).value().to_string();
-                                    if !url.is_empty() {
-                                        let _ = this.player.play_file(&url);
-                                        tracing::info!("[URL] 播放网络流: {}", url);
-                                    }
-                                    this.url_dialog_open = false;
-                                })))
-                    )
+                            .child(
+                                Button::new("url_play")
+                                    .label(self.tr.ctrl_play)
+                                    .primary()
+                                    .on_click(cx.listener(|this, _, _window, _cx| {
+                                        let url = this.url_state.read(_cx).value().to_string();
+                                        if !url.is_empty() {
+                                            let _ = this.player.play_file(&url);
+                                            tracing::info!("[URL] 播放网络流: {}", url);
+                                        }
+                                        this.url_dialog_open = false;
+                                    })),
+                            ),
+                    ),
             )
             .into_any_element()
     }
@@ -3432,98 +4332,152 @@ impl MusicPlayer {
         let save_label = format!("💾 {}{}", self.tr.lyr_ed_save, dirty_marker);
         let toolbar = h_flex()
             .w_full()
-            .px_3().py_2()
+            .px_3()
+            .py_2()
             .gap_2()
             .bg(c.control_bar_bg)
             .items_center()
-            .child(Button::new("lyr_save").label(&save_label).compact().primary()
-                .on_click(cx.listener(|this, _, _window, _cx| {
-                    if let Err(e) = this.editor_state.save() {
-                        tracing::warn!("[LyricEditor] 保存失败: {}", e);
-                    }
-                })))
-            .child(Button::new("lyr_save_as").label(self.tr.lyr_ed_save_as).compact()
-                .on_click(cx.listener(|_this, _, _window, cx| {
-                    run_blocking_dialog(cx,
-                        || rfd::FileDialog::new()
-                            .set_file_name("lyric.lrc")
-                            .add_filter("LRC", &["lrc"])
-                            .save_file(),
-                        |path, this, cx| {
-                            if let Some(path) = path {
-                                let p = path.to_string_lossy().to_string();
-                                if let Err(e) = this.editor_state.save_as(&p) {
-                                    tracing::warn!("[LyricEditor] 另存为失败: {}", e);
+            .child(
+                Button::new("lyr_save")
+                    .label(&save_label)
+                    .compact()
+                    .primary()
+                    .on_click(cx.listener(|this, _, _window, _cx| {
+                        if let Err(e) = this.editor_state.save() {
+                            tracing::warn!("[LyricEditor] 保存失败: {}", e);
+                        }
+                    })),
+            )
+            .child(
+                Button::new("lyr_save_as")
+                    .label(self.tr.lyr_ed_save_as)
+                    .compact()
+                    .on_click(cx.listener(|_this, _, _window, cx| {
+                        run_blocking_dialog(
+                            cx,
+                            || {
+                                rfd::FileDialog::new()
+                                    .set_file_name("lyric.lrc")
+                                    .add_filter("LRC", &["lrc"])
+                                    .save_file()
+                            },
+                            |path, this, cx| {
+                                if let Some(path) = path {
+                                    let p = path.to_string_lossy().to_string();
+                                    if let Err(e) = this.editor_state.save_as(&p) {
+                                        tracing::warn!("[LyricEditor] 另存为失败: {}", e);
+                                    }
                                 }
-                            }
-                            cx.notify();
-                        });
-                })))
-            .child(Button::new("lyr_open").label(self.tr.lyr_ed_open).compact()
-                .on_click(cx.listener(|_this, _, _window, cx| {
-                    run_blocking_dialog(cx,
-                        || rfd::FileDialog::new()
-                            .add_filter("LRC", &["lrc"])
-                            .pick_file(),
-                        |path, this, cx| {
-                            if let Some(path) = path {
-                                let p = path.to_string_lossy().to_string();
-                                if let Err(e) = this.editor_state.load_from_file(&p) {
-                                    tracing::warn!("[LyricEditor] 打开失败: {}", e);
+                                cx.notify();
+                            },
+                        );
+                    })),
+            )
+            .child(
+                Button::new("lyr_open")
+                    .label(self.tr.lyr_ed_open)
+                    .compact()
+                    .on_click(cx.listener(|_this, _, _window, cx| {
+                        run_blocking_dialog(
+                            cx,
+                            || {
+                                rfd::FileDialog::new()
+                                    .add_filter("LRC", &["lrc"])
+                                    .pick_file()
+                            },
+                            |path, this, cx| {
+                                if let Some(path) = path {
+                                    let p = path.to_string_lossy().to_string();
+                                    if let Err(e) = this.editor_state.load_from_file(&p) {
+                                        tracing::warn!("[LyricEditor] 打开失败: {}", e);
+                                    }
                                 }
-                            }
-                            cx.notify();
-                        });
-                })))
+                                cx.notify();
+                            },
+                        );
+                    })),
+            )
             .child(div().w(px(1.0)).h(px(16.0)).bg(c.divider))
-            .child(Button::new("lyr_add").label(self.tr.lyr_ed_insert).compact()
-                .on_click(cx.listener(|this, _, _window, _cx| {
-                    let at = this.editor_state.selected_row
-                        .unwrap_or(this.editor_state.rows.len().saturating_sub(1));
-                    this.editor_state.insert_row(at);
-                })))
-            .child(Button::new("lyr_delete").label(self.tr.lyr_ed_delete).compact()
-                .on_click(cx.listener(|this, _, _window, _cx| {
-                    if let Some(idx) = this.editor_state.selected_row {
-                        this.editor_state.delete_row(idx);
-                    }
-                })))
+            .child(
+                Button::new("lyr_add")
+                    .label(self.tr.lyr_ed_insert)
+                    .compact()
+                    .on_click(cx.listener(|this, _, _window, _cx| {
+                        let at = this
+                            .editor_state
+                            .selected_row
+                            .unwrap_or(this.editor_state.rows.len().saturating_sub(1));
+                        this.editor_state.insert_row(at);
+                    })),
+            )
+            .child(
+                Button::new("lyr_delete")
+                    .label(self.tr.lyr_ed_delete)
+                    .compact()
+                    .on_click(cx.listener(|this, _, _window, _cx| {
+                        if let Some(idx) = this.editor_state.selected_row {
+                            this.editor_state.delete_row(idx);
+                        }
+                    })),
+            )
             .child(div().w(px(1.0)).h(px(16.0)).bg(c.divider))
-            .child(Button::new("lyr_back_500").label("-500ms").compact()
-                .on_click(cx.listener(|this, _, _window, _cx| {
-                    if let Some(idx) = this.editor_state.selected_row {
-                        this.editor_state.adjust_timing(idx, -500);
-                    }
-                })))
-            .child(Button::new("lyr_back_100").label("-100ms").compact()
-                .on_click(cx.listener(|this, _, _window, _cx| {
-                    if let Some(idx) = this.editor_state.selected_row {
-                        this.editor_state.adjust_timing(idx, -100);
-                    }
-                })))
-            .child(Button::new("lyr_fwd_100").label("+100ms").compact()
-                .on_click(cx.listener(|this, _, _window, _cx| {
-                    if let Some(idx) = this.editor_state.selected_row {
-                        this.editor_state.adjust_timing(idx, 100);
-                    }
-                })))
-            .child(Button::new("lyr_fwd_500").label("+500ms").compact()
-                .on_click(cx.listener(|this, _, _window, _cx| {
-                    if let Some(idx) = this.editor_state.selected_row {
-                        this.editor_state.adjust_timing(idx, 500);
-                    }
-                })))
+            .child(
+                Button::new("lyr_back_500")
+                    .label("-500ms")
+                    .compact()
+                    .on_click(cx.listener(|this, _, _window, _cx| {
+                        if let Some(idx) = this.editor_state.selected_row {
+                            this.editor_state.adjust_timing(idx, -500);
+                        }
+                    })),
+            )
+            .child(
+                Button::new("lyr_back_100")
+                    .label("-100ms")
+                    .compact()
+                    .on_click(cx.listener(|this, _, _window, _cx| {
+                        if let Some(idx) = this.editor_state.selected_row {
+                            this.editor_state.adjust_timing(idx, -100);
+                        }
+                    })),
+            )
+            .child(
+                Button::new("lyr_fwd_100")
+                    .label("+100ms")
+                    .compact()
+                    .on_click(cx.listener(|this, _, _window, _cx| {
+                        if let Some(idx) = this.editor_state.selected_row {
+                            this.editor_state.adjust_timing(idx, 100);
+                        }
+                    })),
+            )
+            .child(
+                Button::new("lyr_fwd_500")
+                    .label("+500ms")
+                    .compact()
+                    .on_click(cx.listener(|this, _, _window, _cx| {
+                        if let Some(idx) = this.editor_state.selected_row {
+                            this.editor_state.adjust_timing(idx, 500);
+                        }
+                    })),
+            )
             .child(div().w(px(1.0)).h(px(16.0)).bg(c.divider))
-            .child(Button::new("lyr_shift_all").label(self.tr.lyr_ed_shift_all).compact()
-                .on_click(cx.listener(|this, _, _window, _cx| {
-                    this.editor_state.shift_all_timing(100);
-                })))
+            .child(
+                Button::new("lyr_shift_all")
+                    .label(self.tr.lyr_ed_shift_all)
+                    .compact()
+                    .on_click(cx.listener(|this, _, _window, _cx| {
+                        this.editor_state.shift_all_timing(100);
+                    })),
+            )
             .child(div().flex_grow())
             .child(
-                div()
-                    .text_size(px(10.0))
-                    .text_color(c.text_dim)
-                    .child(format!("{} 行{}", row_count, dirty_marker))
+                div().text_size(px(10.0)).text_color(c.text_dim).child(
+                    self.tr
+                        .lyr_ed_row_count
+                        .replacen("{}", &row_count.to_string(), 1)
+                        .replacen("{}", dirty_marker, 1),
+                ),
             )
             .into_any_element();
         children.push(toolbar);
@@ -3533,7 +4487,8 @@ impl MusicPlayer {
             children.push(
                 h_flex()
                     .w_full()
-                    .px_3().py_1()
+                    .px_3()
+                    .py_1()
                     .bg(c.panel_alt)
                     .items_center()
                     .gap_2()
@@ -3542,15 +4497,19 @@ impl MusicPlayer {
                             .text_size(px(10.0))
                             .text_color(c.text_dim)
                             .flex_grow()
-                            .child(state.file_path.clone())
+                            .child(state.file_path.clone()),
                     )
                     .child(
                         div()
                             .text_size(px(9.0))
                             .text_color(if state.dirty { c.accent } else { c.text_dim })
-                            .child(if state.dirty { format!("● {}", self.tr.lyr_ed_unsaved) } else { format!("✓ {}", self.tr.lyr_ed_saved) })
+                            .child(if state.dirty {
+                                format!("● {}", self.tr.lyr_ed_unsaved)
+                            } else {
+                                format!("✓ {}", self.tr.lyr_ed_saved)
+                            }),
                     )
-                    .into_any_element()
+                    .into_any_element(),
             );
         }
 
@@ -3567,22 +4526,22 @@ impl MusicPlayer {
                         div()
                             .text_size(px(14.0))
                             .text_color(c.text_dim)
-                            .child(self.tr.lyr_ed_empty)
+                            .child(self.tr.lyr_ed_empty),
                     )
                     .child(
                         div()
                             .text_size(px(11.0))
                             .text_color(c.text_dim)
-                            .child(self.tr.lyr_ed_hint)
+                            .child(self.tr.lyr_ed_hint),
                     )
                     .child(
                         div()
                             .mt_2()
                             .text_size(px(10.0))
                             .text_color(c.text_dim)
-                            .child("提示：选中的行可以使用时间偏移按钮调整时序")
+                            .child(self.tr.lyr_ed_tip),
                     )
-                    .into_any_element()
+                    .into_any_element(),
             );
         } else {
             let mut list = v_flex().w_full().flex_grow();
@@ -3602,22 +4561,26 @@ impl MusicPlayer {
                     h_flex()
                         .id(("lyr_row", i as u64))
                         .w_full()
-                        .px_2().py_1()
+                        .px_2()
+                        .py_1()
                         .gap_2()
                         .bg(bg)
                         .items_center()
                         .hover(|s| s.bg(c.playlist_item_selected.opacity(0.5)))
                         .cursor(gpui::CursorStyle::PointingHand)
-                        .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this: &mut MusicPlayer, _, _, _| {
-                            this.editor_state.selected_row = Some(i);
-                        }))
+                        .on_mouse_down(
+                            gpui::MouseButton::Left,
+                            cx.listener(move |this: &mut MusicPlayer, _, _, _| {
+                                this.editor_state.selected_row = Some(i);
+                            }),
+                        )
                         .child(
                             div()
                                 .w(px(28.0))
                                 .text_size(px(9.0))
                                 .text_color(if is_selected { c.text } else { c.text_dim })
                                 .text_right()
-                                .child(format!("{:03}", i + 1))
+                                .child(format!("{:03}", i + 1)),
                         )
                         .child(
                             div()
@@ -3625,7 +4588,7 @@ impl MusicPlayer {
                                 .text_size(px(11.0))
                                 .text_color(if is_selected { c.accent } else { c.text_dim })
                                 .font_family("monospace".to_string())
-                                .child(row.timestamp.clone())
+                                .child(row.timestamp.clone()),
                         )
                         .child(div().w(px(1.0)).h(px(16.0)).bg(c.divider))
                         .child(
@@ -3637,7 +4600,7 @@ impl MusicPlayer {
                                     self.tr.lyr_ed_empty_line.to_string()
                                 } else {
                                     row.text.clone()
-                                })
+                                }),
                         )
                         .child(if is_selected {
                             div()
@@ -3647,7 +4610,7 @@ impl MusicPlayer {
                                 .child("◉")
                         } else {
                             div()
-                        })
+                        }),
                 );
             }
 
@@ -3656,27 +4619,37 @@ impl MusicPlayer {
 
         // === Status bar ===
         let selection_info = match state.selected_row {
-            Some(idx) => format!("选中: #{:03}", idx + 1),
-            None => "未选中".to_string(),
+            Some(idx) => self
+                .tr
+                .lyr_ed_selected
+                .replace("{}", &format!("{:03}", idx + 1)),
+            None => self.tr.lyr_ed_none.to_string(),
         };
         children.push(
             h_flex()
                 .w_full()
-                .px_3().py_1()
+                .px_3()
+                .py_1()
                 .bg(c.control_bar_bg)
                 .items_center()
                 .gap_2()
-                .child(div().text_size(px(9.0)).text_color(c.text_dim).child(selection_info))
+                .child(
+                    div()
+                        .text_size(px(9.0))
+                        .text_color(c.text_dim)
+                        .child(selection_info),
+                )
                 .child(div().flex_grow())
-                .child(div().text_size(px(9.0)).text_color(c.text_dim).child(self.tr.lyr_ed_help))
-                .into_any_element()
+                .child(
+                    div()
+                        .text_size(px(9.0))
+                        .text_color(c.text_dim)
+                        .child(self.tr.lyr_ed_help),
+                )
+                .into_any_element(),
         );
 
-        v_flex()
-            .size_full()
-            .flex_grow()
-            .bg(c.bg)
-            .children(children)
+        v_flex().size_full().flex_grow().bg(c.bg).children(children)
     }
 
     /// Render the lyric download panel with full event handling.
@@ -3694,16 +4667,17 @@ impl MusicPlayer {
         children.push(
             div()
                 .w_full()
-                .px_3().py_2()
+                .px_3()
+                .py_2()
                 .bg(c.control_bar_bg)
                 .child(
                     div()
                         .text_size(px(13.0))
                         .text_color(c.text)
                         .font_weight(FontWeight::SEMIBOLD)
-                        .child(tr.lyd_title.to_string())
+                        .child(tr.lyd_title.to_string()),
                 )
-                .into_any_element()
+                .into_any_element(),
         );
 
         // === Search bar ===
@@ -3716,7 +4690,8 @@ impl MusicPlayer {
         children.push(
             h_flex()
                 .w_full()
-                .px_3().py_2()
+                .px_3()
+                .py_2()
                 .gap_2()
                 .bg(c.panel)
                 .items_center()
@@ -3730,7 +4705,16 @@ impl MusicPlayer {
                                 .label(if source_netease { "● " } else { "○ " }.to_string() + n)
                                 .compact()
                                 .ghost()
-                                .bg(if source_netease { c.accent } else { Hsla { h: 0.0, s: 0.0, l: 0.0, a: 0.0 } })
+                                .bg(if source_netease {
+                                    c.accent
+                                } else {
+                                    Hsla {
+                                        h: 0.0,
+                                        s: 0.0,
+                                        l: 0.0,
+                                        a: 0.0,
+                                    }
+                                })
                                 .on_click(cx.listener(move |this, _, _window, _cx| {
                                     this.download_state.source = "netease".to_string();
                                 }))
@@ -3741,32 +4725,54 @@ impl MusicPlayer {
                                 .label(if !source_netease { "● " } else { "○ " }.to_string() + q)
                                 .compact()
                                 .ghost()
-                                .bg(if !source_netease { c.accent } else { Hsla { h: 0.0, s: 0.0, l: 0.0, a: 0.0 } })
+                                .bg(if !source_netease {
+                                    c.accent
+                                } else {
+                                    Hsla {
+                                        h: 0.0,
+                                        s: 0.0,
+                                        l: 0.0,
+                                        a: 0.0,
+                                    }
+                                })
                                 .on_click(cx.listener(move |this, _, _window, _cx| {
                                     this.download_state.source = "qqmusic".to_string();
                                 }))
-                        })
-            )
-            .child(
+                        }),
+                )
+                .child(
                     // Keyword display (shows current search term)
                     div()
                         .flex_grow()
                         .text_size(px(11.0))
-                        .text_color(if keyword.is_empty() { c.text_dim } else { c.text })
+                        .text_color(if keyword.is_empty() {
+                            c.text_dim
+                        } else {
+                            c.text
+                        })
                         .child(if keyword.is_empty() {
                             tr.lyd_keyword_hint.to_string()
                         } else {
                             keyword
-                        })
+                        }),
                 )
                 .child(
                     Button::new("lyd_search")
-                        .label(if searching { tr.lyd_searching } else { tr.lyd_search })
+                        .label(if searching {
+                            tr.lyd_searching
+                        } else {
+                            tr.lyd_search
+                        })
                         .compact()
-                        .bg(if searching { c.progress_track } else { c.accent })
+                        .bg(if searching {
+                            c.progress_track
+                        } else {
+                            c.accent
+                        })
                         .on_click(cx.listener(move |this, _, _window, _cx| {
                             if this.download_state.keyword.trim().is_empty() {
-                                this.download_state.status = this.tr.lyd_status_enter_keyword.to_string();
+                                this.download_state.status =
+                                    this.tr.lyd_status_enter_keyword.to_string();
                                 return;
                             }
                             if this.download_state.searching {
@@ -3791,9 +4797,8 @@ impl MusicPlayer {
                             // Spawn background async task to perform search
                             runtime().spawn(async move {
                                 let result = lyric_download::search_lyrics(&source, &keyword).await;
-                                let _ = tx.send(
-                                    lyric_download::DownloadEvent::SearchComplete(result),
-                                );
+                                let _ =
+                                    tx.send(lyric_download::DownloadEvent::SearchComplete(result));
                             });
 
                             tracing::info!(
@@ -3801,9 +4806,9 @@ impl MusicPlayer {
                                 display_kw,
                                 if is_qq { "QQ音乐" } else { "网易云" }
                             );
-                        }))
+                        })),
                 )
-                .into_any_element()
+                .into_any_element(),
         );
 
         // === Options bar ===
@@ -3812,7 +4817,8 @@ impl MusicPlayer {
         children.push(
             h_flex()
                 .w_full()
-                .px_3().py_1()
+                .px_3()
+                .py_1()
                 .gap_3()
                 .bg(c.panel_alt)
                 .items_center()
@@ -3820,40 +4826,76 @@ impl MusicPlayer {
                     div()
                         .text_size(px(10.0))
                         .text_color(c.text_dim)
-                        .child(tr.lyd_options.to_string())
+                        .child(tr.lyd_options.to_string()),
                 )
                 .child(
                     Button::new("lyd_translate")
-                        .label(if include_translation { "✓ ".to_string() + tr.lyd_include_translation } else { tr.lyd_include_translation.to_string() })
+                        .label(if include_translation {
+                            "✓ ".to_string() + tr.lyd_include_translation
+                        } else {
+                            tr.lyd_include_translation.to_string()
+                        })
                         .compact()
-                        .bg(if !include_translation { Hsla { h: 0.0, s: 0.0, l: 0.0, a: 0.0 } } else { c.accent })
+                        .bg(if !include_translation {
+                            Hsla {
+                                h: 0.0,
+                                s: 0.0,
+                                l: 0.0,
+                                a: 0.0,
+                            }
+                        } else {
+                            c.accent
+                        })
                         .ghost()
                         .on_click(cx.listener(move |this, _, _window, _cx| {
-                            this.download_state.include_translation = !this.download_state.include_translation;
-                        }))
+                            this.download_state.include_translation =
+                                !this.download_state.include_translation;
+                        })),
                 )
                 .child(
                     Button::new("lyd_save_loc")
-                        .label(if save_to_song_dir { tr.lyd_save_to_song_dir } else { tr.lyd_save_to_lyrics_dir })
+                        .label(if save_to_song_dir {
+                            tr.lyd_save_to_song_dir
+                        } else {
+                            tr.lyd_save_to_lyrics_dir
+                        })
                         .compact()
-                        .bg(if !save_to_song_dir { Hsla { h: 0.0, s: 0.0, l: 0.0, a: 0.0 } } else { c.accent })
+                        .bg(if !save_to_song_dir {
+                            Hsla {
+                                h: 0.0,
+                                s: 0.0,
+                                l: 0.0,
+                                a: 0.0,
+                            }
+                        } else {
+                            c.accent
+                        })
                         .ghost()
                         .on_click(cx.listener(move |this, _, _window, _cx| {
-                            this.download_state.save_to_song_dir = !this.download_state.save_to_song_dir;
+                            this.download_state.save_to_song_dir =
+                                !this.download_state.save_to_song_dir;
                             tracing::info!(
                                 "[LyricDownload] 保存位置: {}",
-                                if this.download_state.save_to_song_dir { "歌曲目录" } else { "歌词目录" }
+                                if this.download_state.save_to_song_dir {
+                                    "歌曲目录"
+                                } else {
+                                    "歌词目录"
+                                }
                             );
-                        }))
+                        })),
                 )
                 .child(div().flex_grow())
-                .child(
-                    div()
-                        .text_size(px(9.0))
-                        .text_color(c.text_dim)
-                        .child(format!("来源: {}", if source_netease { "网易云音乐" } else { "QQ音乐" }))
-                )
-                .into_any_element()
+                .child(div().text_size(px(9.0)).text_color(c.text_dim).child(
+                    tr.lyd_source_label.replace(
+                        "{}",
+                        if source_netease {
+                            tr.lyd_source_netease
+                        } else {
+                            tr.lyd_source_qqmusic
+                        },
+                    ),
+                ))
+                .into_any_element(),
         );
 
         // === Status bar (status message) ===
@@ -3861,16 +4903,17 @@ impl MusicPlayer {
             children.push(
                 h_flex()
                     .w_full()
-                    .px_3().py_1()
+                    .px_3()
+                    .py_1()
                     .bg(c.panel_alt)
                     .items_center()
                     .child(
                         div()
                             .text_size(px(10.0))
                             .text_color(c.accent)
-                            .child(state.status.clone())
+                            .child(state.status.clone()),
                     )
-                    .into_any_element()
+                    .into_any_element(),
             );
         }
 
@@ -3880,7 +4923,8 @@ impl MusicPlayer {
                 v_flex()
                     .flex_grow()
                     .size_full()
-                    .px_4().py_8()
+                    .px_4()
+                    .py_8()
                     .justify_center()
                     .items_center()
                     .gap_3()
@@ -3889,29 +4933,30 @@ impl MusicPlayer {
                         div()
                             .text_size(px(14.0))
                             .text_color(c.text_dim)
-                            .child("🔍 搜索歌词")
+                            .child(tr.lyd_empty_title),
                     )
                     .child(
                         div()
                             .text_size(px(11.0))
                             .text_color(c.text_dim)
-                            .child("输入歌曲名称和艺术家，然后按搜索")
+                            .child(tr.lyd_empty_hint),
                     )
                     .child(
                         div()
                             .mt_2()
                             .text_size(px(10.0))
                             .text_color(c.text_dim)
-                            .child("支持网易云音乐和QQ音乐搜索")
+                            .child(tr.lyd_empty_sources),
                     )
-                    .into_any_element()
+                    .into_any_element(),
             );
         } else if state.searching {
             children.push(
                 v_flex()
                     .flex_grow()
                     .size_full()
-                    .px_4().py_8()
+                    .px_4()
+                    .py_8()
                     .justify_center()
                     .items_center()
                     .gap_2()
@@ -3920,15 +4965,15 @@ impl MusicPlayer {
                         div()
                             .text_size(px(14.0))
                             .text_color(c.accent)
-                            .child("搜索中...")
+                            .child(tr.lyd_searching),
                     )
                     .child(
                         div()
                             .text_size(px(10.0))
                             .text_color(c.text_dim)
-                            .child("正在从在线音乐库搜索歌词")
+                            .child(tr.lyd_searching_desc),
                     )
-                    .into_any_element()
+                    .into_any_element(),
             );
         } else {
             // Results list
@@ -3956,7 +5001,7 @@ impl MusicPlayer {
                 } else if !result.album.is_empty() {
                     result.album.clone()
                 } else {
-                    "未知".to_string()
+                    tr.pq_unknown.to_string()
                 };
 
                 let title = result.title.clone();
@@ -3973,7 +5018,8 @@ impl MusicPlayer {
                     h_flex()
                         .id(("lyr_dld_result", i as u64))
                         .w_full()
-                        .px_3().py_2()
+                        .px_3()
+                        .py_2()
                         .gap_2()
                         .bg(bg)
                         .items_center()
@@ -3990,23 +5036,19 @@ impl MusicPlayer {
                                 .text_size(px(9.0))
                                 .text_color(if is_selected { c.text } else { c.text_dim })
                                 .text_right()
-                                .child(format!("{:02}", i + 1))
+                                .child(format!("{:02}", i + 1)),
                         )
                         .child(
                             // Cover placeholder
                             div()
-                                .w(px(32.0)).h(px(32.0))
+                                .w(px(32.0))
+                                .h(px(32.0))
                                 .rounded(px(4.0))
                                 .bg(c.panel_alt)
                                 .flex()
                                 .items_center()
                                 .justify_center()
-                                .child(
-                                    div()
-                                        .text_size(px(14.0))
-                                        .text_color(c.text_dim)
-                                        .child("♪")
-                                )
+                                .child(div().text_size(px(14.0)).text_color(c.text_dim).child("♪")),
                         )
                         .child({
                             div()
@@ -4015,22 +5057,35 @@ impl MusicPlayer {
                                     div()
                                         .text_size(px(12.0))
                                         .text_color(c.text)
-                                        .child(title.clone())
+                                        .child(title.clone()),
                                 )
                                 .child(
                                     div()
                                         .text_size(px(10.0))
                                         .text_color(c.text_dim)
                                         .mt(px(1.0))
-                                        .child(info_line)
+                                        .child(info_line),
                                 )
                         })
                         .child(
                             // Download button
                             Button::new(("lyd_dld_btn", i as u64))
-                                .label(if downloading && is_selected { "下载中" } else { "下载" })
+                                .label(if downloading && is_selected {
+                                    tr.lyd_btn_downloading
+                                } else {
+                                    tr.lyd_btn_download
+                                })
                                 .compact()
-                                .bg(if downloading { c.progress_track } else { Hsla { h: 0.0, s: 0.0, l: 0.0, a: 0.0 } })
+                                .bg(if downloading {
+                                    c.progress_track
+                                } else {
+                                    Hsla {
+                                        h: 0.0,
+                                        s: 0.0,
+                                        l: 0.0,
+                                        a: 0.0,
+                                    }
+                                })
                                 .ghost()
                                 .on_click(cx.listener(move |this, _, _window, _cx| {
                                     if this.download_state.downloading {
@@ -4041,7 +5096,10 @@ impl MusicPlayer {
 
                                     let display_title = dl_title.clone();
                                     let song_id_val = dl_song_id.clone();
-                                    this.download_state.status = format!("正在下载: {}", display_title);
+                                    this.download_state.status = this
+                                        .tr
+                                        .lyd_status_downloading_track
+                                        .replace("{}", &display_title);
 
                                     let source = dl_src.clone();
                                     let include_translation = inc_trans;
@@ -4065,9 +5123,13 @@ impl MusicPlayer {
                                         );
                                     });
 
-                                    tracing::info!("[Lyric下载] 开始下载: {} (ID: {})", display_title, song_id_val);
-                                }))
-                        )
+                                    tracing::info!(
+                                        "[Lyric下载] 开始下载: {} (ID: {})",
+                                        display_title,
+                                        song_id_val
+                                    );
+                                })),
+                        ),
                 );
             }
 
@@ -4078,7 +5140,8 @@ impl MusicPlayer {
                 list = list.child(
                     h_flex()
                         .w_full()
-                        .px_3().py_1()
+                        .px_3()
+                        .py_1()
                         .bg(c.control_bar_bg)
                         .gap_2()
                         .items_center()
@@ -4087,7 +5150,7 @@ impl MusicPlayer {
                                 .w(px(80.0))
                                 .text_size(px(9.0))
                                 .text_color(c.text_dim)
-                                .child(format!("{}/{}", progress_current, state.total_tracks))
+                                .child(format!("{}/{}", progress_current, state.total_tracks)),
                         )
                         .child(
                             div()
@@ -4100,16 +5163,16 @@ impl MusicPlayer {
                                         .h_full()
                                         .w(DefiniteLength::Fraction(state.progress.clamp(0.0, 1.0)))
                                         .bg(c.accent)
-                                        .rounded(px(2.0))
-                    )
-            )
-            .child(
+                                        .rounded(px(2.0)),
+                                ),
+                        )
+                        .child(
                             div()
                                 .w(px(36.0))
                                 .text_size(px(9.0))
                                 .text_color(c.text_dim)
-                                .child(format!("{}%", pct))
-                        )
+                                .child(format!("{}%", pct)),
+                        ),
                 );
             }
 
@@ -4119,7 +5182,8 @@ impl MusicPlayer {
             children.push(
                 h_flex()
                     .w_full()
-                    .px_3().py_1()
+                    .px_3()
+                    .py_1()
                     .bg(c.panel_alt)
                     .items_center()
                     .gap_2()
@@ -4127,30 +5191,36 @@ impl MusicPlayer {
                         div()
                             .text_size(px(9.0))
                             .text_color(c.text_dim)
-                            .child(format!("找到 {} 条结果", result_count))
+                            .child(tr.lyd_status_found.replace("{}", &result_count.to_string())),
                     )
                     .child(div().flex_grow())
                     .child(
                         div()
                             .text_size(px(9.0))
                             .text_color(c.text_dim)
-                            .child("单击选中 • 点击下载")
+                            .child(tr.lyd_click_hint),
                     )
-                    .into_any_element()
+                    .into_any_element(),
             );
         }
 
         // === Bottom status bar ===
         let status_text = if state.results.is_empty() {
-            if state.searching { "正在搜索...".to_string() } else { "就绪".to_string() }
+            if state.searching {
+                tr.lyd_searching.to_string()
+            } else {
+                tr.lyd_status_ready.to_string()
+            }
         } else {
-            format!("{} 条结果", state.results.len())
+            tr.lyd_results_count
+                .replace("{}", &state.results.len().to_string())
         };
 
         children.push(
             h_flex()
                 .w_full()
-                .px_3().py_1()
+                .px_3()
+                .py_1()
                 .bg(c.control_bar_bg)
                 .items_center()
                 .gap_2()
@@ -4158,34 +5228,30 @@ impl MusicPlayer {
                     div()
                         .text_size(px(9.0))
                         .text_color(c.text_dim)
-                        .child(status_text)
+                        .child(status_text),
                 )
                 .child(div().flex_grow())
                 .child({
                     let path_text = if self.current_track_path_for_download.is_empty() {
-                        "先播放一首歌曲以自动保存歌词到其目录".to_string()
+                        tr.lyd_save_path_hint.to_string()
                     } else {
                         let path_display = self.current_track_path_for_download.clone();
                         let display = if path_display.len() > 60 {
-                            format!("...{}", &path_display[path_display.len()-57..])
+                            format!("...{}", &path_display[path_display.len() - 57..])
                         } else {
                             path_display
                         };
-                        format!("保存到: {}", display)
+                        tr.lyd_save_to_path.replace("{}", &display)
                     };
                     div()
                         .text_size(px(9.0))
                         .text_color(c.text_dim)
                         .child(path_text)
                 })
-                .into_any_element()
+                .into_any_element(),
         );
 
-        v_flex()
-            .size_full()
-            .flex_grow()
-            .bg(c.bg)
-            .children(children)
+        v_flex().size_full().flex_grow().bg(c.bg).children(children)
     }
 
     fn _render_playlist_panel(
@@ -4201,10 +5267,34 @@ impl MusicPlayer {
         let cur = self.playlist_filter_mode;
         let weak = cx.entity().downgrade();
 
-        let entries: [(&'static str, PlaylistFilterMode, &'static str, IconName, usize); 3] = [
-            ("pl_default", PlaylistFilterMode::All, self.tr.default_list, IconName::LayoutDashboard, total),
-            ("pl_fav", PlaylistFilterMode::Favorites, self.tr.nav_favorites, IconName::Heart, fav_count),
-            ("pl_recent", PlaylistFilterMode::Recent, self.tr.nav_recent, IconName::Calendar, recent_count),
+        let entries: [(
+            &'static str,
+            PlaylistFilterMode,
+            &'static str,
+            IconName,
+            usize,
+        ); 3] = [
+            (
+                "pl_default",
+                PlaylistFilterMode::All,
+                self.tr.default_list,
+                IconName::LayoutDashboard,
+                total,
+            ),
+            (
+                "pl_fav",
+                PlaylistFilterMode::Favorites,
+                self.tr.nav_favorites,
+                IconName::Heart,
+                fav_count,
+            ),
+            (
+                "pl_recent",
+                PlaylistFilterMode::Recent,
+                self.tr.nav_recent,
+                IconName::Calendar,
+                recent_count,
+            ),
         ];
 
         v_flex()
@@ -4213,47 +5303,62 @@ impl MusicPlayer {
             .bg(c.panel)
             .child(
                 h_flex()
-                    .items_center().justify_between()
-                    .w_full().px_3().h(px(36.0))
+                    .items_center()
+                    .justify_between()
+                    .w_full()
+                    .px_3()
+                    .h(px(36.0))
                     .bg(c.panel_alt)
                     .child(layout::txt(self.tr.nav_playlists, 13.0, c.text_title))
                     .child(
                         Button::new("pl_add")
-                            .icon(IconName::Plus).compact().ghost()
+                            .icon(IconName::Plus)
+                            .compact()
+                            .ghost()
                             .text_color(c.text_dim)
                             .on_click(cx.listener(|this, _, _window, _cx| {
                                 let plists = this.player.list_playlists();
                                 let num = plists.len() + 1;
-                                let name = format!("新列表 {}", num);
+                                let name = this.tr.pl_new_list.replace("{}", &num.to_string());
                                 let _ = this.player.create_playlist(&name);
                                 let _ = this.player.switch_playlist(&name);
-                            }))
-                    )
+                            })),
+                    ),
             )
-            .child(
-                v_flex().w_full().py_1()
-                    .children(entries.iter().map(|(id, mode, name, icon, count)| {
-                        let selected = cur == *mode;
-                        let text_color = if selected { c.accent } else { c.text };
-                        let m = *mode;
-                        let w = weak.clone();
-                        Button::new(*id)
-                            .icon(icon.clone())
-                            .label(format!("{}  ({})", name, count))
-                            .w_full().justify_start()
-                            .px_3().h(px(32.0))
-                            .ghost()
-                            .bg(if selected { c.accent.opacity(0.18) } else { Hsla { h: 0.0, s: 0.0, l: 0.0, a: 0.0 } })
-                            .text_color(text_color)
-                            .on_click(move |_, _, cx| {
-                                let _ = w.update(cx, |this, cx| {
-                                    this.playlist_filter_mode = m;
-                                    ACTIVE_PANEL.store(0, Ordering::Relaxed);
-                                    cx.notify();
-                                });
-                            })
-                    }))
-            )
+            .child(v_flex().w_full().py_1().children(entries.iter().map(
+                |(id, mode, name, icon, count)| {
+                    let selected = cur == *mode;
+                    let text_color = if selected { c.accent } else { c.text };
+                    let m = *mode;
+                    let w = weak.clone();
+                    Button::new(*id)
+                        .icon(icon.clone())
+                        .label(format!("{}  ({})", name, count))
+                        .w_full()
+                        .justify_start()
+                        .px_3()
+                        .h(px(32.0))
+                        .ghost()
+                        .bg(if selected {
+                            c.accent.opacity(0.18)
+                        } else {
+                            Hsla {
+                                h: 0.0,
+                                s: 0.0,
+                                l: 0.0,
+                                a: 0.0,
+                            }
+                        })
+                        .text_color(text_color)
+                        .on_click(move |_, _, cx| {
+                            let _ = w.update(cx, |this, cx| {
+                                this.playlist_filter_mode = m;
+                                ACTIVE_PANEL.store(0, Ordering::Relaxed);
+                                cx.notify();
+                            });
+                        })
+                },
+            )))
     }
 
     fn render_playlist(
@@ -4271,33 +5376,43 @@ impl MusicPlayer {
         let filter_mode = self.playlist_filter_mode;
 
         // Filter tracks based on search text and filter mode
-        let filtered_indices: Vec<usize> = tracks.iter().enumerate().filter_map(|(i, track)| {
-            let matches_mode = match filter_mode {
-                PlaylistFilterMode::All => true,
-                PlaylistFilterMode::Artist => !track.artist.is_empty(),
-                PlaylistFilterMode::Album => !track.album.is_empty(),
-                PlaylistFilterMode::_Genre => !track.genre.is_empty(),
-                PlaylistFilterMode::Favorites => track.is_favourite,
-                PlaylistFilterMode::Recent => self.recent_tracks.iter().any(|p| p == &track.file_path),
-            };
+        let filtered_indices: Vec<usize> = tracks
+            .iter()
+            .enumerate()
+            .filter_map(|(i, track)| {
+                let matches_mode = match filter_mode {
+                    PlaylistFilterMode::All => true,
+                    PlaylistFilterMode::Artist => !track.artist.is_empty(),
+                    PlaylistFilterMode::Album => !track.album.is_empty(),
+                    PlaylistFilterMode::_Genre => !track.genre.is_empty(),
+                    PlaylistFilterMode::Favorites => track.is_favourite,
+                    PlaylistFilterMode::Recent => {
+                        self.recent_tracks.iter().any(|p| p == &track.file_path)
+                    }
+                };
 
-            if !matches_mode {
-                return None;
-            }
+                if !matches_mode {
+                    return None;
+                }
 
-            if filter_text.trim().is_empty() {
-                return Some(i);
-            }
+                if filter_text.trim().is_empty() {
+                    return Some(i);
+                }
 
-            let kw = filter_text.to_lowercase();
-            let matches_search = track.title.to_lowercase().contains(&kw)
-                || track.artist.to_lowercase().contains(&kw)
-                || track.album.to_lowercase().contains(&kw)
-                || track.file_name.to_lowercase().contains(&kw)
-                || track.genre.to_lowercase().contains(&kw);
+                let kw = filter_text.to_lowercase();
+                let matches_search = track.title.to_lowercase().contains(&kw)
+                    || track.artist.to_lowercase().contains(&kw)
+                    || track.album.to_lowercase().contains(&kw)
+                    || track.file_name.to_lowercase().contains(&kw)
+                    || track.genre.to_lowercase().contains(&kw);
 
-            if matches_search { Some(i) } else { None }
-        }).collect();
+                if matches_search {
+                    Some(i)
+                } else {
+                    None
+                }
+            })
+            .collect();
 
         let total_count = tracks.len();
         let filtered_count = filtered_indices.len();
@@ -4317,15 +5432,27 @@ impl MusicPlayer {
 
         // Header text based on filter state
         let header_text = if !filter_text.is_empty() {
-            self.tr.pq_header_filtered.replace("{}", &filtered_count.to_string()).replace("{}", &total_count.to_string())
+            self.tr
+                .pq_header_filtered
+                .replace("{}", &filtered_count.to_string())
+                .replace("{}", &total_count.to_string())
         } else if filter_mode == PlaylistFilterMode::All {
-            self.tr.pq_header_all.replace("{}", &total_count.to_string())
+            self.tr
+                .pq_header_all
+                .replace("{}", &total_count.to_string())
         } else if filter_mode == PlaylistFilterMode::Favorites {
-            self.tr.pq_header_fav.replace("{}", &filtered_count.to_string())
+            self.tr
+                .pq_header_fav
+                .replace("{}", &filtered_count.to_string())
         } else if filter_mode == PlaylistFilterMode::Recent {
-            self.tr.pq_header_recent.replace("{}", &filtered_count.to_string())
+            self.tr
+                .pq_header_recent
+                .replace("{}", &filtered_count.to_string())
         } else {
-            self.tr.pq_header_filtered.replace("{}", &filtered_count.to_string()).replace("{}", &total_count.to_string())
+            self.tr
+                .pq_header_filtered
+                .replace("{}", &filtered_count.to_string())
+                .replace("{}", &total_count.to_string())
         };
 
         v_flex()
@@ -4420,7 +5547,7 @@ impl MusicPlayer {
                             .child(
                                 // Filter: All
                                 Button::new("pl_filter_all")
-                                    .label(if filter_mode == PlaylistFilterMode::All { "● 全部" } else { "全部" })
+                                    .label(if filter_mode == PlaylistFilterMode::All { format!("● {}", self.tr.pq_chip_all) } else { self.tr.pq_chip_all.to_string() })
                                     .compact()
                                     .bg(if filter_mode == PlaylistFilterMode::All { c.accent } else { Hsla { h: 0.0, s: 0.0, l: 0.0, a: 0.0 } })
                                     .ghost()
@@ -4431,7 +5558,7 @@ impl MusicPlayer {
                             .child(
                                 // Filter: Artists
                                 Button::new("pl_filter_artist")
-                                    .label(if filter_mode == PlaylistFilterMode::Artist { "● 艺术家" } else { "艺术家" })
+                                    .label(if filter_mode == PlaylistFilterMode::Artist { format!("● {}", self.tr.pq_chip_artist) } else { self.tr.pq_chip_artist.to_string() })
                                     .compact()
                                     .bg(if filter_mode == PlaylistFilterMode::Artist { c.accent } else { Hsla { h: 0.0, s: 0.0, l: 0.0, a: 0.0 } })
                                     .ghost()
@@ -4442,7 +5569,7 @@ impl MusicPlayer {
                             .child(
                                 // Filter: Album
                                 Button::new("pl_filter_album")
-                                    .label(if filter_mode == PlaylistFilterMode::Album { "● 专辑" } else { "专辑" })
+                                    .label(if filter_mode == PlaylistFilterMode::Album { format!("● {}", self.tr.pq_chip_album) } else { self.tr.pq_chip_album.to_string() })
                                     .compact()
                                     .bg(if filter_mode == PlaylistFilterMode::Album { c.accent } else { Hsla { h: 0.0, s: 0.0, l: 0.0, a: 0.0 } })
                                     .ghost()
@@ -4453,7 +5580,7 @@ impl MusicPlayer {
                             .child(
                                 // Filter: Favorites
                                 Button::new("pl_filter_fav")
-                                    .label(if filter_mode == PlaylistFilterMode::Favorites { "♥ 收藏" } else { "收藏" })
+                                    .label(if filter_mode == PlaylistFilterMode::Favorites { format!("♥ {}", self.tr.pq_chip_fav) } else { self.tr.pq_chip_fav.to_string() })
                                     .compact()
                                     .bg(if filter_mode == PlaylistFilterMode::Favorites { c.accent } else { Hsla { h: 0.0, s: 0.0, l: 0.0, a: 0.0 } })
                                     .ghost()
@@ -4854,9 +5981,10 @@ impl MusicPlayer {
                                         let day = ((days % 365) % 30 + 1) as u32;
                                         format!("{}-{:02}-{:02}", year, month, day)
                                     }).unwrap_or_else(|| "--".to_string());
-                                let info = format!(
-                                    "标题: {}\n艺术家: {}\n专辑: {}\n文件名: {}\n路径: {}\n时长: {}\n收藏: {}\n类型: {}\n比特率: {}\n采样率: {}\n\n--- 高级信息 ---\n文件大小: {}\n修改日期: {}",
-                                    dn2, "", "", "", fp_loc2, "", if fav2 { "是" } else { "否" }, "", "--", "--", file_size, mod_time,
+                                let fav_txt = if fav2 { i18n::global_tr().info_yes } else { i18n::global_tr().info_no };
+                                let info = i18n::tr_fmt(
+                                    i18n::global_tr().info_advanced,
+                                    &[&dn2, &"", &"", &"", &fp_loc2, &"", &fav_txt, &"", &"--", &"--", &file_size, &mod_time],
                                 );
                                 let _ = rfd::MessageDialog::new()
                                     .set_title(s_properties)
@@ -4904,82 +6032,131 @@ impl MusicPlayer {
             .bg(c.bg)
             .child(
                 // Header bar
-                h_flex().items_center().justify_between().w_full().px_4().py_2().bg(c.control_bar_bg)
+                h_flex()
+                    .items_center()
+                    .justify_between()
+                    .w_full()
+                    .px_4()
+                    .py_2()
+                    .bg(c.control_bar_bg)
                     .child(layout::txt(self.tr.fb_title, 14.0, c.text_title))
                     .child(
-                        h_flex().gap_2()
-                            .child(Button::new("fb_up").label("⬆").compact().ghost().on_click(cx.listener(|this, _, _w, _cx| {
-                                if let Some(parent) = std::path::Path::new(&this.fb_current_dir).parent() {
-                                    this.fb_current_dir = parent.to_string_lossy().to_string();
-                                    this.fb_entries = Self::scan_dir(&this.fb_current_dir);
-                                }
-                            })))
-                            .child(Button::new("fb_refresh").label("⟳").compact().ghost().on_click(cx.listener(|this, _, _w, _cx| {
-                                this.fb_entries = Self::scan_dir(&this.fb_current_dir);
-                            })))
-                            .child(Button::new("fb_open_folder").label(self.tr.menu_open_folder).compact().ghost()
-                                .on_click(cx.listener(|_this, _, _w, cx| {
-                                    run_blocking_dialog(cx,
-                                        || rfd::FileDialog::new().pick_folder(),
-                                        |folder, this, _cx| {
-                                            if let Some(folder) = folder {
-                                                this.fb_current_dir = folder.to_string_lossy().to_string();
-                                                this.fb_entries = Self::scan_dir(&this.fb_current_dir);
-                                            }
-                                        });
-                                })))
-                    )
+                        h_flex()
+                            .gap_2()
+                            .child(Button::new("fb_up").label("⬆").compact().ghost().on_click(
+                                cx.listener(|this, _, _w, _cx| {
+                                    if let Some(parent) =
+                                        std::path::Path::new(&this.fb_current_dir).parent()
+                                    {
+                                        this.fb_current_dir = parent.to_string_lossy().to_string();
+                                        this.fb_entries = Self::scan_dir(&this.fb_current_dir);
+                                    }
+                                }),
+                            ))
+                            .child(
+                                Button::new("fb_refresh")
+                                    .label("⟳")
+                                    .compact()
+                                    .ghost()
+                                    .on_click(cx.listener(|this, _, _w, _cx| {
+                                        this.fb_entries = Self::scan_dir(&this.fb_current_dir);
+                                    })),
+                            )
+                            .child(
+                                Button::new("fb_open_folder")
+                                    .label(self.tr.menu_open_folder)
+                                    .compact()
+                                    .ghost()
+                                    .on_click(cx.listener(|_this, _, _w, cx| {
+                                        run_blocking_dialog(
+                                            cx,
+                                            || rfd::FileDialog::new().pick_folder(),
+                                            |folder, this, _cx| {
+                                                if let Some(folder) = folder {
+                                                    this.fb_current_dir =
+                                                        folder.to_string_lossy().to_string();
+                                                    this.fb_entries =
+                                                        Self::scan_dir(&this.fb_current_dir);
+                                                }
+                                            },
+                                        );
+                                    })),
+                            ),
+                    ),
             )
             .child(
                 // Current path
-                h_flex().w_full().px_4().py_1().bg(c.panel_alt)
-                    .child(layout::txt(&dir_display, 11.0, c.text_dim))
+                h_flex()
+                    .w_full()
+                    .px_4()
+                    .py_1()
+                    .bg(c.panel_alt)
+                    .child(layout::txt(&dir_display, 11.0, c.text_dim)),
             )
             .child(
                 // File count
-                h_flex().w_full().px_4().py_1()
-                    .child(layout::txt(&self.tr.fb_entry_count.replace("{}", &entry_count.to_string()), 10.0, c.text_dim))
+                h_flex().w_full().px_4().py_1().child(layout::txt(
+                    &self
+                        .tr
+                        .fb_entry_count
+                        .replace("{}", &entry_count.to_string()),
+                    10.0,
+                    c.text_dim,
+                )),
             )
             .child(
                 // File list
-                v_flex().flex_grow().w_full()
-                    .children({
-                        let mut items: Vec<gpui::AnyElement> = Vec::new();
-                        for (i, entry) in entries.iter().enumerate() {
-                            let is_even = i % 2 == 0;
-                            let bg = if is_even { c.playlist_item } else { c.playlist_item_hover };
-                            let icon = if entry.is_dir { "📁 " } else { "🎵 " };
-                            let name = format!("{}{}", icon, entry.name);
-                            let size_str = if entry.is_dir { String::new() } else {
-                                format_size(entry.size)
-                            };
-                            let entry_path = entry.path.clone();
-                            let entry_is_dir = entry.is_dir;
-                            let p = player.clone();
-                            let row_path = entry_path.clone();
-                            let row = h_flex().w_full().h(px(28.0)).px_4().gap_2().bg(bg)
-                                .hover(|s| s.bg(c.playlist_item_selected))
-                                .items_center().cursor(gpui::CursorStyle::PointingHand)
-                                .child(layout::txt(&name, 12.0, c.text))
-                                .child(div().flex_grow())
-                                .child(layout::txt(&size_str, 10.0, c.text_dim))
-                                .on_mouse_down(gpui::MouseButton::Left, {
-                                    move |_, _, _| {
-                                        if entry_is_dir {
-                                            if let Ok(mut pending) = FB_PENDING_DIR.lock() {
-                                                *pending = Some(row_path.clone());
-                                            }
-                                        } else {
-                                            let p3 = p.clone();
-                                            let path = row_path.clone();
-                                            runtime().spawn_blocking(move || { let _ = p3.play_file(&path); });
+                v_flex().flex_grow().w_full().children({
+                    let mut items: Vec<gpui::AnyElement> = Vec::new();
+                    for (i, entry) in entries.iter().enumerate() {
+                        let is_even = i % 2 == 0;
+                        let bg = if is_even {
+                            c.playlist_item
+                        } else {
+                            c.playlist_item_hover
+                        };
+                        let icon = if entry.is_dir { "📁 " } else { "🎵 " };
+                        let name = format!("{}{}", icon, entry.name);
+                        let size_str = if entry.is_dir {
+                            String::new()
+                        } else {
+                            format_size(entry.size)
+                        };
+                        let entry_path = entry.path.clone();
+                        let entry_is_dir = entry.is_dir;
+                        let p = player.clone();
+                        let row_path = entry_path.clone();
+                        let row = h_flex()
+                            .w_full()
+                            .h(px(28.0))
+                            .px_4()
+                            .gap_2()
+                            .bg(bg)
+                            .hover(|s| s.bg(c.playlist_item_selected))
+                            .items_center()
+                            .cursor(gpui::CursorStyle::PointingHand)
+                            .child(layout::txt(&name, 12.0, c.text))
+                            .child(div().flex_grow())
+                            .child(layout::txt(&size_str, 10.0, c.text_dim))
+                            .on_mouse_down(gpui::MouseButton::Left, {
+                                move |_, _, _| {
+                                    if entry_is_dir {
+                                        if let Ok(mut pending) = FB_PENDING_DIR.lock() {
+                                            *pending = Some(row_path.clone());
                                         }
+                                    } else {
+                                        let p3 = p.clone();
+                                        let path = row_path.clone();
+                                        runtime().spawn_blocking(move || {
+                                            let _ = p3.play_file(&path);
+                                        });
                                     }
-                                });
-                            items.push(row.into_any_element());
-                        }
-                        items
-                    })
+                                }
+                            });
+                        items.push(row.into_any_element());
+                    }
+                    items
+                }),
             )
     }
 
@@ -4990,11 +6167,18 @@ impl MusicPlayer {
                 let metadata = entry.metadata().ok();
                 let file_type = entry.file_type().ok();
                 let name = entry.file_name().to_string_lossy().to_string();
-                if name.starts_with('.') { continue; }
+                if name.starts_with('.') {
+                    continue;
+                }
                 let is_dir = file_type.is_some_and(|ft| ft.is_dir());
                 let size = metadata.map_or(0, |m| m.len());
                 let full_path = entry.path().to_string_lossy().to_string();
-                entries.push(FsEntry { name, path: full_path, is_dir, size });
+                entries.push(FsEntry {
+                    name,
+                    path: full_path,
+                    is_dir,
+                    size,
+                });
             }
         }
         entries.sort_by(|a, b| {
@@ -5034,64 +6218,124 @@ impl MusicPlayer {
                 let (sidebar, list): (Vec<String>, Vec<ViewEntry>) = match cat {
                     MediaLibCategory::AllTracks => (
                         Vec::new(),
-                        lib.entries.iter().take(MAX_ENTRIES).map(ViewEntry::from).collect(),
+                        lib.entries
+                            .iter()
+                            .take(MAX_ENTRIES)
+                            .map(ViewEntry::from)
+                            .collect(),
                     ),
                     MediaLibCategory::Artists => {
                         let artists = lib.artists();
-                        let items = sel.as_ref()
-                            .map(|n| lib.by_artist(Some(n)).iter().map(|e| ViewEntry::from(*e)).collect())
+                        let items = sel
+                            .as_ref()
+                            .map(|n| {
+                                lib.by_artist(Some(n))
+                                    .iter()
+                                    .map(|e| ViewEntry::from(*e))
+                                    .collect()
+                            })
                             .unwrap_or_default();
                         (artists, items)
                     }
                     MediaLibCategory::Albums => {
                         let albums = lib.albums();
-                        let items = sel.as_ref()
-                            .map(|n| lib.by_album(Some(n)).iter().map(|e| ViewEntry::from(*e)).collect())
+                        let items = sel
+                            .as_ref()
+                            .map(|n| {
+                                lib.by_album(Some(n))
+                                    .iter()
+                                    .map(|e| ViewEntry::from(*e))
+                                    .collect()
+                            })
                             .unwrap_or_default();
                         (albums, items)
                     }
                     MediaLibCategory::Genres => {
                         let genres = lib.genres();
-                        let items = sel.as_ref()
-                            .map(|n| lib.by_genre(n).iter().map(|e| ViewEntry::from(*e)).collect())
+                        let items = sel
+                            .as_ref()
+                            .map(|n| {
+                                lib.by_genre(n)
+                                    .iter()
+                                    .map(|e| ViewEntry::from(*e))
+                                    .collect()
+                            })
                             .unwrap_or_default();
                         (genres, items)
                     }
                     MediaLibCategory::Years => {
-                        let years: Vec<String> = lib.years().iter().map(|y| y.to_string()).collect();
-                        let items = sel.as_ref()
+                        let years: Vec<String> =
+                            lib.years().iter().map(|y| y.to_string()).collect();
+                        let items = sel
+                            .as_ref()
                             .and_then(|y_str| y_str.parse::<u32>().ok())
-                            .map(|year| lib.by_year(year).iter().map(|e| ViewEntry::from(*e)).collect())
+                            .map(|year| {
+                                lib.by_year(year)
+                                    .iter()
+                                    .map(|e| ViewEntry::from(*e))
+                                    .collect()
+                            })
                             .unwrap_or_default();
                         (years, items)
                     }
                     MediaLibCategory::FileTypes => {
                         let types = lib.file_types();
-                        let items = sel.as_ref()
-                            .map(|ext| lib.by_file_type(ext).iter().map(|e| ViewEntry::from(*e)).collect())
+                        let items = sel
+                            .as_ref()
+                            .map(|ext| {
+                                lib.by_file_type(ext)
+                                    .iter()
+                                    .map(|e| ViewEntry::from(*e))
+                                    .collect()
+                            })
                             .unwrap_or_default();
                         (types, items)
                     }
                     MediaLibCategory::Bitrates => {
                         let bitrates = lib.bitrates();
-                        let items = sel.as_ref()
+                        let items = sel
+                            .as_ref()
                             .and_then(|b| b.parse::<u32>().ok())
-                            .map(|b| lib.by_bitrate(b).iter().map(|e| ViewEntry::from(*e)).collect())
+                            .map(|b| {
+                                lib.by_bitrate(b)
+                                    .iter()
+                                    .map(|e| ViewEntry::from(*e))
+                                    .collect()
+                            })
                             .unwrap_or_default();
-                        (bitrates.iter().map(|b| format!("{} kbps", b)).collect::<Vec<_>>(), items)
+                        (
+                            bitrates
+                                .iter()
+                                .map(|b| format!("{} kbps", b))
+                                .collect::<Vec<_>>(),
+                            items,
+                        )
                     }
                     MediaLibCategory::Recent => {
                         let recent = lib.recent(50);
-                        let items: Vec<String> = recent.iter().map(|e| e.file_path.clone()).collect();
+                        let items: Vec<String> =
+                            recent.iter().map(|e| e.file_path.clone()).collect();
                         (items, Vec::new())
                     }
                     MediaLibCategory::Rating => {
                         let ratings = lib.ratings();
-                        let items = sel.as_ref()
+                        let items = sel
+                            .as_ref()
                             .and_then(|r| r.parse::<u32>().ok())
-                            .map(|r| lib.by_rating(r).iter().map(|e| ViewEntry::from(*e)).collect())
+                            .map(|r| {
+                                lib.by_rating(r)
+                                    .iter()
+                                    .map(|e| ViewEntry::from(*e))
+                                    .collect()
+                            })
                             .unwrap_or_default();
-                        (ratings.iter().map(|r| self.tr.ml_stars.replace("{}", &r.to_string())).collect::<Vec<_>>(), items)
+                        (
+                            ratings
+                                .iter()
+                                .map(|r| self.tr.ml_stars.replace("{}", &r.to_string()))
+                                .collect::<Vec<_>>(),
+                            items,
+                        )
                     }
                 };
                 self.media_lib_sidebar_cache = sidebar;
@@ -5100,7 +6344,10 @@ impl MusicPlayer {
         }
 
         // Read stats from cache (cheap: no per-entry iteration on every frame).
-        let total_tracks = self.media_lib_cache.as_ref().map_or(0, |lib| lib.entries.len());
+        let total_tracks = self
+            .media_lib_cache
+            .as_ref()
+            .map_or(0, |lib| lib.entries.len());
         let secs = self.media_lib_total_dur;
         let total_dur = format!("{}:{:02}:{:02}", secs / 3600, (secs % 3600) / 60, secs % 60);
 
@@ -5109,59 +6356,158 @@ impl MusicPlayer {
 
         let mk_btn = |label: &'static str, id: &'static str, target: MediaLibCategory| {
             let is_active = cat == target;
-            let bg = if is_active { c.accent } else { Hsla { h: 0.0, s: 0.0, l: 0.0, a: 0.0 } };
-            Button::new(id).label(label).compact().ghost().bg(bg)
+            let bg = if is_active {
+                c.accent
+            } else {
+                Hsla {
+                    h: 0.0,
+                    s: 0.0,
+                    l: 0.0,
+                    a: 0.0,
+                }
+            };
+            Button::new(id)
+                .label(label)
+                .compact()
+                .ghost()
+                .bg(bg)
                 .on_click(cx.listener(move |this, _, _w, _cx| {
                     this.media_lib_category = target;
                     this.media_lib_selected = None;
                 }))
         };
 
-        let header_text = self.tr.ml_header.replace("{}", &total_tracks.to_string()).replace("{}", &total_dur);
+        let header_text = self
+            .tr
+            .ml_header
+            .replace("{}", &total_tracks.to_string())
+            .replace("{}", &total_dur);
         let show_sidebar = !matches!(cat, MediaLibCategory::AllTracks) && !sidebar_items.is_empty();
 
         let sidebar_el = if show_sidebar {
-            div().w(px(150.0)).h_full().bg(c.panel_alt).border_r(px(1.0)).border_color(c.border)
-                .child(v_flex().w_full().h_full().py_1()
-                    .children(sidebar_items.iter().map(|item| {
-                        let is_active = sel.as_deref() == Some(item.as_str());
-                        let bg = if is_active { c.accent.opacity(0.2) } else { Hsla { h: 0.0, s: 0.0, l: 0.0, a: 0.0 } };
-                        div().px_3().py_1().bg(bg).text_size(px(11.0))
-                            .text_color(if is_active { c.accent } else { c.text })
-                            .cursor(gpui::CursorStyle::PointingHand)
-                            .hover(|s| s.bg(c.playlist_item_selected))
-                            .child(if item.is_empty() { self.tr.ml_unknown.to_string() } else { item.clone() })
-                             .on_mouse_up(gpui::MouseButton::Left, {
-                                 let item2 = item.clone();
-                                 cx.listener(move |this, _, _w, _cx| {
-                                     this.media_lib_selected = Some(item2.clone());
-                                 })
-                             })
-                    }))
+            div()
+                .w(px(150.0))
+                .h_full()
+                .bg(c.panel_alt)
+                .border_r(px(1.0))
+                .border_color(c.border)
+                .child(
+                    v_flex()
+                        .w_full()
+                        .h_full()
+                        .py_1()
+                        .children(sidebar_items.iter().map(|item| {
+                            let is_active = sel.as_deref() == Some(item.as_str());
+                            let bg = if is_active {
+                                c.accent.opacity(0.2)
+                            } else {
+                                Hsla {
+                                    h: 0.0,
+                                    s: 0.0,
+                                    l: 0.0,
+                                    a: 0.0,
+                                }
+                            };
+                            div()
+                                .px_3()
+                                .py_1()
+                                .bg(bg)
+                                .text_size(px(11.0))
+                                .text_color(if is_active { c.accent } else { c.text })
+                                .cursor(gpui::CursorStyle::PointingHand)
+                                .hover(|s| s.bg(c.playlist_item_selected))
+                                .child(if item.is_empty() {
+                                    self.tr.ml_unknown.to_string()
+                                } else {
+                                    item.clone()
+                                })
+                                .on_mouse_up(gpui::MouseButton::Left, {
+                                    let item2 = item.clone();
+                                    cx.listener(move |this, _, _w, _cx| {
+                                        this.media_lib_selected = Some(item2.clone());
+                                    })
+                                })
+                        })),
                 )
         } else {
             div().w(px(0.0))
         };
 
-        v_flex().flex_grow().h_full().bg(c.bg)
+        v_flex()
+            .flex_grow()
+            .h_full()
+            .bg(c.bg)
             .child(
-                h_flex().items_center().justify_between().w_full().px_4().py_2().bg(c.control_bar_bg)
-                    .child(layout::txt(&header_text, 13.0, c.text_title))
+                h_flex()
+                    .items_center()
+                    .justify_between()
+                    .w_full()
+                    .px_4()
+                    .py_2()
+                    .bg(c.control_bar_bg)
+                    .child(layout::txt(&header_text, 13.0, c.text_title)),
             )
             .child(
-                h_flex().w_full().px_4().py_1().gap_2().bg(c.panel_alt).border_b(px(1.0)).border_color(c.border).items_center()
-                    .child(mk_btn(self.tr.ml_cat_all, "ml_cat_all", MediaLibCategory::AllTracks))
-                    .child(mk_btn(self.tr.ml_cat_artist, "ml_cat_artist", MediaLibCategory::Artists))
-                    .child(mk_btn(self.tr.ml_cat_album, "ml_cat_album", MediaLibCategory::Albums))
-                    .child(mk_btn(self.tr.ml_cat_genre, "ml_cat_genre", MediaLibCategory::Genres))
-                    .child(mk_btn(self.tr.ml_cat_year, "ml_cat_year", MediaLibCategory::Years))
-                    .child(mk_btn(self.tr.ml_cat_ftype, "ml_cat_ftype", MediaLibCategory::FileTypes))
-                    .child(mk_btn(self.tr.ml_cat_bitrate, "ml_cat_bitrate", MediaLibCategory::Bitrates))
-                    .child(mk_btn(self.tr.nav_recent, "ml_cat_recent", MediaLibCategory::Recent))
-                    .child(mk_btn(self.tr.ml_cat_rating, "ml_cat_rating", MediaLibCategory::Rating))
+                h_flex()
+                    .w_full()
+                    .px_4()
+                    .py_1()
+                    .gap_2()
+                    .bg(c.panel_alt)
+                    .border_b(px(1.0))
+                    .border_color(c.border)
+                    .items_center()
+                    .child(mk_btn(
+                        self.tr.ml_cat_all,
+                        "ml_cat_all",
+                        MediaLibCategory::AllTracks,
+                    ))
+                    .child(mk_btn(
+                        self.tr.ml_cat_artist,
+                        "ml_cat_artist",
+                        MediaLibCategory::Artists,
+                    ))
+                    .child(mk_btn(
+                        self.tr.ml_cat_album,
+                        "ml_cat_album",
+                        MediaLibCategory::Albums,
+                    ))
+                    .child(mk_btn(
+                        self.tr.ml_cat_genre,
+                        "ml_cat_genre",
+                        MediaLibCategory::Genres,
+                    ))
+                    .child(mk_btn(
+                        self.tr.ml_cat_year,
+                        "ml_cat_year",
+                        MediaLibCategory::Years,
+                    ))
+                    .child(mk_btn(
+                        self.tr.ml_cat_ftype,
+                        "ml_cat_ftype",
+                        MediaLibCategory::FileTypes,
+                    ))
+                    .child(mk_btn(
+                        self.tr.ml_cat_bitrate,
+                        "ml_cat_bitrate",
+                        MediaLibCategory::Bitrates,
+                    ))
+                    .child(mk_btn(
+                        self.tr.nav_recent,
+                        "ml_cat_recent",
+                        MediaLibCategory::Recent,
+                    ))
+                    .child(mk_btn(
+                        self.tr.ml_cat_rating,
+                        "ml_cat_rating",
+                        MediaLibCategory::Rating,
+                    ))
                     .child(div().flex_grow())
                     .child(
-                        Button::new("ml_refresh_btn").label(self.tr.btn_refresh).compact().ghost()
+                        Button::new("ml_refresh_btn")
+                            .label(self.tr.btn_refresh)
+                            .compact()
+                            .ghost()
                             .on_click(cx.listener(move |_this, _e: &gpui::ClickEvent, _w, cx| {
                                 let _weak = cx.entity().downgrade();
                                 let (tx, rx) = async_channel::unbounded();
@@ -5169,8 +6515,12 @@ impl MusicPlayer {
                                     let cfg = crate::config::Config::load();
                                     let mut lib = crate::media::MediaLib::load();
                                     for dir in &cfg.media_lib.media_dirs {
-                                        if let Ok(entries) = crate::media::scan_directory(dir, true, None) {
-                                            for e in entries { lib.upsert(e); }
+                                        if let Ok(entries) =
+                                            crate::media::scan_directory(dir, true, None)
+                                        {
+                                            for e in entries {
+                                                lib.upsert(e);
+                                            }
                                         }
                                     }
                                     let _ = lib.save();
@@ -5183,58 +6533,81 @@ impl MusicPlayer {
                                         if let Some(lib) = lib {
                                             this.media_lib_cache = Some(lib);
                                             // Invalidate cached sidebar/list so they rebuild from new data.
-                                            this.media_lib_cache_key = (MediaLibCategory::AllTracks, None);
+                                            this.media_lib_cache_key =
+                                                (MediaLibCategory::AllTracks, None);
                                         }
                                         cx_.notify();
                                     });
-                                }).detach();
-                            }))
-                    )
+                                })
+                                .detach();
+                            })),
+                    ),
             )
-            .child(
-                h_flex().flex_grow().w_full()
-                    .child(sidebar_el)
-                    .child(
-                        v_flex().flex_grow().h_full().bg(c.bg)
-                            .children({
-                                // Limit displayed tracks to avoid creating thousands of
-                                // GPUI elements when the media library is large.
-                                const MAX_DISPLAY: usize = 500;
-                                let total = list_items.len();
-                                let media_lib_player = self.player.clone();
-                                let mut items: Vec<gpui::AnyElement> = Vec::with_capacity(list_items.len().min(MAX_DISPLAY) + 1);
-                                items.extend(list_items.iter().take(MAX_DISPLAY).enumerate().map(|(i, item)| {
-                                    let is_even = i % 2 == 0;
-                                    let bg = if is_even { c.playlist_item } else { c.playlist_item_hover };
-                                    let title = item.title.clone();
-                                    let path = item.file_path.clone();
-                                    let dur_str = format!("{:02}:{:02}", item.duration / 60, item.duration % 60);
-                                    let p = media_lib_player.clone();
-                                    h_flex().w_full().h(px(26.0)).px_4().gap_3().bg(bg)
-                                        .hover(|s| s.bg(c.playlist_item_selected))
-                                        .items_center().cursor(gpui::CursorStyle::PointingHand)
-                                        .child(layout::txt(&title, 11.0, c.text))
-                                        .child(div().flex_grow())
-                                        .child(layout::txt(&item.artist, 10.0, c.text_dim))
-                                        .child(layout::txt(&dur_str, 10.0, c.text_dim))
-                                        .on_mouse_down(gpui::MouseButton::Left, move |_, _, _| {
-                                            let p2 = p.clone();
-                                            let path2 = path.clone();
-                                            runtime().spawn_blocking(move || { let _ = p2.play_file(&path2); });
-                                        })
-                                        .into_any_element()
-                                }));
-                                if total > MAX_DISPLAY {
-                                    items.push(
-                                        div().w_full().px_4().py_2().text_size(px(11.0)).text_color(c.text_dim)
-                                            .child(self.tr.ml_overflow.replace("{}", &(total - MAX_DISPLAY).to_string()).replace("{}", &total.to_string()))
-                .into_any_element()
-        );
-                                }
-                                items
-                            })
-                    )
-            )
+            .child(h_flex().flex_grow().w_full().child(sidebar_el).child(
+                v_flex().flex_grow().h_full().bg(c.bg).children({
+                    // Limit displayed tracks to avoid creating thousands of
+                    // GPUI elements when the media library is large.
+                    const MAX_DISPLAY: usize = 500;
+                    let total = list_items.len();
+                    let media_lib_player = self.player.clone();
+                    let mut items: Vec<gpui::AnyElement> =
+                        Vec::with_capacity(list_items.len().min(MAX_DISPLAY) + 1);
+                    items.extend(list_items.iter().take(MAX_DISPLAY).enumerate().map(
+                        |(i, item)| {
+                            let is_even = i % 2 == 0;
+                            let bg = if is_even {
+                                c.playlist_item
+                            } else {
+                                c.playlist_item_hover
+                            };
+                            let title = item.title.clone();
+                            let path = item.file_path.clone();
+                            let dur_str =
+                                format!("{:02}:{:02}", item.duration / 60, item.duration % 60);
+                            let p = media_lib_player.clone();
+                            h_flex()
+                                .w_full()
+                                .h(px(26.0))
+                                .px_4()
+                                .gap_3()
+                                .bg(bg)
+                                .hover(|s| s.bg(c.playlist_item_selected))
+                                .items_center()
+                                .cursor(gpui::CursorStyle::PointingHand)
+                                .child(layout::txt(&title, 11.0, c.text))
+                                .child(div().flex_grow())
+                                .child(layout::txt(&item.artist, 10.0, c.text_dim))
+                                .child(layout::txt(&dur_str, 10.0, c.text_dim))
+                                .on_mouse_down(gpui::MouseButton::Left, move |_, _, _| {
+                                    let p2 = p.clone();
+                                    let path2 = path.clone();
+                                    runtime().spawn_blocking(move || {
+                                        let _ = p2.play_file(&path2);
+                                    });
+                                })
+                                .into_any_element()
+                        },
+                    ));
+                    if total > MAX_DISPLAY {
+                        items.push(
+                            div()
+                                .w_full()
+                                .px_4()
+                                .py_2()
+                                .text_size(px(11.0))
+                                .text_color(c.text_dim)
+                                .child(
+                                    self.tr
+                                        .ml_overflow
+                                        .replace("{}", &(total - MAX_DISPLAY).to_string())
+                                        .replace("{}", &total.to_string()),
+                                )
+                                .into_any_element(),
+                        );
+                    }
+                    items
+                }),
+            ))
     }
 
     /// Render the 10-band equalizer panel.
@@ -5245,8 +6618,7 @@ impl MusicPlayer {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         const BAND_LABELS: &[&str] = &[
-            "32Hz", "64Hz", "125Hz", "250Hz", "500Hz",
-            "1kHz", "2kHz", "4kHz", "8kHz", "16kHz",
+            "32Hz", "64Hz", "125Hz", "250Hz", "500Hz", "1kHz", "2kHz", "4kHz", "8kHz", "16kHz",
         ];
 
         let caps = self.player.engine_capabilities();
@@ -5261,22 +6633,46 @@ impl MusicPlayer {
                 .child(layout::txt(self.tr.menu_equalizer, 14.0, c.text_title))
                 .child(
                     div().text_size(px(12.0)).text_color(c.text_dim).child(
-                        format!("{} ({}) 不支持均衡器", self.tr.menu_equalizer, self.player.engine_name())
-                    )
+                        self.tr
+                            .eq_unsupported
+                            .replacen("{}", self.tr.menu_equalizer, 1)
+                            .replacen("{}", &self.player.engine_name(), 1),
+                    ),
                 )
                 .into_any_element();
         }
 
-        // Preset definition: name -> gains
-        let presets: Vec<(&str, &[f32; 10])> = vec![
-            ("平坦", &[0.0_f32; 10]),
-            ("流行", &[3.0, 2.0, 0.0, -1.0, -2.0, 0.0, 2.0, 3.0, 3.0, 2.0]),
-            ("摇滚", &[4.0, 3.0, -1.0, -2.0, 1.0, 3.0, 4.0, 5.0, 5.0, 4.0]),
-            ("古典", &[3.0, 2.0, 0.0, 0.0, -1.0, -1.0, 0.0, 2.0, 3.0, 4.0]),
-            ("爵士", &[3.0, 2.0, 0.0, 2.0, -1.0, -1.0, 0.0, 1.0, 2.0, 3.0]),
-            ("电子", &[4.0, 3.0, 1.0, 0.0, -2.0, 0.0, 2.0, 4.0, 5.0, 4.0]),
-            ("低音增强", &[6.0, 5.0, 4.0, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
-            ("人声增强", &[-2.0, -1.0, 0.0, 0.0, 3.0, 4.0, 3.0, 1.0, -1.0, -2.0]),
+        // Preset definition: display name -> gains
+        let presets: Vec<(&'static str, &[f32; 10])> = vec![
+            (self.tr.eq_flat, &[0.0_f32; 10]),
+            (
+                self.tr.eq_pop,
+                &[3.0, 2.0, 0.0, -1.0, -2.0, 0.0, 2.0, 3.0, 3.0, 2.0],
+            ),
+            (
+                self.tr.eq_rock,
+                &[4.0, 3.0, -1.0, -2.0, 1.0, 3.0, 4.0, 5.0, 5.0, 4.0],
+            ),
+            (
+                self.tr.eq_classical,
+                &[3.0, 2.0, 0.0, 0.0, -1.0, -1.0, 0.0, 2.0, 3.0, 4.0],
+            ),
+            (
+                self.tr.eq_jazz,
+                &[3.0, 2.0, 0.0, 2.0, -1.0, -1.0, 0.0, 1.0, 2.0, 3.0],
+            ),
+            (
+                self.tr.eq_electronic,
+                &[4.0, 3.0, 1.0, 0.0, -2.0, 0.0, 2.0, 4.0, 5.0, 4.0],
+            ),
+            (
+                self.tr.eq_bass_boost,
+                &[6.0, 5.0, 4.0, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            ),
+            (
+                self.tr.eq_vocal_boost,
+                &[-2.0, -1.0, 0.0, 0.0, 3.0, 4.0, 3.0, 1.0, -1.0, -2.0],
+            ),
         ];
 
         // Header with enable toggle
@@ -5285,16 +6681,30 @@ impl MusicPlayer {
 
         let header = h_flex()
             .w_full()
-            .px_4().py_2()
+            .px_4()
+            .py_2()
             .bg(c.control_bar_bg)
             .items_center()
             .gap_4()
             .child(layout::txt(self.tr.menu_equalizer, 14.0, c.text_title))
             .child(
                 Button::new("eq_enable")
-                    .label(if enabled { self.tr.eq_enabled } else { self.tr.eq_disabled })
+                    .label(if enabled {
+                        self.tr.eq_enabled
+                    } else {
+                        self.tr.eq_disabled
+                    })
                     .compact()
-                    .bg(if enabled { c.accent } else { Hsla { h: 0.0, s: 0.0, l: 0.0, a: 0.0 } })
+                    .bg(if enabled {
+                        c.accent
+                    } else {
+                        Hsla {
+                            h: 0.0,
+                            s: 0.0,
+                            l: 0.0,
+                            a: 0.0,
+                        }
+                    })
                     .ghost()
                     .on_click(cx.listener(move |this, _, _w, _cx| {
                         this.eq_enabled = !this.eq_enabled;
@@ -5322,69 +6732,89 @@ impl MusicPlayer {
                         }
                         let _ = cfg.save();
                         tracing::info!("[EQ] enabled={} (persisted)", this.eq_enabled);
-                    }))
+                    })),
             )
             .child(div().flex_grow())
-            .child(layout::txt(&self.tr.eq_preset_label.replace("{}", &preset_name), 11.0, c.text_dim))
+            .child(layout::txt(
+                &self.tr.eq_preset_label.replace("{}", &preset_name),
+                11.0,
+                c.text_dim,
+            ))
             .child(
-                Button::new("eq_save_preset").label(self.tr.btn_save).compact().ghost()
+                Button::new("eq_save_preset")
+                    .label(self.tr.btn_save)
+                    .compact()
+                    .ghost()
                     .on_click(cx.listener(move |this, _, _w, _cx| {
-                        let gains: Vec<String> = this.eq_sliders.iter().map(|s| {
-                            format!("{:.1}", s.read(_cx).value())
-                        }).collect();
+                        let gains: Vec<String> = this
+                            .eq_sliders
+                            .iter()
+                            .map(|s| format!("{:.1}", s.read(_cx).value()))
+                            .collect();
                         this.eq_preset_name = i18n::global_tr().eq_custom.to_string();
                         tracing::info!("[EQ] 保存自定义预设: gains={:?}", gains);
-                    }))
+                    })),
             );
 
         // Preset list (scrollable)
         let preset_buttons: Vec<String> = presets.iter().map(|(n, _)| n.to_string()).collect();
         let presets_el = h_flex()
             .w_full()
-            .px_4().py_2()
+            .px_4()
+            .py_2()
             .bg(c.panel_alt)
             .border_b(px(1.0))
             .border_color(c.border)
             .items_center()
             .gap_2()
-                .children(preset_buttons.iter().enumerate().map(|(pi, name)| {
-                    let is_active = preset_name == *name;
-                    let n = name.clone();
-                    let presets = presets.clone();
-                    Button::new(("eq_preset", pi as u64))
-                        .label(n.clone())
-                        .compact()
-                        .bg(if is_active { c.accent } else { Hsla { h: 0.0, s: 0.0, l: 0.0, a: 0.0 } })
-                        .ghost()
-                        .on_click(cx.listener(move |this, _, _w, _cx| {
-                            this.eq_preset_name = n.clone();
-                            if let Some((_, gains)) = presets.iter().find(|(pn, _)| *pn == n.as_str()) {
-                                for (i, g) in gains.iter().enumerate() {
-                                    if let Some(slider) = this.eq_sliders.get(i) {
-                                        slider.update(_cx, |s, cx2| {
-                                            s.set_value(SliderValue::Single(*g), _w, cx2);
-                                        });
-                                    }
-                                    if this.eq_enabled {
-                                        let _ = this.player.eq_set(i, *g as i32);
-                                    }
+            .children(preset_buttons.iter().enumerate().map(|(pi, name)| {
+                let is_active = preset_name == *name;
+                let n = name.clone();
+                let presets = presets.clone();
+                Button::new(("eq_preset", pi as u64))
+                    .label(n.clone())
+                    .compact()
+                    .bg(if is_active {
+                        c.accent
+                    } else {
+                        Hsla {
+                            h: 0.0,
+                            s: 0.0,
+                            l: 0.0,
+                            a: 0.0,
+                        }
+                    })
+                    .ghost()
+                    .on_click(cx.listener(move |this, _, _w, _cx| {
+                        this.eq_preset_name = n.clone();
+                        if let Some((_, gains)) = presets.iter().find(|(pn, _)| *pn == n.as_str()) {
+                            for (i, g) in gains.iter().enumerate() {
+                                if let Some(slider) = this.eq_sliders.get(i) {
+                                    slider.update(_cx, |s, cx2| {
+                                        s.set_value(SliderValue::Single(*g), _w, cx2);
+                                    });
                                 }
-                                // Persist preset gains
-                                let mut cfg = Config::load();
-                                cfg.eq.preset = n.clone();
-                                for (i, g) in gains.iter().enumerate() {
-                                    cfg.eq.gains[i] = *g as i32;
+                                if this.eq_enabled {
+                                    let _ = this.player.eq_set(i, *g as i32);
                                 }
-                                let _ = cfg.save();
                             }
-                        }))
-                }));
+                            // Persist preset gains
+                            let mut cfg = Config::load();
+                            cfg.eq.preset = n.clone();
+                            for (i, g) in gains.iter().enumerate() {
+                                cfg.eq.gains[i] = *g as i32;
+                            }
+                            let _ = cfg.save();
+                        }
+                    }))
+            }));
 
         // EQ band sliders
         let sliders_row = h_flex()
             .flex_1()
             .w_full()
-            .px_4().py_4()
+            .px_4()
+            .py_4()
             .gap_3()
             .items_end()
             .children(self.eq_sliders.iter().enumerate().map(|(i, slider)| {
@@ -5404,7 +6834,7 @@ impl MusicPlayer {
                         div()
                             .text_size(px(10.0))
                             .text_color(c.text)
-                            .child(format!("{:.0}", val))
+                            .child(format!("{:.0}", val)),
                     )
                     // Vertical slider
                     .child(
@@ -5414,22 +6844,15 @@ impl MusicPlayer {
                             .flex()
                             .items_center()
                             .justify_center()
-                            .child(
-                                Slider::new(slider).vertical()
-                            )
+                            .child(Slider::new(slider).vertical()),
                     )
                     // Frequency label
-                    .child(
-                        div()
-                            .text_size(px(10.0))
-                            .text_color(c.text)
-                            .child(label)
-                    )
+                    .child(div().text_size(px(10.0)).text_color(c.text).child(label))
                     .child(
                         div()
                             .text_size(px(10.0))
                             .text_color(c.text_dim)
-                            .child("-12".to_string())
+                            .child("-12".to_string()),
                     )
             }));
 
@@ -5444,15 +6867,22 @@ impl MusicPlayer {
                 div()
                     .w_full()
                     .h(px(80.0))
-                    .px_4().py_2()
+                    .px_4()
+                    .py_2()
                     .bg(c.panel_alt)
                     .child(
-                        v_flex().w_full().h_full()
+                        v_flex()
+                            .w_full()
+                            .h_full()
                             // Center line (0 dB reference)
                             .child(div().w_full().h(px(1.0)).bg(c.border))
                             // Bar area with positioning relative to center
                             .child(
-                                h_flex().w_full().flex_grow().items_center().gap_1()
+                                h_flex()
+                                    .w_full()
+                                    .flex_grow()
+                                    .items_center()
+                                    .gap_1()
                                     .children(self.eq_sliders.iter().map(|slider| {
                                         let val = match slider.read(cx).value() {
                                             SliderValue::Single(v) => v,
@@ -5460,7 +6890,16 @@ impl MusicPlayer {
                                         };
                                         let bar_h = ((val.abs()) / 12.0 * 30.0).clamp(1.0, 30.0);
                                         let is_positive = val >= 0.0;
-                                        let bar_color = if is_positive { c.accent } else { Hsla { h: 0.0, s: 0.8, l: 0.5, a: 1.0 } };
+                                        let bar_color = if is_positive {
+                                            c.accent
+                                        } else {
+                                            Hsla {
+                                                h: 0.0,
+                                                s: 0.8,
+                                                l: 0.5,
+                                                a: 1.0,
+                                            }
+                                        };
                                         div()
                                             .flex_grow()
                                             .h_full()
@@ -5473,12 +6912,20 @@ impl MusicPlayer {
                                                     .h(px(bar_h))
                                                     .bg(bar_color)
                                                     .rounded(px(2.0))
-                                                    .mt(if is_positive { px(0.0) } else { px(bar_h) })
-                                                    .mb(if is_positive { px(bar_h) } else { px(0.0) })
+                                                    .mt(if is_positive {
+                                                        px(0.0)
+                                                    } else {
+                                                        px(bar_h)
+                                                    })
+                                                    .mb(if is_positive {
+                                                        px(bar_h)
+                                                    } else {
+                                                        px(0.0)
+                                                    }),
                                             )
-                                    }))
-                            )
-                    )
+                                    })),
+                            ),
+                    ),
             )
             .child(sliders_row)
             .into_any_element()
@@ -5511,7 +6958,10 @@ impl MusicPlayer {
             raw_spec
                 .iter()
                 .map(|v| (v * max_h).min(max_h).max(1.0))
-                .chain(std::iter::repeat_n(1.0, bar_count.saturating_sub(raw_spec.len())))
+                .chain(std::iter::repeat_n(
+                    1.0,
+                    bar_count.saturating_sub(raw_spec.len()),
+                ))
                 .take(bar_count)
                 .collect()
         };
@@ -5542,21 +6992,11 @@ impl MusicPlayer {
                     .h(px(max_h))
                     .w(px(bar_w))
                     .child(if show_peak {
-                        div()
-                            .w(px(3.0))
-                            .h(px(2.0))
-                            .bg(c.accent)
-                            .into_any_element()
+                        div().w(px(3.0)).h(px(2.0)).bg(c.accent).into_any_element()
                     } else {
                         div().w(px(3.0)).h(px(0.0)).into_any_element()
                     })
-                    .child(
-                        div()
-                            .w_full()
-                            .h(px(bar_h))
-                            .bg(c.accent)
-                            .rounded(px(1.0))
-                    )
+                    .child(div().w_full().h(px(bar_h)).bg(c.accent).rounded(px(1.0)))
             }))
     }
 }
@@ -5591,9 +7031,15 @@ pub fn open_floating_playlist(app: &mut App, player: Arc<Player>) {
             }),
             window_bounds: Some(WindowBounds::Windowed(Bounds {
                 origin: Point::default(),
-                size: gpui::Size { width: px(420.0), height: px(720.0) },
+                size: gpui::Size {
+                    width: px(420.0),
+                    height: px(720.0),
+                },
             })),
-            window_min_size: Some(gpui::Size { width: px(280.0), height: px(320.0) }),
+            window_min_size: Some(gpui::Size {
+                width: px(280.0),
+                height: px(320.0),
+            }),
             ..Default::default()
         },
         |window, cx| {
@@ -5618,7 +7064,10 @@ impl FloatingPlaylistView {
 impl Render for FloatingPlaylistView {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         let cfg = Config::load();
-        let c = UiColors::build(cfg.appearance.dark_mode, &theme::ThemeName::from_config(&cfg.appearance.theme));
+        let c = UiColors::build(
+            cfg.appearance.dark_mode,
+            &theme::ThemeName::from_config(&cfg.appearance.theme),
+        );
         let tracks = self.player.playlist().tracks().to_vec();
         let current = self.player.playlist().current_index();
 
@@ -5632,53 +7081,57 @@ impl Render for FloatingPlaylistView {
                     .px_3()
                     .py_2()
                     .bg(c.panel_alt)
-                    .child(layout::txt(&i18n::global_tr().pq_header_all.replace("{}", &tracks.len().to_string()), 13.0, c.text_title)),
+                    .child(layout::txt(
+                        &i18n::global_tr()
+                            .pq_header_all
+                            .replace("{}", &tracks.len().to_string()),
+                        13.0,
+                        c.text_title,
+                    )),
             )
-            .child(
-                div()
-                    .flex_grow()
-                    .overflow_y_scrollbar()
-                    .py_1()
-                    .children(tracks.iter().enumerate().map(|(i, track)| {
-                        let is_current = current == Some(i);
-                        let bg = if is_current {
-                            c.playlist_playing
-                        } else if i % 2 == 0 {
-                            c.playlist_item
-                        } else {
-                            c.playlist_item_hover
-                        };
-                        let text_color = if is_current { c.accent } else { c.text };
-                        let display = if !track.title.is_empty() {
-                            track.title.clone()
-                        } else {
-                            track.file_name.clone()
-                        };
-                        let dur = track.duration_str();
-                        let player = self.player.clone();
-                        Button::new(("fp_track", i))
-                            .w_full()
-                            .justify_start()
-                            .px_3()
-                            .h(px(30.0))
-                            .ghost()
-                            .bg(bg)
-                            .text_color(text_color)
-                            .on_click(move |_, _, _| {
-                                let p = player.clone();
-                                runtime().spawn_blocking(move || { let _ = p.play_at_index(i); });
-                            })
-                            .child(
-                                h_flex()
-                                    .items_center()
-                                    .gap_2()
-                                    .w_full()
-                                    .child(layout::txt(&display, 12.0, text_color))
-                                    .child(div().flex_grow())
-                                    .child(layout::txt(&dur, 11.0, c.text_dim)),
-                            )
-                    })),
-            )
+            .child(div().flex_grow().overflow_y_scrollbar().py_1().children(
+                tracks.iter().enumerate().map(|(i, track)| {
+                    let is_current = current == Some(i);
+                    let bg = if is_current {
+                        c.playlist_playing
+                    } else if i % 2 == 0 {
+                        c.playlist_item
+                    } else {
+                        c.playlist_item_hover
+                    };
+                    let text_color = if is_current { c.accent } else { c.text };
+                    let display = if !track.title.is_empty() {
+                        track.title.clone()
+                    } else {
+                        track.file_name.clone()
+                    };
+                    let dur = track.duration_str();
+                    let player = self.player.clone();
+                    Button::new(("fp_track", i))
+                        .w_full()
+                        .justify_start()
+                        .px_3()
+                        .h(px(30.0))
+                        .ghost()
+                        .bg(bg)
+                        .text_color(text_color)
+                        .on_click(move |_, _, _| {
+                            let p = player.clone();
+                            runtime().spawn_blocking(move || {
+                                let _ = p.play_at_index(i);
+                            });
+                        })
+                        .child(
+                            h_flex()
+                                .items_center()
+                                .gap_2()
+                                .w_full()
+                                .child(layout::txt(&display, 12.0, text_color))
+                                .child(div().flex_grow())
+                                .child(layout::txt(&dur, 11.0, c.text_dim)),
+                        )
+                }),
+            ))
     }
 }
 
@@ -5688,11 +7141,11 @@ fn toggle_always_on_top() {
     let on = !ALWAYS_ON_TOP.fetch_xor(true, Ordering::Relaxed);
     #[cfg(windows)]
     {
+        use windows::core::PCWSTR;
+        use windows::Win32::Foundation::HWND;
         use windows::Win32::UI::WindowsAndMessaging::{
             FindWindowW, SetWindowPos, HWND_TOPMOST, SWP_NOMOVE, SWP_NOSIZE,
         };
-        use windows::Win32::Foundation::HWND;
-        use windows::core::PCWSTR;
         let title: Vec<u16> = "HackMagic Music Player"
             .encode_utf16()
             .chain(std::iter::once(0))
@@ -5701,8 +7154,15 @@ fn toggle_always_on_top() {
             unsafe {
                 let _ = SetWindowPos(
                     hwnd,
-                    if on { Some(HWND_TOPMOST) } else { Some(HWND::default()) },
-                    0, 0, 0, 0,
+                    if on {
+                        Some(HWND_TOPMOST)
+                    } else {
+                        Some(HWND::default())
+                    },
+                    0,
+                    0,
+                    0,
+                    0,
                     SWP_NOMOVE | SWP_NOSIZE,
                 );
             }
@@ -5746,9 +7206,12 @@ impl DesktopLyricsView {
                     .timer(std::time::Duration::ZERO)
                     .await;
                 let alive = this.update(cx, |_, cx| cx.notify()).is_ok();
-                if !alive { break; }
+                if !alive {
+                    break;
+                }
             }
-        }).detach();
+        })
+        .detach();
         Self {
             player,
             state: desktop_lyrics::LyricsState::new(),
@@ -5764,7 +7227,10 @@ impl DesktopLyricsView {
         let lyric_ms = (pos * 1000.0) as u64;
 
         // Check if track changed
-        let current_path = self.player.playlist().current_track()
+        let current_path = self
+            .player
+            .playlist()
+            .current_track()
             .map(|t| t.file_path.clone())
             .unwrap_or_default();
 
@@ -5807,15 +7273,30 @@ impl DesktopLyricsView {
         let progress = self.state.progress;
         let display_text = lyrics.display_text(line);
 
-        v_flex().items_center().gap_1()
+        v_flex()
+            .items_center()
+            .gap_1()
+            .child(desktop_lyrics::karaoke_line(
+                &display_text,
+                progress,
+                18.0,
+                FontWeight::BOLD,
+                c,
+            ))
             .child(
-                desktop_lyrics::karaoke_line(&display_text, progress, 18.0, FontWeight::BOLD, c)
+                if self.double_line
+                    && lyrics.translate_mode == crate::lyric::TranslateMode::Separate
+                    && !line.translate.is_empty()
+                {
+                    div()
+                        .text_center()
+                        .text_size(px(13.0))
+                        .text_color(c.text_dim)
+                        .child(line.translate.clone())
+                } else {
+                    div()
+                },
             )
-            .child(if self.double_line && lyrics.translate_mode == crate::lyric::TranslateMode::Separate && !line.translate.is_empty() {
-                div().text_center().text_size(px(13.0)).text_color(c.text_dim).child(line.translate.clone())
-            } else {
-                div()
-            })
             .into_any_element()
     }
 }
@@ -5824,28 +7305,44 @@ impl Render for DesktopLyricsView {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         // Handle close request from context menu
         if desktop_lyrics::should_close() {
-            return v_flex().size_full().bg(gpui::Hsla { h: 0.0, s: 0.0, l: 0.0, a: 0.0 }).into_any_element();
+            return v_flex()
+                .size_full()
+                .bg(gpui::Hsla {
+                    h: 0.0,
+                    s: 0.0,
+                    l: 0.0,
+                    a: 0.0,
+                })
+                .into_any_element();
         }
 
         // Poll player state
         self.poll();
 
         let cfg = Config::load();
-        let c = UiColors::build(cfg.appearance.dark_mode, &theme::ThemeName::from_config(&cfg.appearance.theme));
+        let c = UiColors::build(
+            cfg.appearance.dark_mode,
+            &theme::ThemeName::from_config(&cfg.appearance.theme),
+        );
 
         // When locked, use a transparent background and render only the lyrics text
         self.locked = desktop_lyrics::is_locked();
         if self.locked {
             return v_flex()
                 .size_full()
-                .bg(gpui::Hsla { h: 0.0, s: 0.0, l: 0.0, a: 0.0 })
+                .bg(gpui::Hsla {
+                    h: 0.0,
+                    s: 0.0,
+                    l: 0.0,
+                    a: 0.0,
+                })
                 .child(
                     v_flex()
                         .flex_grow()
                         .justify_center()
                         .items_center()
                         .gap_1()
-                        .child(self.render_lyric_line(&c))
+                        .child(self.render_lyric_line(&c)),
                 )
                 .into_any_element();
         }

@@ -98,16 +98,12 @@ pub async fn search_lyrics(
     }
 
     match source {
-        "qqmusic" => {
-            online::qqmusic_search(keyword)
-                .await
-                .map_err(|e| format!("QQ Music search failed: {}", e))
-        }
-        _ => {
-            online::netease_search(keyword)
-                .await
-                .map_err(|e| format!("NetEase search failed: {}", e))
-        }
+        "qqmusic" => online::qqmusic_search(keyword)
+            .await
+            .map_err(|e| format!("QQ Music: {}", e)),
+        _ => online::netease_search(keyword)
+            .await
+            .map_err(|e| format!("NetEase: {}", e)),
     }
 }
 
@@ -118,16 +114,12 @@ pub async fn download_lyric(
     include_translation: bool,
 ) -> Result<String, String> {
     let lrc_text = match source {
-        "qqmusic" => {
-            online::qqmusic_download_lyric(song_id)
-                .await
-                .map_err(|e| format!("QQ Music download failed: {}", e))?
-        }
-        _ => {
-            online::netease_download_lyric(song_id)
-                .await
-                .map_err(|e| format!("NetEase download failed: {}", e))?
-        }
+        "qqmusic" => online::qqmusic_download_lyric(song_id)
+            .await
+            .map_err(|e| format!("QQ Music: {}", e))?,
+        _ => online::netease_download_lyric(song_id)
+            .await
+            .map_err(|e| format!("NetEase: {}", e))?,
     };
 
     if !include_translation {
