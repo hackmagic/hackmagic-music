@@ -4007,7 +4007,7 @@ impl MusicPlayer {
             }
             ModalKind::Settings => v_flex()
                 .w(px(640.0))
-                .max_h(px(560.0))
+                .h(px(560.0))
                 .rounded(px(12.0))
                 .bg(c.bg)
                 .overflow_hidden()

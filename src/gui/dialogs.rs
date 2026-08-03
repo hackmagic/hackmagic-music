@@ -97,7 +97,6 @@ pub fn render_settings_panel(
                 .border_b(px(1.0))
                 .border_color(c.border)
                 .items_center()
-                .overflow_x_scrollbar()
                 .child(build_tab_btn(
                     tr.settings_tab_lyrics,
                     "set_tab_lyrics",
@@ -155,7 +154,11 @@ pub fn render_settings_panel(
                         .label(tr.settings_btn_ok)
                         .compact()
                         .on_click(move |_, _, cx| {
-                            let _ = e.update(cx, |_, cx| cx.notify());
+                            let _ = e.update(cx, |this, cx| {
+                                this.modal = None;
+                                super::ACTIVE_PANEL.store(0, std::sync::atomic::Ordering::Relaxed);
+                                cx.notify();
+                            });
                         })
                 })
                 .child({
@@ -165,7 +168,11 @@ pub fn render_settings_panel(
                         .compact()
                         .ghost()
                         .on_click(move |_, _, cx| {
-                            let _ = e.update(cx, |_, cx| cx.notify());
+                            let _ = e.update(cx, |this, cx| {
+                                this.modal = None;
+                                super::ACTIVE_PANEL.store(0, std::sync::atomic::Ordering::Relaxed);
+                                cx.notify();
+                            });
                         })
                 })
                 .child({
@@ -175,6 +182,7 @@ pub fn render_settings_panel(
                         .compact()
                         .ghost()
                         .on_click(move |_, _, cx| {
+                            // Settings already take effect immediately; just refresh the view.
                             let _ = e.update(cx, |_, cx| cx.notify());
                         })
                 }),
@@ -271,7 +279,7 @@ fn toggle_config(
 #[allow(clippy::too_many_arguments)]
 fn slider_config(
     c: &UiColors,
-    _id: &'static str,
+    id: &'static str,
     value: u32,
     min: u32,
     max: u32,
@@ -285,6 +293,14 @@ fn slider_config(
     } else {
         value.to_string()
     };
+    // Guard against a stale config value outside [min, max] (u32 underflow /
+    // division by zero when computing the fill width).
+    let v = value.clamp(min, max);
+    let fill_width = if max > min {
+        (v - min) as f32 / (max - min) as f32 * 120.0
+    } else {
+        0.0
+    };
     let entity = cx.entity().downgrade();
     h_flex()
         .items_center()
@@ -293,12 +309,12 @@ fn slider_config(
             let e = entity.clone();
             let key = config_key;
             let k2 = key;
-            Button::new("sd")
+            Button::new((id, 0u64))
                 .label("−")
                 .compact()
                 .ghost()
                 .on_click(move |_, _, cx| {
-                    let new_val = value.saturating_sub(step);
+                    let new_val = value.saturating_sub(step).max(min);
                     let _ = crate::config::Config::set(k2, &new_val.to_string());
                     let _ = e.update(cx, |_, cx| cx.notify());
                 })
@@ -314,13 +330,13 @@ fn slider_config(
                         .h(px(6.0))
                         .rounded(px(3.0))
                         .bg(c.accent)
-                        .w(px(((value - min) as f32 / (max - min) as f32) * 120.0)),
+                        .w(px(fill_width)),
                 ),
         )
         .child({
             let e = entity.clone();
             let key = config_key;
-            Button::new("si")
+            Button::new((id, 1u64))
                 .label("+")
                 .compact()
                 .ghost()
@@ -450,7 +466,7 @@ fn render_general_settings(
             dropdown_config(
                 c,
                 "gen_update_src",
-                "github",
+                &cfg.general.update_source,
                 &[("github", "Github"), ("gitee", "Gitee")],
                 "general.update_source",
                 cx,
@@ -459,7 +475,7 @@ fn render_general_settings(
         setting_row(
             c,
             tr.settings_label_auto_run,
-            toggle_config(c, "gen_auto_run", false, "general.auto_run", None, cx),
+            toggle_config(c, "gen_auto_run", cfg.general.auto_run, "general.auto_run", None, cx),
         ),
         setting_row(
             c,
@@ -626,7 +642,7 @@ fn render_appearance_settings(
             toggle_config(
                 c,
                 "app_spec_low_mid",
-                false,
+                cfg.appearance.spectrum_low_freq_center,
                 "appearance.spectrum_low_freq_center",
                 None,
                 cx,
@@ -653,7 +669,7 @@ fn render_appearance_settings(
             toggle_config(
                 c,
                 "app_show_cover",
-                true,
+                cfg.appearance.show_album_cover,
                 "appearance.show_album_cover",
                 None,
                 cx,
@@ -665,7 +681,7 @@ fn render_appearance_settings(
             dropdown_config(
                 c,
                 "app_cover_fit",
-                "cover",
+                &cfg.appearance.album_cover_fit,
                 &[
                     ("cover", tr.settings_option_cover_fit),
                     ("fill", tr.settings_option_cover_fill),
@@ -682,7 +698,7 @@ fn render_appearance_settings(
             toggle_config(
                 c,
                 "app_lyric_bg",
-                true,
+                cfg.appearance.lyric_background,
                 "appearance.lyric_background",
                 None,
                 cx,
@@ -691,7 +707,7 @@ fn render_appearance_settings(
         setting_row(
             c,
             tr.settings_label_rounded,
-            toggle_config(c, "app_rounded", true, "appearance.rounded_style", None, cx),
+            toggle_config(c, "app_rounded", cfg.appearance.rounded_style, "appearance.rounded_style", None, cx),
         ),
         setting_row(
             c,
@@ -753,7 +769,7 @@ fn render_appearance_settings(
             toggle_config(
                 c,
                 "app_bg_desktop",
-                false,
+                cfg.appearance.use_desktop_background,
                 "appearance.use_desktop_background",
                 None,
                 cx,
@@ -780,7 +796,7 @@ fn render_appearance_settings(
             toggle_config(
                 c,
                 "app_bg_cover",
-                false,
+                cfg.appearance.album_cover_as_background,
                 "appearance.album_cover_as_background",
                 None,
                 cx,
@@ -792,7 +808,7 @@ fn render_appearance_settings(
             toggle_config(
                 c,
                 "app_bg_blur",
-                false,
+                cfg.appearance.background_blur,
                 "appearance.background_blur",
                 None,
                 cx,
@@ -804,7 +820,7 @@ fn render_appearance_settings(
             slider_config(
                 c,
                 "app_bg_blur_r",
-                5,
+                cfg.appearance.background_blur_radius,
                 1,
                 50,
                 1,
@@ -880,7 +896,7 @@ fn render_playback_settings(
             toggle_config(
                 c,
                 "pb_taskbar_progress",
-                false,
+                cfg.play.show_taskbar_progress,
                 "play.show_taskbar_progress",
                 None,
                 cx,
@@ -892,7 +908,7 @@ fn render_playback_settings(
             toggle_config(
                 c,
                 "pb_taskbar_icon",
-                false,
+                cfg.play.show_taskbar_status_icon,
                 "play.show_taskbar_status_icon",
                 None,
                 cx,
@@ -931,7 +947,7 @@ fn render_playback_settings(
             toggle_config(
                 c,
                 "pb_continue",
-                false,
+                cfg.play.continue_when_switch_playlist,
                 "play.continue_when_switch_playlist",
                 None,
                 cx,
@@ -943,7 +959,7 @@ fn render_playback_settings(
             toggle_config(
                 c,
                 "pb_sys_media",
-                false,
+                cfg.play.use_system_media_controls,
                 "play.use_system_media_controls",
                 None,
                 cx,
@@ -955,7 +971,7 @@ fn render_playback_settings(
             toggle_config(
                 c,
                 "pb_remember_pos",
-                false,
+                cfg.play.remember_last_position,
                 "play.remember_last_position",
                 None,
                 cx,
@@ -1204,7 +1220,7 @@ fn render_media_lib_settings(
             toggle_config(
                 c,
                 "ml_no_delete",
-                false,
+                cfg.media_lib.disable_disk_delete,
                 "media_lib.disable_disk_delete",
                 None,
                 cx,
@@ -1216,7 +1232,7 @@ fn render_media_lib_settings(
             toggle_config(
                 c,
                 "ml_merge_single",
-                false,
+                cfg.media_lib.merge_single_category,
                 "media_lib.merge_single_category",
                 None,
                 cx,
@@ -1247,7 +1263,7 @@ fn render_media_lib_settings(
             toggle_config(
                 c,
                 "ml_remove_missing",
-                true,
+                cfg.media_lib.remove_missing_files,
                 "media_lib.remove_missing_files",
                 None,
                 cx,
@@ -1274,7 +1290,15 @@ fn render_media_lib_settings(
                 .ghost()
                 .on_click(|_, _, _| {
                     crate::runtime().spawn_blocking(|| {
-                        let lib = crate::media::MediaLib::load();
+                        let cfg = crate::config::Config::load();
+                        let mut lib = crate::media::MediaLib::load();
+                        for dir in &cfg.media_lib.media_dirs {
+                            if let Ok(entries) = crate::media::scan_directory(dir, true, None) {
+                                for e in entries {
+                                    lib.upsert(e);
+                                }
+                            }
+                        }
                         let _ = lib.save();
                     });
                 })
@@ -1341,14 +1365,28 @@ fn render_media_lib_settings(
             .label(tr.settings_btn_add)
             .compact()
             .ghost()
-            .on_click(|_, _, _| {
-                #[cfg(windows)]
-                {
-                    let _ = std::process::Command::new("explorer").spawn();
-                }
-                #[cfg(not(windows))]
-                {
-                    let _ = std::process::Command::new("xdg-open").arg(".").spawn();
+            .on_click({
+                let ent = entity.clone();
+                move |_, _, cx| {
+                    super::run_blocking_dialog_app(
+                        cx,
+                        &ent,
+                        || rfd::FileDialog::new().pick_folder(),
+                        |dir, _this, cx| {
+                            if let Some(dir) = dir {
+                                let mut cfg = crate::config::Config::load();
+                                let path = dir.to_string_lossy().to_string();
+                                if !cfg.media_lib.media_dirs.iter().any(|d| d == &path) {
+                                    cfg.media_lib.media_dirs.push(path);
+                                    let _ = crate::config::Config::set(
+                                        "media_lib.media_dirs",
+                                        &cfg.media_lib.media_dirs.join(","),
+                                    );
+                                }
+                                cx.notify();
+                            }
+                        },
+                    );
                 }
             })
             .into_any_element(),
@@ -1424,7 +1462,7 @@ fn render_lyrics_settings(
             toggle_config(
                 c,
                 "ly_show_info",
-                true,
+                cfg.lyric.show_song_info_when_no_lyric,
                 "lyric.show_song_info_when_no_lyric",
                 None,
                 cx,
@@ -1441,7 +1479,7 @@ fn render_lyrics_settings(
             dropdown_config(
                 c,
                 "ly_adjust",
-                "ask",
+                &cfg.lyric.after_adjust,
                 &[
                     ("ask", tr.settings_option_adjust_ask),
                     ("auto_save", tr.settings_option_adjust_save),
@@ -1454,12 +1492,12 @@ fn render_lyrics_settings(
         setting_row(
             c,
             tr.settings_label_karaoke,
-            toggle_config(c, "ly_karaoke", false, "lyric.karaoke_display", None, cx),
+            toggle_config(c, "ly_karaoke", cfg.lyric.karaoke_display, "lyric.karaoke_display", None, cx),
         ),
         setting_row(
             c,
             tr.settings_label_hide_empty,
-            toggle_config(c, "ly_no_empty", false, "lyric.hide_empty_lines", None, cx),
+            toggle_config(c, "ly_no_empty", cfg.lyric.hide_empty_lines, "lyric.hide_empty_lines", None, cx),
         ),
         // Group 2: Window Lyrics
         section_title(c, tr.settings_section_window_lyric),
@@ -1469,7 +1507,7 @@ fn render_lyrics_settings(
             slider_config(
                 c,
                 "ly_line_spacing",
-                0,
+                cfg.lyric.line_spacing,
                 0,
                 20,
                 1,
@@ -1484,7 +1522,7 @@ fn render_lyrics_settings(
             dropdown_config(
                 c,
                 "ly_align",
-                "auto",
+                &cfg.lyric.alignment,
                 &[
                     ("auto", tr.settings_option_align_auto),
                     ("left", tr.settings_option_align_left),
@@ -1500,7 +1538,7 @@ fn render_lyrics_settings(
         setting_row(
             c,
             tr.settings_label_show_desktop_lyric,
-            toggle_config(c, "ly_desktop_show", false, "desktop_lyric.show", None, cx),
+            toggle_config(c, "ly_desktop_show", cfg.desktop_lyric.show, "desktop_lyric.show", None, cx),
         ),
         setting_row(
             c,
@@ -1508,7 +1546,7 @@ fn render_lyrics_settings(
             toggle_config(
                 c,
                 "ly_desktop_hide_no",
-                true,
+                cfg.desktop_lyric.hide_when_no_lyric,
                 "desktop_lyric.hide_when_no_lyric",
                 None,
                 cx,
@@ -1520,7 +1558,7 @@ fn render_lyrics_settings(
             toggle_config(
                 c,
                 "ly_desktop_hide_pause",
-                false,
+                cfg.desktop_lyric.hide_when_paused,
                 "desktop_lyric.hide_when_paused",
                 None,
                 cx,
@@ -1532,7 +1570,7 @@ fn render_lyrics_settings(
             toggle_config(
                 c,
                 "ly_desktop_lock",
-                false,
+                cfg.desktop_lyric.locked,
                 "desktop_lyric.locked",
                 None,
                 cx,
@@ -1544,7 +1582,7 @@ fn render_lyrics_settings(
             toggle_config(
                 c,
                 "ly_desktop_double",
-                true,
+                cfg.desktop_lyric.double_line,
                 "desktop_lyric.double_line",
                 None,
                 cx,

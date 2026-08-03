@@ -11,6 +11,7 @@ pub struct Config {
     pub appearance: AppearanceConfig,
     pub lyric: LyricConfig,
     pub media_lib: MediaLibConfig,
+    pub desktop_lyric: DesktopLyricConfig,
     pub hotkey: HotkeyConfig,
     pub lastfm: LastfmConfig,
     pub midi: MidiConfig,
@@ -26,6 +27,8 @@ pub struct GeneralConfig {
     pub auto_download_lyric: bool,
     pub auto_download_album_cover: bool,
     pub check_update_when_start: bool,
+    pub update_source: String,           // "github" or "gitee"
+    pub auto_run: bool,                  // 开机自动运行
     pub minimize_to_notify_icon: bool,
     pub language: String,
     pub portable_mode: bool,
@@ -44,6 +47,8 @@ impl Default for GeneralConfig {
             auto_download_lyric: false,
             auto_download_album_cover: true,
             check_update_when_start: true,
+            update_source: "github".to_string(),
+            auto_run: false,
             minimize_to_notify_icon: false,
             language: String::new(),
             portable_mode: false,
@@ -62,6 +67,11 @@ pub struct PlayConfig {
     pub engine: String,               // "bass", "mci", "ffmpeg", "rodio", "symphonia"
     pub stop_when_error: bool,
     pub auto_play_when_start: bool,
+    pub show_taskbar_progress: bool,
+    pub show_taskbar_status_icon: bool,
+    pub continue_when_switch_playlist: bool,
+    pub use_system_media_controls: bool,
+    pub remember_last_position: bool,
     pub output_device: String,
     pub fade_effect: bool,
     pub fade_time: u32,               // ms
@@ -85,6 +95,11 @@ impl Default for PlayConfig {
             engine: if cfg!(target_os = "windows") { "bass".to_string() } else { "ffmpeg".to_string() },
             stop_when_error: true,
             auto_play_when_start: false,
+            show_taskbar_progress: false,
+            show_taskbar_status_icon: false,
+            continue_when_switch_playlist: false,
+            use_system_media_controls: false,
+            remember_last_position: false,
             output_device: String::new(),
             fade_effect: true,
             fade_time: 500,
@@ -110,6 +125,15 @@ pub struct AppearanceConfig {
     pub dark_mode: bool,
     pub window_transparency: u32,       // 0-100
     pub show_spectrum: bool,
+    pub spectrum_low_freq_center: bool, // 低频部分显示在中间
+    pub show_album_cover: bool,
+    pub album_cover_fit: String,        // "cover", "fill", "contain", "none"
+    pub lyric_background: bool,
+    pub rounded_style: bool,
+    pub use_desktop_background: bool,
+    pub album_cover_as_background: bool,
+    pub background_blur: bool,
+    pub background_blur_radius: u32,
     pub background_transparency: u32,
     pub spectrum_columns: u32,          // 4, 8, 16, 32, 64, 128
     pub fft_size: u32,                  // 256, 512, 1024, 2048
@@ -125,6 +149,15 @@ impl Default for AppearanceConfig {
             dark_mode: false,
             window_transparency: 100,
             show_spectrum: true,
+            spectrum_low_freq_center: false,
+            show_album_cover: true,
+            album_cover_fit: "cover".to_string(),
+            lyric_background: true,
+            rounded_style: true,
+            use_desktop_background: false,
+            album_cover_as_background: false,
+            background_blur: false,
+            background_blur_radius: 5,
             background_transparency: 80,
             spectrum_columns: 128,
             fft_size: 512,
@@ -142,6 +175,12 @@ pub struct LyricConfig {
     pub fuzzy_match: bool,
     pub show_translate: bool,
     pub use_inner_lyric_first: bool,
+    pub show_song_info_when_no_lyric: bool,
+    pub karaoke_display: bool,
+    pub hide_empty_lines: bool,
+    pub line_spacing: u32,              // 歌词行间距 px
+    pub alignment: String,              // "auto", "left", "center", "right"
+    pub after_adjust: String,           // "ask", "auto_save", "discard"
 }
 
 impl Default for LyricConfig {
@@ -150,6 +189,12 @@ impl Default for LyricConfig {
             fuzzy_match: true,
             show_translate: true,
             use_inner_lyric_first: false,
+            show_song_info_when_no_lyric: true,
+            karaoke_display: false,
+            hide_empty_lines: false,
+            line_spacing: 0,
+            alignment: "auto".to_string(),
+            after_adjust: "ask".to_string(),
         }
     }
 }
@@ -161,6 +206,9 @@ pub struct MediaLibConfig {
     pub min_duration_secs: u64,     // 忽略短于该秒数的文件（0=不限制）
     pub auto_scan: bool,            // 启动时自动扫描媒体库
     pub media_dirs: Vec<String>,    // 扫描目录列表
+    pub disable_disk_delete: bool,  // 禁止从磁盘删除文件
+    pub merge_single_category: bool, // 合并单曲分类
+    pub remove_missing_files: bool, // 移除缺失文件
 }
 
 impl Default for MediaLibConfig {
@@ -170,6 +218,31 @@ impl Default for MediaLibConfig {
             min_duration_secs: 0,
             auto_scan: false,
             media_dirs: Vec::new(),
+            disable_disk_delete: false,
+            merge_single_category: false,
+            remove_missing_files: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DesktopLyricConfig {
+    pub show: bool,
+    pub hide_when_no_lyric: bool,
+    pub hide_when_paused: bool,
+    pub locked: bool,
+    pub double_line: bool,
+}
+
+impl Default for DesktopLyricConfig {
+    fn default() -> Self {
+        Self {
+            show: false,
+            hide_when_no_lyric: true,
+            hide_when_paused: false,
+            locked: false,
+            double_line: true,
         }
     }
 }
@@ -269,6 +342,8 @@ impl Config {
             "general.check_update_when_start" => Some(cfg.general.check_update_when_start.to_string()),
             "general.minimize_to_notify_icon" => Some(cfg.general.minimize_to_notify_icon.to_string()),
             "general.language" => Some(cfg.general.language.clone()),
+            "general.update_source" => Some(cfg.general.update_source.clone()),
+            "general.auto_run" => Some(cfg.general.auto_run.to_string()),
             "general.portable_mode" => Some(cfg.general.portable_mode.to_string()),
             "general.window_x" => Some(cfg.general.window_x.to_string()),
             "general.window_y" => Some(cfg.general.window_y.to_string()),
@@ -278,6 +353,11 @@ impl Config {
             "play.engine" => Some(cfg.play.engine.clone()),
             "play.stop_when_error" => Some(cfg.play.stop_when_error.to_string()),
             "play.auto_play_when_start" => Some(cfg.play.auto_play_when_start.to_string()),
+            "play.show_taskbar_progress" => Some(cfg.play.show_taskbar_progress.to_string()),
+            "play.show_taskbar_status_icon" => Some(cfg.play.show_taskbar_status_icon.to_string()),
+            "play.continue_when_switch_playlist" => Some(cfg.play.continue_when_switch_playlist.to_string()),
+            "play.use_system_media_controls" => Some(cfg.play.use_system_media_controls.to_string()),
+            "play.remember_last_position" => Some(cfg.play.remember_last_position.to_string()),
             "play.fade_effect" => Some(cfg.play.fade_effect.to_string()),
             "play.fade_time" => Some(cfg.play.fade_time.to_string()),
             "play.default_volume" => Some(cfg.play.default_volume.to_string()),
@@ -291,6 +371,16 @@ impl Config {
             "appearance.dark_mode" => Some(cfg.appearance.dark_mode.to_string()),
             "appearance.window_transparency" => Some(cfg.appearance.window_transparency.to_string()),
             "appearance.show_spectrum" => Some(cfg.appearance.show_spectrum.to_string()),
+            "appearance.spectrum_height" => Some(cfg.appearance.spectrum_height.to_string()),
+            "appearance.spectrum_low_freq_center" => Some(cfg.appearance.spectrum_low_freq_center.to_string()),
+            "appearance.show_album_cover" => Some(cfg.appearance.show_album_cover.to_string()),
+            "appearance.album_cover_fit" => Some(cfg.appearance.album_cover_fit.clone()),
+            "appearance.lyric_background" => Some(cfg.appearance.lyric_background.to_string()),
+            "appearance.rounded_style" => Some(cfg.appearance.rounded_style.to_string()),
+            "appearance.use_desktop_background" => Some(cfg.appearance.use_desktop_background.to_string()),
+            "appearance.album_cover_as_background" => Some(cfg.appearance.album_cover_as_background.to_string()),
+            "appearance.background_blur" => Some(cfg.appearance.background_blur.to_string()),
+            "appearance.background_blur_radius" => Some(cfg.appearance.background_blur_radius.to_string()),
             "appearance.spectrum_columns" => Some(cfg.appearance.spectrum_columns.to_string()),
             "appearance.fft_size" => Some(cfg.appearance.fft_size.to_string()),
             "appearance.spectrum_style" => Some(cfg.appearance.spectrum_style.clone()),
@@ -299,10 +389,25 @@ impl Config {
             "lyric.fuzzy_match" => Some(cfg.lyric.fuzzy_match.to_string()),
             "lyric.show_translate" => Some(cfg.lyric.show_translate.to_string()),
             "lyric.use_inner_lyric_first" => Some(cfg.lyric.use_inner_lyric_first.to_string()),
+            "lyric.show_song_info_when_no_lyric" => Some(cfg.lyric.show_song_info_when_no_lyric.to_string()),
+            "lyric.karaoke_display" => Some(cfg.lyric.karaoke_display.to_string()),
+            "lyric.hide_empty_lines" => Some(cfg.lyric.hide_empty_lines.to_string()),
+            "lyric.line_spacing" => Some(cfg.lyric.line_spacing.to_string()),
+            "lyric.alignment" => Some(cfg.lyric.alignment.clone()),
+            "lyric.after_adjust" => Some(cfg.lyric.after_adjust.clone()),
             "media_lib.display_format" => Some(cfg.media_lib.display_format.clone()),
             "media_lib.min_duration_secs" => Some(cfg.media_lib.min_duration_secs.to_string()),
             "media_lib.auto_scan" => Some(cfg.media_lib.auto_scan.to_string()),
             "media_lib.media_dirs" => Some(cfg.media_lib.media_dirs.join(",")),
+            "media_lib.disable_disk_delete" => Some(cfg.media_lib.disable_disk_delete.to_string()),
+            "media_lib.merge_single_category" => Some(cfg.media_lib.merge_single_category.to_string()),
+            "media_lib.remove_missing_files" => Some(cfg.media_lib.remove_missing_files.to_string()),
+            "desktop_lyric.show" => Some(cfg.desktop_lyric.show.to_string()),
+            "desktop_lyric.hide_when_no_lyric" => Some(cfg.desktop_lyric.hide_when_no_lyric.to_string()),
+            "desktop_lyric.hide_when_paused" => Some(cfg.desktop_lyric.hide_when_paused.to_string()),
+            "desktop_lyric.locked" => Some(cfg.desktop_lyric.locked.to_string()),
+            "desktop_lyric.double_line" => Some(cfg.desktop_lyric.double_line.to_string()),
+            "hotkey.enabled" => Some(cfg.hotkey.enabled.to_string()),
             "lastfm.enabled" => Some(cfg.lastfm.enabled.to_string()),
             "lastfm.username" => Some(cfg.lastfm.username.clone()),
             "lastfm.api_key" => Some(cfg.lastfm.api_key.clone()),
@@ -323,6 +428,9 @@ impl Config {
             "general.check_update_when_start" => cfg.general.check_update_when_start = value == "true",
             "general.minimize_to_notify_icon" => cfg.general.minimize_to_notify_icon = value == "true",
             "general.language" => cfg.general.language = value.to_string(),
+            "general.update_source" => cfg.general.update_source = value.to_string(),
+            "general.auto_run" => cfg.general.auto_run = value == "true",
+            "general.portable_mode" => cfg.general.portable_mode = value == "true",
             "play.engine" => cfg.play.engine = value.to_string(),
             "play.default_volume" | "volume" => {
                 if let Ok(v) = value.parse() { cfg.play.default_volume = v; }
@@ -340,15 +448,52 @@ impl Config {
             }
             "play.stop_when_error" => cfg.play.stop_when_error = value == "true",
             "play.auto_play_when_start" => cfg.play.auto_play_when_start = value == "true",
+            "play.show_taskbar_progress" => cfg.play.show_taskbar_progress = value == "true",
+            "play.show_taskbar_status_icon" => cfg.play.show_taskbar_status_icon = value == "true",
+            "play.continue_when_switch_playlist" => cfg.play.continue_when_switch_playlist = value == "true",
+            "play.use_system_media_controls" => cfg.play.use_system_media_controls = value == "true",
+            "play.remember_last_position" => cfg.play.remember_last_position = value == "true",
+            "play.volume_step" => {
+                if let Ok(v) = value.parse() { cfg.play.volume_step = v; }
+            }
             "play.always_on_top" => cfg.play.always_on_top = value == "true",
             "appearance.dark_mode" | "dark_mode" => cfg.appearance.dark_mode = value == "true",
             "appearance.spectrum_columns" => { if let Ok(v) = value.parse() { cfg.appearance.spectrum_columns = v; } }
             "appearance.fft_size" => { if let Ok(v) = value.parse() { cfg.appearance.fft_size = v; } }
             "appearance.spectrum_style" | "spectrum_style" => cfg.appearance.spectrum_style = value.to_string(),
             "appearance.theme" | "theme" => cfg.appearance.theme = value.to_string(),
+            "appearance.show_spectrum" => cfg.appearance.show_spectrum = value == "true",
+            "appearance.window_transparency" => {
+                if let Ok(v) = value.parse() { cfg.appearance.window_transparency = v; }
+            }
+            "appearance.background_transparency" => {
+                if let Ok(v) = value.parse() { cfg.appearance.background_transparency = v; }
+            }
+            "appearance.spectrum_height" => {
+                if let Ok(v) = value.parse() { cfg.appearance.spectrum_height = v; }
+            }
+            "appearance.spectrum_low_freq_center" => cfg.appearance.spectrum_low_freq_center = value == "true",
+            "appearance.show_album_cover" => cfg.appearance.show_album_cover = value == "true",
+            "appearance.album_cover_fit" => cfg.appearance.album_cover_fit = value.to_string(),
+            "appearance.lyric_background" => cfg.appearance.lyric_background = value == "true",
+            "appearance.rounded_style" => cfg.appearance.rounded_style = value == "true",
+            "appearance.use_desktop_background" => cfg.appearance.use_desktop_background = value == "true",
+            "appearance.album_cover_as_background" => cfg.appearance.album_cover_as_background = value == "true",
+            "appearance.background_blur" => cfg.appearance.background_blur = value == "true",
+            "appearance.background_blur_radius" => {
+                if let Ok(v) = value.parse() { cfg.appearance.background_blur_radius = v; }
+            }
             "lyric.fuzzy_match" => cfg.lyric.fuzzy_match = value == "true",
             "lyric.show_translate" => cfg.lyric.show_translate = value == "true",
             "lyric.use_inner_lyric_first" => cfg.lyric.use_inner_lyric_first = value == "true",
+            "lyric.show_song_info_when_no_lyric" => cfg.lyric.show_song_info_when_no_lyric = value == "true",
+            "lyric.karaoke_display" => cfg.lyric.karaoke_display = value == "true",
+            "lyric.hide_empty_lines" => cfg.lyric.hide_empty_lines = value == "true",
+            "lyric.line_spacing" => {
+                if let Ok(v) = value.parse() { cfg.lyric.line_spacing = v; }
+            }
+            "lyric.alignment" => cfg.lyric.alignment = value.to_string(),
+            "lyric.after_adjust" => cfg.lyric.after_adjust = value.to_string(),
             "lastfm.enabled" => cfg.lastfm.enabled = value == "true",
             "lastfm.username" => cfg.lastfm.username = value.to_string(),
             "lastfm.password" => cfg.lastfm.password = value.to_string(),
@@ -365,6 +510,15 @@ impl Config {
             "media_lib.media_dirs" => {
                 cfg.media_lib.media_dirs = value.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
             }
+            "media_lib.disable_disk_delete" => cfg.media_lib.disable_disk_delete = value == "true",
+            "media_lib.merge_single_category" => cfg.media_lib.merge_single_category = value == "true",
+            "media_lib.remove_missing_files" => cfg.media_lib.remove_missing_files = value == "true",
+            "desktop_lyric.show" => cfg.desktop_lyric.show = value == "true",
+            "desktop_lyric.hide_when_no_lyric" => cfg.desktop_lyric.hide_when_no_lyric = value == "true",
+            "desktop_lyric.hide_when_paused" => cfg.desktop_lyric.hide_when_paused = value == "true",
+            "desktop_lyric.locked" => cfg.desktop_lyric.locked = value == "true",
+            "desktop_lyric.double_line" => cfg.desktop_lyric.double_line = value == "true",
+            "hotkey.enabled" => cfg.hotkey.enabled = value == "true",
             "general.window_x" => { if let Ok(v) = value.parse() { cfg.general.window_x = v; } }
             "general.window_y" => { if let Ok(v) = value.parse() { cfg.general.window_y = v; } }
             "general.window_width" => { if let Ok(v) = value.parse() { cfg.general.window_width = v; } }
