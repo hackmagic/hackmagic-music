@@ -29,6 +29,26 @@ fn main() {
         let msg = format!("[PANIC] {info}\nbacktrace:\n{}\n", std::backtrace::Backtrace::force_capture());
         let _ = std::fs::write(&panic_log, &msg);
         eprintln!("{msg}");
+        // Surface the panic to the user in a dialog so a silent GUI crash is
+        // not mistaken for a freeze. Best-effort: ignore if the dialog fails.
+        #[cfg(target_os = "windows")]
+        {
+            use windows::Win32::UI::WindowsAndMessaging::{
+                MessageBoxW, MB_ICONERROR, MB_OK,
+            };
+            let wide: Vec<u16> = format!("HackMagic 遇到错误已停止运行。\n\n{info}\n\n详细信息已写入:\n{}", panic_log.display())
+                .encode_utf16()
+                .chain(std::iter::once(0))
+                .collect();
+            let _ = unsafe {
+                MessageBoxW(
+                    None,
+                    windows::core::PCWSTR(wide.as_ptr()),
+                    windows::core::w!("HackMagic Music Player"),
+                    MB_OK | MB_ICONERROR,
+                )
+            };
+        }
     }));
     eprintln!("[BOOT] Panic hook set, log dir: {}", cwd.display());
 

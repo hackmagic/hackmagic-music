@@ -160,6 +160,22 @@ fn main() {
         let msg = format!("Panic: {info}\n");
         let _ = std::fs::write(&panic_log, &msg);
         eprintln!("{msg}");
+        #[cfg(target_os = "windows")]
+        {
+            let wide: Vec<u16> = format!("HackMagic 遇到错误已停止运行。\n\n{info}\n\n详细信息已写入:\n{}", panic_log.display())
+                .encode_utf16()
+                .chain(std::iter::once(0))
+                .collect();
+            let _ = unsafe {
+                windows::Win32::UI::WindowsAndMessaging::MessageBoxW(
+                    None,
+                    windows::core::PCWSTR(wide.as_ptr()),
+                    windows::core::w!("HackMagic Music Player"),
+                    windows::Win32::UI::WindowsAndMessaging::MB_OK
+                    | windows::Win32::UI::WindowsAndMessaging::MB_ICONERROR,
+                )
+            };
+        }
     }));
 
     tracing_subscriber::fmt()

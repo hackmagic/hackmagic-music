@@ -271,3 +271,49 @@ pub const NAV_RAIL_WIDTH: f32 = 140.0;
 
 /// Right-docked playlist column width in Big mode
 pub const PLAYLIST_DOCK_WIDTH: f32 = 380.0;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_theme_name_from_config() {
+        assert_eq!(ThemeName::from_config("ocean"), ThemeName::Ocean);
+        assert_eq!(ThemeName::from_config("forest"), ThemeName::Forest);
+        assert_eq!(ThemeName::from_config("lavender"), ThemeName::Lavender);
+        assert_eq!(ThemeName::from_config("sunset"), ThemeName::Sunset);
+        assert_eq!(ThemeName::from_config("midnight"), ThemeName::Midnight);
+        assert_eq!(ThemeName::from_config("autumn"), ThemeName::Autumn);
+        assert_eq!(ThemeName::from_config("spring"), ThemeName::Spring);
+        assert_eq!(ThemeName::from_config("default"), ThemeName::Default);
+    }
+
+    #[test]
+    fn test_theme_name_default_fallback() {
+        assert_eq!(ThemeName::from_config("unknown"), ThemeName::Default);
+        assert_eq!(ThemeName::from_config(""), ThemeName::Default);
+    }
+
+    #[test]
+    fn test_theme_name_roundtrip() {
+        for name in &[
+            ThemeName::Default,
+            ThemeName::Ocean,
+            ThemeName::Forest,
+            ThemeName::Lavender,
+            ThemeName::Sunset,
+            ThemeName::Midnight,
+            ThemeName::Autumn,
+            ThemeName::Spring,
+        ] {
+            assert_eq!(ThemeName::from_config(name.code()), *name);
+        }
+    }
+
+    #[test]
+    fn test_theme_name_display() {
+        assert_eq!(ThemeName::Ocean.to_string(), "ocean");
+        assert_eq!(ThemeName::Default.to_string(), "default");
+        assert_eq!(ThemeName::Sunset.to_string(), "sunset");
+    }
+}

@@ -37,4 +37,32 @@ cargo build
 cargo test --lib
 ```
 
+## Global Hotkeys (Windows)
+
+| Function | Shortcut |
+|---|---|
+| Play / Pause | `Space` |
+| Stop | `Ctrl+S` |
+| Forward | `Ctrl+Shift+Right` |
+| Rewind | `Ctrl+Shift+Left` |
+| Previous | `Ctrl+Left` |
+| Next | `Ctrl+Right` |
+| Volume Up / Down | `Ctrl+Up` / `Ctrl+Down` |
+| Show / Hide Player | `Ctrl+H` |
+| Show / Hide Desktop Lyrics | `Ctrl+L` |
+| Add to Favorites | `Ctrl+D` |
+| Exit | `Alt+F4` |
+
+Global hotkeys can be disabled in **Settings → Hotkeys** (they register system-wide on Windows).
+
+## CLI
+
+```bash
+cargo run -- help          # list all subcommands
+cargo run -- play path/to/song.flac
+cargo run -- search-lyrics "关键词" --limit 5
+cargo run -- index path/to/library   # scan + build AI vector index
+cargo run -- daemon start            # background daemon + HTTP API
+```
+
 See [开发计划.md](开发计划.md) for project roadmap (Chinese).
