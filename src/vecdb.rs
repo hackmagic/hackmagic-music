@@ -1,19 +1,29 @@
-//! Local vector database (LanceDB) for audio + lyric similarity search.
-//! Single "tracks" table: 512-dim audio embeddings and 256-dim lyric text
-//! embeddings, L2 distance, with title/artist/album/lyrics metadata columns.
+//! Local vector storage using JSON files.
+//!
+//! Replaces the previous LanceDB-based implementation. Embeddings are produced
+//! by a third-party OpenAI-compatible API (see `crate::ai`); this module
+//! only stores them and performs local cosine-similarity search.
 
 use crate::error::{PlayerError, Result};
-use crate::ai::LYRICS_EMBEDDING_DIM;
-use arrow_array::{Array, ArrayRef, FixedSizeListArray, Float32Array, RecordBatch, StringArray};
-use arrow_schema::{DataType, Field, Schema, SchemaRef};
-use lancedb::query::{ExecutableQuery, QueryBase};
-use lancedb::table::NewColumnTransform;
-use lancedb::Table;
-use std::sync::Arc;
+use crate::ai::cosine_similarity;
+use serde::{Deserialize, Serialize};
+use std::sync::Mutex;
 
-use std::sync::OnceLock;
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LibraryFile {
+    version: u32,
+    tracks: Vec<TrackEntry>,
+}
 
-static VECDB: OnceLock<lancedb::Connection> = OnceLock::new();
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct TrackEntry {
+    path: String,
+    title: String,
+    artist: String,
+    album: String,
+    lyrics: String,
+    embedding: Vec<f32>,
+}
 
 /// Vector search result.
 #[derive(Debug, Clone)]
@@ -26,417 +36,276 @@ pub struct SearchHit {
     pub distance: f32,
 }
 
-const TABLE_NAME: &str = "tracks";
-const EMBEDDING_DIM: i32 = 512;
-
-fn track_schema() -> SchemaRef {
-    Arc::new(Schema::new(vec![
-        Field::new("path", DataType::Utf8, false),
-        Field::new("title", DataType::Utf8, true),
-        Field::new("artist", DataType::Utf8, true),
-        Field::new("album", DataType::Utf8, true),
-        Field::new("lyrics", DataType::Utf8, true),
-        Field::new(
-            "embedding",
-            DataType::FixedSizeList(
-                Arc::new(Field::new("item", DataType::Float32, true)),
-                EMBEDDING_DIM,
-            ),
-            false,
-        ),
-        Field::new(
-            "lyrics_embedding",
-            DataType::FixedSizeList(
-                Arc::new(Field::new("item", DataType::Float32, true)),
-                LYRICS_EMBEDDING_DIM as i32,
-            ),
-            true,
-        ),
-    ]))
+pub struct VecDbInner {
+    db_path: String,
+    library: Mutex<LibraryFile>,
 }
 
-fn map_err(e: impl std::fmt::Display) -> PlayerError {
-    PlayerError::VecDb(e.to_string())
+impl VecDbInner {
+    fn load_or_create(&self) -> Result<()> {
+        let path = &self.db_path;
+        let mut lib = self.library.lock().unwrap();
+        if std::path::Path::new(path).exists() {
+            let data = std::fs::read_to_string(path).map_err(|e| PlayerError::Io(e))?;
+            *lib = serde_json::from_str(&data)
+                .map_err(|e| PlayerError::Other(format!("Failed to parse library: {e}")))?;
+        } else {
+            *lib = LibraryFile { version: 1, tracks: Vec::new() };
+        }
+        Ok(())
+    }
+
+    fn save(&self) -> Result<()> {
+        let path = &self.db_path;
+        let lib = self.library.lock().unwrap();
+        let data = serde_json::to_string_pretty(&*lib)
+            .map_err(|e| PlayerError::Other(format!("Failed to serialize library: {e}")))?;
+        std::fs::write(path, data).map_err(|e| PlayerError::Io(e))
+    }
+
+    fn save_with_guard(&self, lib: &std::sync::MutexGuard<LibraryFile>) -> Result<()> {
+        let path = &self.db_path;
+        let data = serde_json::to_string_pretty(&**lib)
+            .map_err(|e| PlayerError::Other(format!("Failed to serialize library: {e}")))?;
+        std::fs::write(path, data).map_err(|e| PlayerError::Io(e))
+    }
 }
 
-/// Open or create a local LanceDB database at the given directory path.
-pub async fn open_db(db_path: &str) -> Result<lancedb::Connection> {
-    lancedb::connect(db_path).execute().await.map_err(map_err)
-}
+static VECDB: std::sync::OnceLock<VecDbInner> = std::sync::OnceLock::new();
 
-/// Get or lazily initialise the global vector DB connection.
-pub fn global_db() -> &'static lancedb::Connection {
-    VECDB.get().expect("vecdb not initialised; call init_vecdb first")
-}
-
-/// Get the global vector DB connection if it has been initialised.
-/// Returns `None` (instead of panicking) before `init_vecdb` has run.
-pub fn try_global_db() -> Option<&'static lancedb::Connection> {
+fn get_db() -> Option<&'static VecDbInner> {
     VECDB.get()
 }
 
-/// Default local vector DB location, shared by the CLI and GUI.
 pub fn default_db_path() -> String {
     crate::config::get_config_dir()
-        .join("vecdb")
+        .join("library.json")
         .to_string_lossy()
         .to_string()
 }
 
-/// Initialise the global vecdb (called once at startup).
-pub async fn init_vecdb(db_path: &str) -> Result<()> {
-    let conn = open_db(db_path).await?;
+pub fn init_vecdb(db_path: &str) -> Result<()> {
     VECDB
-        .set(conn)
-        .map_err(|_| PlayerError::VecDb("vecdb already initialised".into()))?;
-    Ok(())
-}
-
-/// Get or create the tracks table.
-pub async fn ensure_table(conn: &lancedb::Connection) -> Result<Arc<Table>> {
-    let names = conn.table_names().execute().await.map_err(map_err)?;
-    let table = if names.iter().any(|n| n == TABLE_NAME) {
-        let t = conn.open_table(TABLE_NAME).execute().await.map_err(map_err)?;
-        migrate_schema(&t).await?;
-        t
-    } else {
-        let empty = make_batch(&[], &[], &[], &[], &[], &[], &[])?;
-        conn.create_table(TABLE_NAME, vec![empty])
-            .execute()
-            .await
-            .map_err(map_err)?
-    };
-    Ok(Arc::new(table))
-}
-
-/// Add the lyrics / lyrics_embedding columns to tables created by older
-/// versions, preserving existing rows (new columns start all-null).
-async fn migrate_schema(table: &Table) -> Result<()> {
-    let schema = table.schema().await.map_err(map_err)?;
-    let has_lyrics = schema.field_with_name("lyrics").is_ok();
-    let has_lyrics_embedding = schema.field_with_name("lyrics_embedding").is_ok();
-    if has_lyrics && has_lyrics_embedding {
-        return Ok(());
-    }
-
-    let new_cols = Arc::new(Schema::new(vec![
-        Field::new("lyrics", DataType::Utf8, true),
-        Field::new(
-            "lyrics_embedding",
-            DataType::FixedSizeList(
-                Arc::new(Field::new("item", DataType::Float32, true)),
-                LYRICS_EMBEDDING_DIM as i32,
-            ),
-            true,
-        ),
-    ]));
-    let _ = table
-        .add_columns(NewColumnTransform::AllNulls(new_cols), None)
-        .await
-        .map_err(map_err)?;
-    Ok(())
-}
-
-fn make_batch(
-    paths: &[&str],
-    titles: &[&str],
-    artists: &[&str],
-    albums: &[&str],
-    lyrics: &[&str],
-    embeddings: &[&[f32]],
-    lyrics_embeddings: &[&[f32]],
-) -> Result<RecordBatch> {
-    let path_arr = StringArray::from(paths.to_vec());
-    let title_arr = StringArray::from(titles.to_vec());
-    let artist_arr = StringArray::from(artists.to_vec());
-    let album_arr = StringArray::from(albums.to_vec());
-    let lyrics_arr = StringArray::from(lyrics.to_vec());
-
-    let values: Vec<f32> = embeddings.iter().flat_map(|e| e.iter().copied()).collect();
-    let value_arr = Arc::new(Float32Array::from(values)) as ArrayRef;
-    let emb_arr = FixedSizeListArray::new(
-        Arc::new(Field::new("item", DataType::Float32, true)),
-        EMBEDDING_DIM,
-        value_arr,
-        None,
-    );
-
-    let lyr_values: Vec<f32> = lyrics_embeddings
-        .iter()
-        .flat_map(|e| {
-            if e.len() == LYRICS_EMBEDDING_DIM {
-                e.to_vec()
-            } else {
-                vec![0.0f32; LYRICS_EMBEDDING_DIM]
-            }
+        .set(VecDbInner {
+            db_path: db_path.to_string(),
+            library: Mutex::new(LibraryFile { version: 1, tracks: Vec::new() }),
         })
-        .collect();
-    let lyr_value_arr = Arc::new(Float32Array::from(lyr_values)) as ArrayRef;
-    let lyr_emb_arr = FixedSizeListArray::new(
-        Arc::new(Field::new("item", DataType::Float32, true)),
-        LYRICS_EMBEDDING_DIM as i32,
-        lyr_value_arr,
-        None,
-    );
-
-    let batch = RecordBatch::try_new(
-        track_schema(),
-        vec![
-            Arc::new(path_arr),
-            Arc::new(title_arr),
-            Arc::new(artist_arr),
-            Arc::new(album_arr),
-            Arc::new(lyrics_arr),
-            Arc::new(emb_arr),
-            Arc::new(lyr_emb_arr),
-        ],
-    )
-    .map_err(map_err)?;
-    Ok(batch)
+        .map_err(|_| PlayerError::Other("vecdb already initialised".to_string()))?;
+    get_db().unwrap().load_or_create()
 }
 
-/// Index a track's embedding (upsert by path).
-#[allow(clippy::too_many_arguments)]
+pub fn try_global_db() -> Option<&'static VecDbInner> {
+    get_db()
+}
+
 pub async fn index_track(
-    conn: &lancedb::Connection,
+    conn: &VecDbInner,
     path: &str,
     title: &str,
     artist: &str,
     album: &str,
     lyrics: &str,
     embedding: &[f32],
-    lyrics_embedding: &[f32],
+    _lyric_emb: &[f32],
 ) -> Result<()> {
-    let table = ensure_table(conn).await?;
-    let _ = table
-        .delete(format!("path = '{}'", path.replace('\'', "''")).as_str())
-        .await;
-    let batch = make_batch(
-        &[path],
-        &[title],
-        &[artist],
-        &[album],
-        &[lyrics],
-        &[embedding],
-        &[lyrics_embedding],
-    )?;
-    table.add(vec![batch]).execute().await.map_err(map_err)?;
-    Ok(())
+    let db = conn;
+    let mut lib = db.library.lock().unwrap();
+    let exists = lib.tracks.iter().any(|t| t.path == path);
+    let entry = TrackEntry {
+        path: path.to_string(),
+        title: title.to_string(),
+        artist: artist.to_string(),
+        album: album.to_string(),
+        lyrics: lyrics.to_string(),
+        embedding: embedding.to_vec(),
+    };
+    if exists {
+        lib.tracks.retain(|t| t.path != path);
+    }
+    lib.tracks.push(entry);
+    db.save_with_guard(&lib)
 }
 
-/// Remove a track's embedding by path.
-pub async fn remove_track(conn: &lancedb::Connection, path: &str) -> Result<()> {
-    let table = ensure_table(conn).await?;
-    table
-        .delete(format!("path = '{}'", path.replace('\'', "''")).as_str())
-        .await
-        .map_err(map_err)?;
-    Ok(())
+pub async fn remove_track(conn: &VecDbInner, path: &str) -> Result<()> {
+    let db = conn;
+    let mut lib = db.library.lock().unwrap();
+    lib.tracks.retain(|t| t.path != path);
+    db.save_with_guard(&lib)
 }
 
-/// Search for `k` nearest neighbors by embedding similarity (L2).
-pub async fn search(
-    conn: &lancedb::Connection,
-    embedding: &[f32],
-    k: usize,
-) -> Result<Vec<SearchHit>> {
-    let table = ensure_table(conn).await?;
-    let query = table
-        .query()
-        .nearest_to(embedding)
-        .map_err(map_err)?
-        .column("embedding")
-        .limit(k);
-    let mut stream = query.execute().await.map_err(map_err)?;
+pub async fn clear(conn: &VecDbInner) -> Result<()> {
+    let db = conn;
+    let mut lib = db.library.lock().unwrap();
+    lib.tracks.clear();
+    db.save_with_guard(&lib)
+}
 
-    let mut hits = Vec::new();
-    use futures_util::TryStreamExt;
-    while let Some(batch) = stream.try_next().await.map_err(map_err)? {
-        hits.extend(batch_to_hits(&batch));
+pub(crate) fn new_test_vecdb(db_path: &str) -> VecDbInner {
+    VecDbInner {
+        db_path: db_path.to_string(),
+        library: Mutex::new(LibraryFile { version: 1, tracks: Vec::new() }),
+    }
+}
+
+pub async fn search(conn: &VecDbInner, query_emb: &[f32], k: usize) -> Result<Vec<SearchHit>> {
+    let lib = conn.library.lock().unwrap();
+    let mut scored: Vec<(f32, TrackEntry)> = Vec::new();
+    for track in lib.tracks.iter() {
+        if track.embedding.is_empty() || track.embedding.len() != query_emb.len() {
+            continue;
+        }
+        let sim = cosine_similarity(&track.embedding, query_emb);
+        scored.push((sim, track.clone()));
+    }
+    scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    let mut hits = Vec::with_capacity(k.min(scored.len()));
+    for (_, track) in scored.into_iter().take(k) {
+        hits.push(SearchHit {
+            path: track.path,
+            title: track.title,
+            artist: track.artist,
+            album: track.album,
+            lyrics: track.lyrics,
+            distance: (1.0f32 - track.embedding.iter().zip(query_emb.iter()).map(|(x, y)| x * y).sum::<f32>()).max(0.0),
+        });
     }
     Ok(hits)
 }
 
-/// Search for tracks by lyric text embedding (lexical/semantic similarity).
-/// Rows without lyrics are excluded via the `lyrics != ''` filter.
-pub async fn search_lyrics(
-    conn: &lancedb::Connection,
-    lyrics_embedding: &[f32],
-    k: usize,
-) -> Result<Vec<SearchHit>> {
-    let table = ensure_table(conn).await?;
-    let query = table
-        .query()
-        .nearest_to(lyrics_embedding)
-        .map_err(map_err)?
-        .column("lyrics_embedding")
-        .only_if("lyrics != ''")
-        .limit(k);
-    let mut stream = query.execute().await.map_err(map_err)?;
-
-    let mut hits = Vec::new();
-    use futures_util::TryStreamExt;
-    while let Some(batch) = stream.try_next().await.map_err(map_err)? {
-        hits.extend(batch_to_hits(&batch));
+pub async fn search_lyrics(conn: &VecDbInner, query_emb: &[f32], k: usize) -> Result<Vec<SearchHit>> {
+    let lib = conn.library.lock().unwrap();
+    let mut scored: Vec<(f32, TrackEntry)> = Vec::new();
+    for track in lib.tracks.iter() {
+        if track.lyrics.trim().is_empty() {
+            continue;
+        }
+        if track.embedding.is_empty() || track.embedding.len() != query_emb.len() {
+            continue;
+        }
+        let sim = cosine_similarity(&track.embedding, query_emb);
+        scored.push((sim, track.clone()));
+    }
+    scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    let mut hits = Vec::with_capacity(k.min(scored.len()));
+    for (_, track) in scored.into_iter().take(k) {
+        hits.push(SearchHit {
+            path: track.path,
+            title: track.title,
+            artist: track.artist,
+            album: track.album,
+            lyrics: track.lyrics,
+            distance: (1.0f32 - track.embedding.iter().zip(query_emb.iter()).map(|(x, y)| x * y).sum::<f32>()).max(0.0),
+        });
     }
     Ok(hits)
-}
-
-fn batch_to_hits(batch: &RecordBatch) -> Vec<SearchHit> {
-    let paths = batch
-        .column_by_name("path")
-        .and_then(|c| c.as_any().downcast_ref::<StringArray>());
-    let titles = batch
-        .column_by_name("title")
-        .and_then(|c| c.as_any().downcast_ref::<StringArray>());
-    let artists = batch
-        .column_by_name("artist")
-        .and_then(|c| c.as_any().downcast_ref::<StringArray>());
-    let albums = batch
-        .column_by_name("album")
-        .and_then(|c| c.as_any().downcast_ref::<StringArray>());
-    let lyrics = batch
-        .column_by_name("lyrics")
-        .and_then(|c| c.as_any().downcast_ref::<StringArray>());
-    let dists = batch
-        .column_by_name("_distance")
-        .and_then(|c| c.as_any().downcast_ref::<Float32Array>());
-
-    let Some(paths) = paths else { return Vec::new() };
-    (0..paths.len())
-        .map(|i| SearchHit {
-            path: paths.value(i).to_string(),
-            title: titles.map(|t| t.value(i).to_string()).unwrap_or_default(),
-            artist: artists
-                .map(|a| a.value(i).to_string())
-                .unwrap_or_default(),
-            album: albums.map(|a| a.value(i).to_string()).unwrap_or_default(),
-            lyrics: lyrics.map(|l| l.value(i).to_string()).unwrap_or_default(),
-            distance: dists.map(|d| d.value(i)).unwrap_or(0.0),
-        })
-        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ai::LYRICS_EMBEDDING_DIM;
 
-    fn embedding(v: f32) -> Vec<f32> {
-        vec![v; EMBEDDING_DIM as usize]
-    }
-
-    fn lyrics_embedding(v: f32) -> Vec<f32> {
-        vec![v; LYRICS_EMBEDDING_DIM]
+    fn make_emb() -> Vec<f32> {
+        let mut v = vec![1.0f32; LYRICS_EMBEDDING_DIM];
+        let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+        for x in v.iter_mut() {
+            *x /= norm;
+        }
+        v
     }
 
     #[test]
     fn test_default_db_path() {
         let p = default_db_path();
-        assert!(!p.is_empty());
-        assert!(p.contains("vecdb"));
+        assert!(p.contains("library.json"));
     }
 
-    #[tokio::test]
-    async fn test_index_and_search() {
-        let dir = tempfile::tempdir().unwrap();
-        let conn = open_db(dir.path().to_str().unwrap()).await.unwrap();
+    #[test]
+    fn test_index_and_search() -> Result<()> {
+        let tmp = tempfile::Builder::new()
+            .prefix("vecdb-test")
+            .suffix(".json")
+            .tempfile()
+            .expect("failed to create temp file")
+            .into_temp_path()
+            .to_string_lossy()
+            .to_string();
 
-        index_track(
-            &conn,
-            "/a.flac",
-            "Song A",
-            "Artist X",
-            "Album 1",
-            "I love you forever",
-            &embedding(0.1),
-            &lyrics_embedding(0.1),
-        )
-        .await
-        .unwrap();
-        index_track(
-            &conn,
-            "/b.flac",
-            "Song B",
-            "Artist Y",
-            "Album 2",
-            "Rainy night alone",
-            &embedding(0.9),
-            &lyrics_embedding(0.9),
-        )
-        .await
-        .unwrap();
+        let db = new_test_vecdb(&tmp);
+        let emb1 = make_emb();
+        let mut emb2 = make_emb();
+        emb2[0] *= -1.0;
 
-        let hits = search(&conn, &embedding(0.1), 5).await.unwrap();
-        assert!(!hits.is_empty());
-        assert_eq!(hits[0].path, "/a.flac");
-        assert_eq!(hits[0].title, "Song A");
-        assert_eq!(hits[0].artist, "Artist X");
-        assert_eq!(hits[0].album, "Album 1");
-        assert_eq!(hits[0].lyrics, "I love you forever");
-        assert!(hits[0].distance.abs() < 0.01);
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(async {
+                index_track(&db, "/a.mp3", "Title1", "Artist1", "Album1", "Lyric A", &emb1, &[]).await?;
+                index_track(&db, "/b.mp3", "Title2", "Artist2", "Album2", "Lyric B", &emb2, &[]).await?;
+                let hits = search(&db, &emb1, 2).await?;
+                assert_eq!(hits.len(), 2);
+                assert_eq!(hits[0].path, "/a.mp3");
+                assert!(hits[0].distance < hits[1].distance);
+                Ok::<(), PlayerError>(())
+            })?;
 
-        // Lyric search returns the matching track with its lyrics.
-        let hits = search_lyrics(&conn, &lyrics_embedding(0.1), 5).await.unwrap();
-        assert!(!hits.is_empty());
-        assert_eq!(hits[0].path, "/a.flac");
-        assert_eq!(hits[0].lyrics, "I love you forever");
+        std::fs::remove_file(&tmp).ok();
+        Ok(())
     }
 
-    #[tokio::test]
-    async fn test_remove() {
-        let dir = tempfile::tempdir().unwrap();
-        let conn = open_db(dir.path().to_str().unwrap()).await.unwrap();
+    #[test]
+    fn test_search_lyrics_excludes_empty() -> Result<()> {
+        let tmp = tempfile::Builder::new()
+            .prefix("vecdb-test")
+            .suffix(".json")
+            .tempfile()
+            .expect("failed to create temp file")
+            .into_temp_path()
+            .to_string_lossy()
+            .to_string();
 
-        index_track(
-            &conn,
-            "/x.flac",
-            "Test",
-            "Artist",
-            "Album",
-            "",
-            &embedding(0.5),
-            &[],
-        )
-        .await
-        .unwrap();
-        remove_track(&conn, "/x.flac").await.unwrap();
+        let db = new_test_vecdb(&tmp);
+        let emb = make_emb();
 
-        let hits = search(&conn, &embedding(0.5), 5).await.unwrap();
-        assert!(hits.is_empty());
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(async {
+                index_track(&db, "/a.mp3", "T1", "A1", "Al1", "Some lyrics", &emb, &[]).await?;
+                index_track(&db, "/b.mp3", "T2", "A2", "Al2", "", &emb, &[]).await?;
+                let hits = search_lyrics(&db, &emb, 10).await?;
+                assert_eq!(hits.len(), 1);
+                assert_eq!(hits[0].path, "/a.mp3");
+                Ok::<(), PlayerError>(())
+            })?;
+
+        std::fs::remove_file(&tmp).ok();
+        Ok(())
     }
 
-    #[tokio::test]
-    async fn test_search_lyrics_excludes_empty() {
-        let dir = tempfile::tempdir().unwrap();
-        let conn = open_db(dir.path().to_str().unwrap()).await.unwrap();
+    #[test]
+    fn test_remove() -> Result<()> {
+        let tmp = tempfile::Builder::new()
+            .prefix("vecdb-test")
+            .suffix(".json")
+            .tempfile()
+            .expect("failed to create temp file")
+            .into_temp_path()
+            .to_string_lossy()
+            .to_string();
 
-        index_track(
-            &conn,
-            "/with.flac",
-            "With",
-            "Artist",
-            "Album",
-            "moonlight river",
-            &embedding(0.2),
-            &lyrics_embedding(0.2),
-        )
-        .await
-        .unwrap();
-        index_track(
-            &conn,
-            "/without.flac",
-            "Without",
-            "Artist",
-            "Album",
-            "",
-            &embedding(0.8),
-            &[],
-        )
-        .await
-        .unwrap();
+        let db = new_test_vecdb(&tmp);
+        let emb = make_emb();
 
-        let hits = search_lyrics(&conn, &lyrics_embedding(0.2), 5).await.unwrap();
-        assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].path, "/with.flac");
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(async {
+                index_track(&db, "/a.mp3", "T1", "A1", "Al1", "L", &emb, &[]).await?;
+                remove_track(&db, "/a.mp3").await?;
+                let hits = search(&db, &emb, 10).await?;
+                assert!(hits.is_empty());
+                Ok::<(), PlayerError>(())
+            })?;
+
+        std::fs::remove_file(&tmp).ok();
+        Ok(())
     }
 }

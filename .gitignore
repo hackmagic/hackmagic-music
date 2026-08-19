@@ -38,6 +38,10 @@ test_*.sh
 test_*.py
 test_*.wav
 hm_gui_pid.txt
+
+# vecdb local JSON storage (per-user, regenerated)
+config/library.json
+library.json
 start.bat
 
 # Audio assets (too large for git)

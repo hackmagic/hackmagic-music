@@ -700,18 +700,15 @@ impl MusicPlayer {
         crate::hotkey::init(player.clone());
         tracing::info!("[GUI] Hotkey system initialized — building MusicPlayer struct");
 
-        // Initialise the local vector DB in the background so play-time audio +
-        // lyric indexing works from the GUI (indexing is skipped gracefully if
-        // this hasn't completed yet).
+        // Initialise the local vector DB so play-time lyric indexing works
+        // from the GUI (indexing is skipped gracefully if this fails).
         let vecdb_path = crate::vecdb::default_db_path();
         if let Some(parent) = std::path::Path::new(&vecdb_path).parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        crate::runtime().spawn(async move {
-            if let Err(e) = crate::vecdb::init_vecdb(&vecdb_path).await {
-                tracing::warn!("[GUI] vecdb init failed: {}", e);
-            }
-        });
+        if let Err(e) = crate::vecdb::init_vecdb(&vecdb_path) {
+            tracing::warn!("[GUI] vecdb init failed: {}", e);
+        }
 
         tracing::info!("[GUI] MusicPlayer::new() returning");
         Self {
@@ -6636,7 +6633,7 @@ impl MusicPlayer {
                         self.tr
                             .eq_unsupported
                             .replacen("{}", self.tr.menu_equalizer, 1)
-                            .replacen("{}", &self.player.engine_name(), 1),
+                            .replacen("{}", self.player.engine_name(), 1),
                     ),
                 )
                 .into_any_element();

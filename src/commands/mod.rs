@@ -69,7 +69,7 @@ pub fn dispatch(command: &Commands) -> Result<()> {
 }
 }
 
-/// Rebuild vector index: re-embed all tracks in media library with DCLAP 512-dim model.
+/// Rebuild vector index: embed all tracks in media library via third-party API.
 fn cmd_rebuild_index() -> Result<()> {
     use crate::vecdb;
 
@@ -89,19 +89,17 @@ fn cmd_rebuild_index() -> Result<()> {
         std::fs::create_dir_all(parent).ok();
     }
 
-    let rt = tokio::runtime::Runtime::new().expect("failed to create runtime");
-    rt.block_on(async {
-        vecdb::init_vecdb(&db_path).await.map_err(|e| {
-            crate::error::PlayerError::BassError(format!("Failed to init vecdb: {e}"))
-        })?;
-        let conn = vecdb::global_db();
+    vecdb::init_vecdb(&db_path).map_err(|e| {
+        crate::error::PlayerError::BassError(format!("Failed to init vecdb: {e}"))
+    })?;
+    let conn = vecdb::try_global_db().ok_or_else(|| {
+        crate::error::PlayerError::BassError("vecdb not initialised".into())
+    })?;
 
-        // Clear old index
-        let table = vecdb::ensure_table(conn).await.map_err(|e| {
-            crate::error::PlayerError::BassError(format!("Failed to open table: {e}"))
-        })?;
-        table.delete("true").await.map_err(|e| {
-            crate::error::PlayerError::BassError(format!("Failed to clear table: {e}"))
+    let rt = crate::runtime();
+    rt.block_on(async {
+        vecdb::clear(conn).await.map_err(|e| {
+            crate::error::PlayerError::BassError(format!("Failed to clear index: {e}"))
         })?;
         println!("Cleared old index.");
 
@@ -109,22 +107,31 @@ fn cmd_rebuild_index() -> Result<()> {
         let mut failed = 0u32;
         for (i, entry) in entries.iter().enumerate() {
             let path = &entry.file_path;
-            print!("\r[{}/{}] Indexing {}...", i + 1, entries.len(), std::path::Path::new(path).file_name().unwrap_or_default().to_string_lossy());
-            match crate::ai::embed_file(path) {
-                Some(emb) => {
-                    let lyric_text = crate::core::player::load_lyric_text(path, "");
-                    let lyric_emb = crate::ai::embed_lyrics_text(&lyric_text);
-                    if let Err(e) = vecdb::index_track(conn, path, &entry.title, &entry.artist, &entry.album, &lyric_text, &emb, &lyric_emb).await {
-                        eprintln!("\n  Failed to index {}: {}", path, e);
-                        failed += 1;
-                    } else {
-                        indexed += 1;
-                    }
-                }
+            let fname = std::path::Path::new(path)
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy();
+            print!("\r[{}/{}] Indexing {}...", i + 1, entries.len(), fname);
+
+            let lyric_text = crate::core::player::load_lyric_text(path, "");
+            if lyric_text.trim().is_empty() {
+                eprintln!("\n  No lyrics found for: {}", path);
+                failed += 1;
+                continue;
+            }
+            let emb = match crate::ai::embed_lyrics_text(&lyric_text) {
+                Some(e) => e,
                 None => {
-                    eprintln!("\n  Failed to decode: {}", path);
+                    eprintln!("\n  Embedding API failed for: {}", path);
                     failed += 1;
+                    continue;
                 }
+            };
+            if let Err(e) = vecdb::index_track(conn, path, &entry.title, &entry.artist, &entry.album, &lyric_text, &emb, &[]).await {
+                eprintln!("\n  Failed to index {}: {}", path, e);
+                failed += 1;
+            } else {
+                indexed += 1;
             }
         }
         println!("\nDone! Indexed: {}, Failed: {}", indexed, failed);
