@@ -159,14 +159,14 @@ pub async fn search(conn: &VecDbInner, query_emb: &[f32], k: usize) -> Result<Ve
     }
     scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
     let mut hits = Vec::with_capacity(k.min(scored.len()));
-    for (_, track) in scored.into_iter().take(k) {
+    for (sim, track) in scored.into_iter().take(k) {
         hits.push(SearchHit {
             path: track.path,
             title: track.title,
             artist: track.artist,
             album: track.album,
             lyrics: track.lyrics,
-            distance: (1.0f32 - track.embedding.iter().zip(query_emb.iter()).map(|(x, y)| x * y).sum::<f32>()).max(0.0),
+            distance: (1.0 - sim).max(0.0),
         });
     }
     Ok(hits)
@@ -187,14 +187,14 @@ pub async fn search_lyrics(conn: &VecDbInner, query_emb: &[f32], k: usize) -> Re
     }
     scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
     let mut hits = Vec::with_capacity(k.min(scored.len()));
-    for (_, track) in scored.into_iter().take(k) {
+    for (sim, track) in scored.into_iter().take(k) {
         hits.push(SearchHit {
             path: track.path,
             title: track.title,
             artist: track.artist,
             album: track.album,
             lyrics: track.lyrics,
-            distance: (1.0f32 - track.embedding.iter().zip(query_emb.iter()).map(|(x, y)| x * y).sum::<f32>()).max(0.0),
+            distance: (1.0 - sim).max(0.0),
         });
     }
     Ok(hits)

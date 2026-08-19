@@ -212,8 +212,7 @@ fn find_lyric_text_from_path(path: &str) -> Option<String> {
     if lines.is_empty() {
         None
     } else {
-        Some(lines.join("
-"))
+        Some(lines.join("\n"))
     }
 }
 
