@@ -412,7 +412,11 @@ impl PlayerEngine for BassEngine {
             return Err(PlayerError::NoTrack);
         }
 
-        match *self.state.lock().unwrap() {
+        // 先把状态读进局部变量再 match：若直接 `match *self.state.lock()`，
+        // scrutinee 的 MutexGuard 会存活到整个 match 结束，arm 内部再次
+        // state.lock() 就会同线程自死锁（UI 冻结的根因）。
+        let current = *self.state.lock().unwrap();
+        match current {
             EngineState::Playing => {
                 if *self.wasapi_active.lock().unwrap() {
                     sys::BASS_WASAPI_Stop(0)

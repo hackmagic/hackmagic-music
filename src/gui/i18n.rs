@@ -533,6 +533,12 @@ pub struct Tr {
     pub status_rpc_online: &'static str,
     pub status_rpc_offline: &'static str,
     pub status_track_count: &'static str, // "{} 首"
+    pub repeat_desc_order: &'static str,    // "顺序播放"
+    pub repeat_desc_shuffle: &'static str,  // "无序播放"
+    pub repeat_desc_random: &'static str,   // "随机播放"
+    pub repeat_desc_loop_pl: &'static str,  // "列表循环"
+    pub repeat_desc_loop_trk: &'static str, // "单曲循环"
+    pub repeat_desc_play_trk: &'static str, // "单曲播放"
 
     // -- Playlist dock --
     pub pq_filter_all: &'static str,    // "全部 ({})"
@@ -1019,6 +1025,12 @@ impl Tr {
         status_rpc_online: "RPC Online",
         status_rpc_offline: "RPC Offline",
         status_track_count: "{} tracks",
+        repeat_desc_order: "Play in order",
+        repeat_desc_shuffle: "Shuffle",
+        repeat_desc_random: "Random",
+        repeat_desc_loop_pl: "Loop playlist",
+        repeat_desc_loop_trk: "Loop track",
+        repeat_desc_play_trk: "Play once",
 
         pq_filter_all: "All ({})",
         pq_filter_fav: "Favorites ({})",
@@ -1540,6 +1552,12 @@ impl Tr {
         status_rpc_online: "RPC 在线",
         status_rpc_offline: "RPC 离线",
         status_track_count: "{} 首",
+        repeat_desc_order: "顺序播放",
+        repeat_desc_shuffle: "无序播放",
+        repeat_desc_random: "随机播放",
+        repeat_desc_loop_pl: "列表循环",
+        repeat_desc_loop_trk: "单曲循环",
+        repeat_desc_play_trk: "单曲播放",
 
         pq_filter_all: "全部 ({})",
         pq_filter_fav: "喜欢 ({})",

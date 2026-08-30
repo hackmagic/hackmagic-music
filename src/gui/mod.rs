@@ -1330,7 +1330,10 @@ impl Render for MusicPlayer {
                                         .compact()
                                         .on_click(move |_, _, _| {
                                             if player_n.is_playing() || player_n.is_paused() {
-                                                let _ = player_n.toggle_pause();
+                                                let p = player_n.clone();
+                                                runtime().spawn_blocking(move || {
+                                                    let _ = p.toggle_pause();
+                                                });
                                             } else {
                                                 let p = player_n.clone();
                                                 let idx = p.playlist().current_index().unwrap_or(0);
@@ -1381,10 +1384,12 @@ impl Render for MusicPlayer {
                                         .compact()
                                         .on_click(move |_, _, _| {
                                             let pos = player_rew.position();
-                                            let _ =
-                                                player_rew.seek(pos.saturating_sub(
+                                            let p = player_rew.clone();
+                                            runtime().spawn_blocking(move || {
+                                                let _ = p.seek(pos.saturating_sub(
                                                     std::time::Duration::from_secs(5),
                                                 ));
+                                            });
                                         }),
                                 )
                                 .child(
@@ -1395,9 +1400,12 @@ impl Render for MusicPlayer {
                                         .on_click(move |_, _, _| {
                                             let dur = player_ff.duration();
                                             let pos = player_ff.position();
-                                            let _ = player_ff.seek(
-                                                (pos + std::time::Duration::from_secs(5)).min(dur),
-                                            );
+                                            let p = player_ff.clone();
+                                            runtime().spawn_blocking(move || {
+                                                let _ = p.seek(
+                                                    (pos + std::time::Duration::from_secs(5)).min(dur),
+                                                );
+                                            });
                                         }),
                                 )
                                 .child(
@@ -1481,8 +1489,10 @@ impl Render for MusicPlayer {
                             let win_w: f32 = window.bounds().size.width.into();
                             let mouse_x: f32 = e.position.x.into();
                             let ratio = (mouse_x / win_w).clamp(0.0, 1.0);
-                            let _ = player_seek_m
-                                .seek(std::time::Duration::from_secs_f64(dur_m * ratio as f64));
+                            let p = player_seek_m.clone();
+                            runtime().spawn_blocking(move || {
+                                let _ = p.seek(std::time::Duration::from_secs_f64(dur_m * ratio as f64));
+                            });
                         }),
                 )
                 .into_any_element();
@@ -1621,8 +1631,10 @@ impl Render for MusicPlayer {
                             .child(layout::txt(
                                 if self.is_playing {
                                     tr.status_playing
-                                } else {
+                                } else if self.player.is_paused() {
                                     tr.status_paused
+                                } else {
+                                    tr.status_stopped
                                 },
                                 10.0,
                                 c.text_dim,
@@ -1888,7 +1900,10 @@ impl Render for MusicPlayer {
                     .child(Button::new("stop").label("⏹").ghost().compact().on_click(
                         move |_, _, _| {
                             crate::ui_test::log_event(crate::ui_test::UiEvent::StopPressed);
-                            let _ = player_stop.stop();
+                            let p = player_stop.clone();
+                            runtime().spawn_blocking(move || {
+                                let _ = p.stop();
+                            });
                         },
                     ))
                     .child(Button::new("prev").label("⏮").ghost().compact().on_click(
@@ -1904,8 +1919,10 @@ impl Render for MusicPlayer {
                         move |_, _, _| {
                             let pos = player_rew.position();
                             crate::ui_test::log_event(crate::ui_test::UiEvent::Seek { position_ms: pos.as_millis() as u64 });
-                            let _ = player_rew
-                                .seek(pos.saturating_sub(std::time::Duration::from_secs(5)));
+                            let p = player_rew.clone();
+                            runtime().spawn_blocking(move || {
+                                let _ = p.seek(pos.saturating_sub(std::time::Duration::from_secs(5)));
+                            });
                         },
                     ))
                     .child(
@@ -1918,7 +1935,10 @@ impl Render for MusicPlayer {
                                 move |_, _, _| {
                                     if p.is_playing() || p.is_paused() {
                                         crate::ui_test::log_event(crate::ui_test::UiEvent::PausePressed);
-                                        let _ = p.toggle_pause();
+                                        let p_pause = p.clone();
+                                        runtime().spawn_blocking(move || {
+                                            let _ = p_pause.toggle_pause();
+                                        });
                                     } else if p.playlist().is_empty() {
                                         let p_clone = p.clone();
                                         runtime().spawn_blocking(move || {
@@ -1954,7 +1974,10 @@ impl Render for MusicPlayer {
                             let pos = player_ff.position();
                             let new_pos = (pos + std::time::Duration::from_secs(5)).min(dur);
                             crate::ui_test::log_event(crate::ui_test::UiEvent::Seek { position_ms: new_pos.as_millis() as u64 });
-                            let _ = player_ff.seek(new_pos);
+                            let p = player_ff.clone();
+                            runtime().spawn_blocking(move || {
+                                let _ = p.seek(new_pos);
+                            });
                         },
                     ))
                     .child(Button::new("next").label("⏭").ghost().compact().on_click(
@@ -2011,7 +2034,10 @@ impl Render for MusicPlayer {
                         // Progress bar spans the full window width
                         let ratio = (mouse_x / win_w).clamp(0.0, 1.0);
                         let seek_to = dur * ratio as f64;
-                        let _ = player_seek.seek(std::time::Duration::from_secs_f64(seek_to));
+                        let p = player_seek.clone();
+                        runtime().spawn_blocking(move || {
+                            let _ = p.seek(std::time::Duration::from_secs_f64(seek_to));
+                        });
                     }),
             );
 
@@ -2042,7 +2068,14 @@ impl Render for MusicPlayer {
         if layout_mode.show_statusbar() && STATUSBAR_VISIBLE.load(Ordering::Relaxed) {
             let track_count = playlist_tracks.len();
             let total_dur = self.player.playlist().total_duration_str();
-            let repeat_desc = self.player.repeat_mode().description();
+            let repeat_desc = match self.player.repeat_mode() {
+                crate::core::playlist::RepeatMode::PlayOrder => tr.repeat_desc_order,
+                crate::core::playlist::RepeatMode::PlayShuffle => tr.repeat_desc_shuffle,
+                crate::core::playlist::RepeatMode::PlayRandom => tr.repeat_desc_random,
+                crate::core::playlist::RepeatMode::LoopPlaylist => tr.repeat_desc_loop_pl,
+                crate::core::playlist::RepeatMode::LoopTrack => tr.repeat_desc_loop_trk,
+                crate::core::playlist::RepeatMode::PlayTrack => tr.repeat_desc_play_trk,
+            };
             let engine_name = self.player.engine_name();
             let file_type = if let Some(track) = self.player.playlist().current_track() {
                 if !track.file_type.is_empty() {
@@ -2130,11 +2163,17 @@ impl Render for MusicPlayer {
                     let s_repeat_single = tr.repeat_single;
                     menu.item(
                         PopupMenuItem::new(tr.ctrl_toggle_play).on_click(move |_, _, _| {
-                            let _ = p1.toggle_pause();
+                            let p = p1.clone();
+                            runtime().spawn_blocking(move || {
+                                let _ = p.toggle_pause();
+                            });
                         }),
                     )
                     .item(PopupMenuItem::new(tr.ctrl_stop).on_click(move |_, _, _| {
-                        let _ = p2.stop();
+                        let p = p2.clone();
+                        runtime().spawn_blocking(move || {
+                            let _ = p.stop();
+                        });
                     }))
                     .item(PopupMenuItem::new(tr.ctrl_prev).on_click(move |_, _, _| {
                         let p = p3.clone();
@@ -2661,10 +2700,16 @@ impl MusicPlayer {
             let s_ab_cont = tr.menu_ab_continue;
             let s_ab_clear = tr.menu_ab_clear;
             menu.item(PopupMenuItem::new(s_toggle).on_click(move |_, _, _| {
-                let _ = p1.toggle_pause();
+                let p = p1.clone();
+                runtime().spawn_blocking(move || {
+                    let _ = p.toggle_pause();
+                });
             }))
             .item(PopupMenuItem::new(s_stop).on_click(move |_, _, _| {
-                let _ = p2.stop();
+                let p = p2.clone();
+                runtime().spawn_blocking(move || {
+                    let _ = p.stop();
+                });
             }))
             .item(PopupMenuItem::new(s_prev).on_click(move |_, _, _| {
                 let p = p3.clone();
@@ -2683,14 +2728,20 @@ impl MusicPlayer {
                 let p = p14.clone();
                 move |_, _, _| {
                     let pos = p.position();
-                    let _ = p.seek(std::time::Duration::from_secs_f64(
-                        (pos.as_secs_f64() - 5.0).max(0.0),
-                    ));
+                    let p_seek = p.clone();
+                    runtime().spawn_blocking(move || {
+                        let _ = p_seek.seek(std::time::Duration::from_secs_f64(
+                            (pos.as_secs_f64() - 5.0).max(0.0),
+                        ));
+                    });
                 }
             }))
             .item(PopupMenuItem::new(s_forward5).on_click(move |_, _, _| {
                 let pos = p14.position();
-                let _ = p14.seek(std::time::Duration::from_secs_f64(pos.as_secs_f64() + 5.0));
+                let p = p14.clone();
+                runtime().spawn_blocking(move || {
+                    let _ = p.seek(std::time::Duration::from_secs_f64(pos.as_secs_f64() + 5.0));
+                });
             }))
             .separator()
             .item(PopupMenuItem::new(s_speed_up).on_click(move |_, _, _| {
