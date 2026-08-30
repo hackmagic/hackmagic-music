@@ -65,3 +65,8 @@ gui/dist
 
 # Tauri generated schemas (can be regenerated)
 gui/src-tauri/gen
+
+# AI UI test runtime artifacts (regenerated on each run)
+hm_e2e_report.json
+hm_screenshot_report.json
+screenshots/

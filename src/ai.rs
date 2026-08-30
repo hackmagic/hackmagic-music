@@ -46,7 +46,7 @@ static AI_CONFIG: OnceLock<Option<AiConfig>> = OnceLock::new();
 
 fn ai_config() -> Option<&'static AiConfig> {
     AI_CONFIG
-        .get_or_init(|| AiConfig::from_env())
+        .get_or_init(AiConfig::from_env)
         .as_ref()
 }
 
@@ -67,9 +67,9 @@ pub const LYRICS_EMBEDDING_DIM: usize = 1536;
 // ===== API types =====
 
 #[derive(Serialize)]
-struct EmbeddingRequest<'a> {
-    model: &'a str,
-    input: &'a str,
+struct EmbeddingRequest {
+    model: String,
+    input: String,
 }
 
 #[derive(Deserialize)]
@@ -87,12 +87,12 @@ struct EmbeddingData {
 static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
 
 fn http_client() -> &'static reqwest::Client {
-    CLIENT.get_or_init(|| reqwest::Client::new())
+    CLIENT.get_or_init(reqwest::Client::new)
 }
 
 // ===== Normalization =====
 
-fn normalize(emb: &mut Vec<f32>) {
+fn normalize(emb: &mut [f32]) {
     let norm: f32 = emb.iter().map(|x| x * x).sum::<f32>().sqrt();
     if norm > 1e-8 {
         for x in emb.iter_mut() {
@@ -103,75 +103,143 @@ fn normalize(emb: &mut Vec<f32>) {
 
 // ===== Internal: call the API =====
 
-async fn embed_texts_impl(texts: Vec<String>) -> Option<Vec<Vec<f32>>> {
-    let config = ai_config()?;
-    let client = http_client();
-
-    let mut all_embeddings: Vec<Vec<f32>> = Vec::with_capacity(texts.len());
+/// Single embedding request with retry (3 attempts, exponential backoff).
+async fn embed_with_retry(
+    client: &reqwest::Client,
+    url: &str,
+    body: &EmbeddingRequest,
+    api_key: &str,
+) -> Option<Vec<f32>> {
     let dim = embedding_dim();
 
-    // Send one text at a time (simpler than batched array input;
-    // the API accepts a single string). For large batches the caller
-    // should call embed_texts_async with reasonable chunk sizes.
-    for text in &texts {
-        if text.trim().is_empty() {
-            all_embeddings.push(vec![0.0f32; dim]);
-            continue;
-        }
-
-        let body = EmbeddingRequest {
-            model: &config.embedding_model,
-            input: text,
-        };
-
-        let url = format!(
-            "{}/v1/embeddings",
-            config.base_url.trim_end_matches('/')
-        );
+    for attempt in 0..3 {
         let resp = match client
-            .post(&url)
-            .bearer_auth(&config.api_key)
-            .json(&body)
+            .post(url)
+            .bearer_auth(api_key)
+            .json(body)
             .send()
             .await
         {
             Ok(r) => r,
             Err(e) => {
-                tracing::debug!("[AI] HTTP request to embedding API failed: {e}");
-                return None;
+                tracing::debug!("[AI] embed attempt {attempt}: HTTP error {e}");
+                if attempt < 2 {
+                    tokio::time::sleep(std::time::Duration::from_millis(
+                        200 * 2u64.pow(attempt as u32),
+                    ))
+                    .await;
+                }
+                continue;
             }
         };
 
         if !resp.status().is_success() {
             let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
+            let err_body = resp.text().await.unwrap_or_default();
             tracing::debug!(
-                "[AI] embedding API returned HTTP {}: {}",
+                "[AI] embed attempt {attempt}: HTTP {} ({})",
                 status,
-                body.chars().take(200).collect::<String>()
+                err_body.chars().take(100).collect::<String>()
             );
-            return None;
+            if attempt < 2 {
+                tokio::time::sleep(std::time::Duration::from_millis(
+                    200 * 2u64.pow(attempt as u32),
+                ))
+                .await;
+            }
+            continue;
         }
 
-        let result: EmbeddingResponse = match resp.json().await {
+        let parsed: EmbeddingResponse = match resp.json().await {
             Ok(r) => r,
             Err(e) => {
-                tracing::debug!("[AI] failed to parse embedding response: {e}");
-                return None;
+                tracing::debug!("[AI] embed attempt {attempt}: parse error {e}");
+                if attempt < 2 {
+                    tokio::time::sleep(std::time::Duration::from_millis(
+                        200 * 2u64.pow(attempt as u32),
+                    ))
+                    .await;
+                }
+                continue;
             }
         };
 
-        if let Some(data) = result.data.first() {
+        if let Some(data) = parsed.data.first() {
             let mut emb = data.embedding.clone();
             emb.resize(dim, 0.0);
             normalize(&mut emb);
-            all_embeddings.push(emb);
-        } else {
-            all_embeddings.push(vec![0.0f32; dim]);
+            return Some(emb);
         }
     }
 
-    Some(all_embeddings)
+    None
+}
+
+/// Concurrent embedding with fault tolerance: individual failures return a zero
+/// vector instead of aborting the whole batch. Up to 10 requests run in parallel.
+async fn embed_texts_impl(texts: Vec<String>) -> Option<Vec<Vec<f32>>> {
+    let config = ai_config()?;
+    let client = http_client();
+
+    let dim = embedding_dim();
+    let url = format!(
+        "{}/v1/embeddings",
+        config.base_url.trim_end_matches('/')
+    );
+
+    let mut results: Vec<Option<Vec<f32>>> = Vec::with_capacity(texts.len());
+    let mut tasks: Vec<tokio::task::JoinHandle<Option<Vec<f32>>>> = Vec::new();
+    let mut in_flight = 0;
+
+    for text in &texts {
+        if text.trim().is_empty() {
+            results.push(Some(vec![0.0f32; dim]));
+            continue;
+        }
+
+        let body = EmbeddingRequest {
+            model: config.embedding_model.clone(),
+            input: text.clone(),
+        };
+        let url_c = url.clone();
+        let api_key = config.api_key.clone();
+        let client_c = client.clone();
+
+        tasks.push(tokio::spawn(async move {
+            embed_with_retry(&client_c, &url_c, &body, &api_key).await
+        }));
+        in_flight += 1;
+
+        if in_flight >= 10 {
+            for h in tasks.drain(..) {
+                match h.await {
+                    Ok(emb) => results.push(emb),
+                    Err(e) => {
+                        tracing::debug!("[AI] task join error: {e}");
+                        results.push(Some(vec![0.0f32; dim]));
+                    }
+                }
+            }
+            in_flight = 0;
+        }
+    }
+
+    for h in tasks {
+        match h.await {
+            Ok(emb) => results.push(emb),
+            Err(e) => {
+                tracing::debug!("[AI] task join error: {e}");
+                results.push(Some(vec![0.0f32; dim]));
+            }
+        }
+    }
+
+    let final_results: Vec<Vec<f32>> = results.into_iter().flatten().collect();
+    if final_results.is_empty() {
+        None
+    } else {
+        Some(final_results)
+    }
 }
 
 // ===== Public API: audio =====
@@ -291,8 +359,7 @@ mod tests {
 
     #[test]
     fn test_embed_lyrics_whitespace_text() {
-        let emb = embed_lyrics_text("   
-  ");
+        let emb = embed_lyrics_text("   \n  ");
         assert!(emb.is_some());
         assert!(emb.unwrap().iter().all(|&x| x == 0.0));
     }

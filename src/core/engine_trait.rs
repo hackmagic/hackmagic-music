@@ -16,16 +16,16 @@ pub enum EngineType {
 }
 
 impl EngineType {
-    // Inherent `from_str` intentionally returns a default engine instead of
-    // `Result`; do not confuse with `std::str::FromStr`.
-    #[allow(clippy::should_implement_trait)]
-    pub fn from_str(s: &str) -> Self {
+    /// Parse engine type from a string. Returns `None` for unknown values
+    /// instead of silently defaulting — callers are responsible for error handling.
+    pub fn try_from_str(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
-            "mci" => EngineType::Mci,
-            "ffmpeg" => EngineType::Ffmpeg,
-            "rodio" => EngineType::Rodio,
-            "symphonia" => EngineType::Symphonia,
-            _ => EngineType::Bass,
+            "bass" => Some(EngineType::Bass),
+            "mci" => Some(EngineType::Mci),
+            "ffmpeg" => Some(EngineType::Ffmpeg),
+            "rodio" => Some(EngineType::Rodio),
+            "symphonia" => Some(EngineType::Symphonia),
+            _ => None,
         }
     }
 

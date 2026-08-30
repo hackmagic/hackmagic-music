@@ -3,11 +3,16 @@
 //! Replaces the previous LanceDB-based implementation. Embeddings are produced
 //! by a third-party OpenAI-compatible API (see `crate::ai`); this module
 //! only stores them and performs local cosine-similarity search.
+//!
+//! Uses `RwLock` for concurrent read access: multiple `search`/`search_lyrics`
+//! operations can run in parallel while writes (index/remove/clear) are exclusive.
+//! I/O is performed outside the lock scope in `load_or_create` to avoid holding
+//! the write lock during file reads.
 
 use crate::error::{PlayerError, Result};
 use crate::ai::cosine_similarity;
 use serde::{Deserialize, Serialize};
-use std::sync::Mutex;
+use std::sync::RwLock;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct LibraryFile {
@@ -38,16 +43,23 @@ pub struct SearchHit {
 
 pub struct VecDbInner {
     db_path: String,
-    library: Mutex<LibraryFile>,
+    library: RwLock<LibraryFile>,
 }
 
 impl VecDbInner {
     fn load_or_create(&self) -> Result<()> {
         let path = &self.db_path;
-        let mut lib = self.library.lock().unwrap();
-        if std::path::Path::new(path).exists() {
-            let data = std::fs::read_to_string(path).map_err(|e| PlayerError::Io(e))?;
-            *lib = serde_json::from_str(&data)
+        // Read file outside the write lock to minimise lock duration.
+        let data = if std::path::Path::new(path).exists() {
+            let raw = std::fs::read_to_string(path).map_err(PlayerError::Io)?;
+            Some(raw)
+        } else {
+            None
+        };
+
+        let mut lib = self.library.write().unwrap();
+        if let Some(raw) = data {
+            *lib = serde_json::from_str(&raw)
                 .map_err(|e| PlayerError::Other(format!("Failed to parse library: {e}")))?;
         } else {
             *lib = LibraryFile { version: 1, tracks: Vec::new() };
@@ -55,19 +67,11 @@ impl VecDbInner {
         Ok(())
     }
 
-    fn save(&self) -> Result<()> {
-        let path = &self.db_path;
-        let lib = self.library.lock().unwrap();
-        let data = serde_json::to_string_pretty(&*lib)
-            .map_err(|e| PlayerError::Other(format!("Failed to serialize library: {e}")))?;
-        std::fs::write(path, data).map_err(|e| PlayerError::Io(e))
-    }
-
-    fn save_with_guard(&self, lib: &std::sync::MutexGuard<LibraryFile>) -> Result<()> {
+    fn save_with_guard(&self, lib: &std::sync::RwLockWriteGuard<LibraryFile>) -> Result<()> {
         let path = &self.db_path;
         let data = serde_json::to_string_pretty(&**lib)
             .map_err(|e| PlayerError::Other(format!("Failed to serialize library: {e}")))?;
-        std::fs::write(path, data).map_err(|e| PlayerError::Io(e))
+        std::fs::write(path, data).map_err(PlayerError::Io)
     }
 }
 
@@ -88,7 +92,7 @@ pub fn init_vecdb(db_path: &str) -> Result<()> {
     VECDB
         .set(VecDbInner {
             db_path: db_path.to_string(),
-            library: Mutex::new(LibraryFile { version: 1, tracks: Vec::new() }),
+            library: RwLock::new(LibraryFile { version: 1, tracks: Vec::new() }),
         })
         .map_err(|_| PlayerError::Other("vecdb already initialised".to_string()))?;
     get_db().unwrap().load_or_create()
@@ -106,10 +110,9 @@ pub async fn index_track(
     album: &str,
     lyrics: &str,
     embedding: &[f32],
-    _lyric_emb: &[f32],
 ) -> Result<()> {
     let db = conn;
-    let mut lib = db.library.lock().unwrap();
+    let mut lib = db.library.write().unwrap();
     let exists = lib.tracks.iter().any(|t| t.path == path);
     let entry = TrackEntry {
         path: path.to_string(),
@@ -128,27 +131,28 @@ pub async fn index_track(
 
 pub async fn remove_track(conn: &VecDbInner, path: &str) -> Result<()> {
     let db = conn;
-    let mut lib = db.library.lock().unwrap();
+    let mut lib = db.library.write().unwrap();
     lib.tracks.retain(|t| t.path != path);
     db.save_with_guard(&lib)
 }
 
 pub async fn clear(conn: &VecDbInner) -> Result<()> {
     let db = conn;
-    let mut lib = db.library.lock().unwrap();
+    let mut lib = db.library.write().unwrap();
     lib.tracks.clear();
     db.save_with_guard(&lib)
 }
 
+#[cfg(test)]
 pub(crate) fn new_test_vecdb(db_path: &str) -> VecDbInner {
     VecDbInner {
         db_path: db_path.to_string(),
-        library: Mutex::new(LibraryFile { version: 1, tracks: Vec::new() }),
+        library: RwLock::new(LibraryFile { version: 1, tracks: Vec::new() }),
     }
 }
 
 pub async fn search(conn: &VecDbInner, query_emb: &[f32], k: usize) -> Result<Vec<SearchHit>> {
-    let lib = conn.library.lock().unwrap();
+    let lib = conn.library.read().unwrap();
     let mut scored: Vec<(f32, TrackEntry)> = Vec::new();
     for track in lib.tracks.iter() {
         if track.embedding.is_empty() || track.embedding.len() != query_emb.len() {
@@ -173,7 +177,7 @@ pub async fn search(conn: &VecDbInner, query_emb: &[f32], k: usize) -> Result<Ve
 }
 
 pub async fn search_lyrics(conn: &VecDbInner, query_emb: &[f32], k: usize) -> Result<Vec<SearchHit>> {
-    let lib = conn.library.lock().unwrap();
+    let lib = conn.library.read().unwrap();
     let mut scored: Vec<(f32, TrackEntry)> = Vec::new();
     for track in lib.tracks.iter() {
         if track.lyrics.trim().is_empty() {
@@ -239,8 +243,8 @@ mod tests {
         tokio::runtime::Runtime::new()
             .unwrap()
             .block_on(async {
-                index_track(&db, "/a.mp3", "Title1", "Artist1", "Album1", "Lyric A", &emb1, &[]).await?;
-                index_track(&db, "/b.mp3", "Title2", "Artist2", "Album2", "Lyric B", &emb2, &[]).await?;
+                index_track(&db, "/a.mp3", "Title1", "Artist1", "Album1", "Lyric A", &emb1).await?;
+                index_track(&db, "/b.mp3", "Title2", "Artist2", "Album2", "Lyric B", &emb2).await?;
                 let hits = search(&db, &emb1, 2).await?;
                 assert_eq!(hits.len(), 2);
                 assert_eq!(hits[0].path, "/a.mp3");
@@ -269,8 +273,8 @@ mod tests {
         tokio::runtime::Runtime::new()
             .unwrap()
             .block_on(async {
-                index_track(&db, "/a.mp3", "T1", "A1", "Al1", "Some lyrics", &emb, &[]).await?;
-                index_track(&db, "/b.mp3", "T2", "A2", "Al2", "", &emb, &[]).await?;
+                index_track(&db, "/a.mp3", "T1", "A1", "Al1", "Some lyrics", &emb).await?;
+                index_track(&db, "/b.mp3", "T2", "A2", "Al2", "", &emb).await?;
                 let hits = search_lyrics(&db, &emb, 10).await?;
                 assert_eq!(hits.len(), 1);
                 assert_eq!(hits[0].path, "/a.mp3");
@@ -298,7 +302,7 @@ mod tests {
         tokio::runtime::Runtime::new()
             .unwrap()
             .block_on(async {
-                index_track(&db, "/a.mp3", "T1", "A1", "Al1", "L", &emb, &[]).await?;
+                index_track(&db, "/a.mp3", "T1", "A1", "Al1", "L", &emb).await?;
                 remove_track(&db, "/a.mp3").await?;
                 let hits = search(&db, &emb, 10).await?;
                 assert!(hits.is_empty());

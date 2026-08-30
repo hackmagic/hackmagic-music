@@ -45,3 +45,4 @@ pub mod smtc;
 #[cfg(target_os = "windows")]
 pub mod tray;
 pub mod gui;
+pub mod ui_test;

@@ -80,6 +80,10 @@ fn main() {
     tracing::info!("=== HackMagic GUI starting, log file: {} ===", log_path.display());
     tracing::info!("[GUI] Starting HackMagic Music Player with GPUI Component");
 
+    // 初始化全链路事件日志系统
+    hm::ui_test::init_event_log(10000);
+    tracing::info!("[GUI] UI事件日志系统已初始化");
+
     // GPUI render functions build deeply nested element trees that can overflow
     // the default 2MB main-thread stack on Windows. Run the whole app on a
     // worker thread with a larger stack (8MB) and let main wait for it.

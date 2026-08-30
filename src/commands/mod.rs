@@ -127,7 +127,7 @@ fn cmd_rebuild_index() -> Result<()> {
                     continue;
                 }
             };
-            if let Err(e) = vecdb::index_track(conn, path, &entry.title, &entry.artist, &entry.album, &lyric_text, &emb, &[]).await {
+            if let Err(e) = vecdb::index_track(conn, path, &entry.title, &entry.artist, &entry.album, &lyric_text, &emb).await {
                 eprintln!("\n  Failed to index {}: {}", path, e);
                 failed += 1;
             } else {

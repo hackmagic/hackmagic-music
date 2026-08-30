@@ -261,7 +261,15 @@ fn main() {
     }
 
     // Create player
-    let engine_type = EngineType::from_str(&cfg.play.engine);
+    // Parse engine type from config, with validation
+    let engine_type = EngineType::try_from_str(&cfg.play.engine)
+        .unwrap_or_else(|| {
+            tracing::warn!(
+                "Unknown engine '{}' in config, defaulting to BASS",
+                cfg.play.engine
+            );
+            EngineType::Bass
+        });
     let player = Arc::new(Player::new(engine_type));
 
     player.set_volume(cfg.play.default_volume).ok();
@@ -270,36 +278,46 @@ fn main() {
 
     hm::commands::init_player(player.clone());
 
-    // Initialize engine — fallback to FFmpeg if BASS fails
+    // Initialize engine — fallback chain: configured → FFmpeg → Rodio
     if let Err(e) = player.init() {
-        if EngineType::from_str(&cfg.play.engine) == EngineType::Bass {
+        let attempted = EngineType::try_from_str(&cfg.play.engine).unwrap_or(EngineType::Bass);
+        if attempted == EngineType::Bass {
             tracing::warn!("BASS init failed ({}), trying FFmpeg engine", e);
-            let engine_type = EngineType::Ffmpeg;
-            let fallback_player = Arc::new(Player::new(engine_type));
-            fallback_player.set_volume(cfg.play.default_volume).ok();
-            fallback_player.set_volume_map(cfg.play.volume_map);
-            fallback_player.set_spectrum_config(cfg.appearance.spectrum_columns as usize, cfg.appearance.fft_size as usize);
-            hm::commands::init_player(fallback_player.clone());
+            let fallback_player = create_and_init_player(EngineType::Ffmpeg, &cfg);
             match fallback_player.init() {
                 Ok(()) => {
                     tracing::info!("Fell back to FFmpeg engine successfully");
-                    // Update config so subsequent runs try FFmpeg first
-                    let mut new_cfg = cfg.clone();
-                    new_cfg.play.engine = "ffmpeg".to_string();
-                    if let Err(e) = new_cfg.save() {
-                        tracing::warn!("Failed to save engine fallback config: {e}");
-                    }
                     let _ = fallback_player;
                 }
-                Err(e2) => {
-                    eprintln!("Error: Failed to initialize player: {e2}");
-                    std::process::exit(1);
+                Err(_) => {
+                    tracing::warn!("FFmpeg also failed, trying Rodio engine");
+                    let fallback_player2 = create_and_init_player(EngineType::Rodio, &cfg);
+                    match fallback_player2.init() {
+                        Ok(()) => {
+                            tracing::info!("Fell back to Rodio engine successfully");
+                            let _ = fallback_player2;
+                        }
+                        Err(e2) => {
+                            eprintln!("Error: No working audio engine available: {e2}");
+                            std::process::exit(1);
+                        }
+                    }
                 }
             }
         } else {
-            eprintln!("Error: Failed to initialize player: {e}");
+            eprintln!("Error: Failed to initialize player with {}: {e}", cfg.play.engine);
             std::process::exit(1);
         }
+    }
+
+    // Helper: create a player, wire it into commands, without init()
+    fn create_and_init_player(engine: EngineType, cfg: &Config) -> Arc<Player> {
+        let p = Arc::new(Player::new(engine));
+        p.set_volume(cfg.play.default_volume).ok();
+        p.set_volume_map(cfg.play.volume_map);
+        p.set_spectrum_config(cfg.appearance.spectrum_columns as usize, cfg.appearance.fft_size as usize);
+        hm::commands::init_player(p.clone());
+        p
     }
 
     // Restore last playlist (tracks) without starting playback

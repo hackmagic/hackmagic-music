@@ -12,6 +12,14 @@ path = "src/main.rs"
 name = "hm-gui"
 path = "src/bin/gui.rs"
 
+[[bin]]
+name = "hm-e2e-test"
+path = "src/bin/hm-e2e-test.rs"
+
+[[bin]]
+name = "hm-screenshot"
+path = "src/bin/hm-screenshot.rs"
+
 [dependencies]
 # CLI argument parsing
 clap = { version = "4", features = ["derive"] }

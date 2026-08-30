@@ -412,7 +412,6 @@ impl Player {
                     &ai_album,
                     &lyric_text,
                     &emb,
-                    &[],
                 )
                 .await;
             }

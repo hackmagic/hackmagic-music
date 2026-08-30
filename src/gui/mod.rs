@@ -504,23 +504,43 @@ impl MusicPlayer {
         tracing::info!("[GUI] MusicPlayer::new() entered");
         let cfg = Config::load();
         tracing::info!("[GUI] Config loaded, engine={}", &cfg.play.engine);
-        let engine = EngineType::from_str(&cfg.play.engine);
+        let engine = EngineType::try_from_str(&cfg.play.engine)
+            .unwrap_or_else(|| {
+                tracing::warn!(
+                    "[GUI] Unknown engine '{}' in config, defaulting to BASS",
+                    cfg.play.engine
+                );
+                EngineType::Bass
+            });
         tracing::info!("[GUI] Creating Player with {:?} engine", engine);
         let player = Arc::new(Player::new(engine));
 
-        // BASS init may fail (missing DLLs); fall back to FFmpeg and use that as
-        // the active player so playback actually works.
+        // Engine init may fail (missing DLLs); try configured → FFmpeg → Rodio.
         tracing::info!("[GUI] Calling player.init()...");
         let player = if let Err(e) = player.init() {
-            tracing::warn!("BASS init failed ({}), trying FFmpeg", e);
-            let fallback = Arc::new(Player::new(EngineType::Ffmpeg));
-            if let Err(e2) = fallback.init() {
-                tracing::error!("Fatal: no audio engine: {e2}");
+            let attempted = EngineType::try_from_str(&cfg.play.engine).unwrap_or(EngineType::Bass);
+            if attempted == EngineType::Bass {
+                tracing::warn!("[GUI] BASS init failed ({}), trying FFmpeg", e);
+                let fb1 = Arc::new(Player::new(EngineType::Ffmpeg));
+                if let Err(e1) = fb1.init() {
+                    tracing::warn!("[GUI] FFmpeg also failed ({e1}), trying Rodio");
+                    let fb2 = Arc::new(Player::new(EngineType::Rodio));
+                    if let Err(e2) = fb2.init() {
+                        tracing::error!("[GUI] Fatal: no audio engine: {e2}");
+                        std::process::exit(1);
+                    }
+                    fb2.set_volume(cfg.play.default_volume).ok();
+                    tracing::info!("[GUI] Fallback Rodio engine initialized");
+                    fb2
+                } else {
+                    fb1.set_volume(cfg.play.default_volume).ok();
+                    tracing::info!("[GUI] Fallback FFmpeg engine initialized");
+                    fb1
+                }
+            } else {
+                tracing::error!("[GUI] Failed to initialize {} engine: {e}", cfg.play.engine);
                 std::process::exit(1);
             }
-            fallback.set_volume(cfg.play.default_volume).ok();
-            tracing::info!("[GUI] Fallback FFmpeg engine initialized");
-            fallback
         } else {
             player.set_volume(cfg.play.default_volume).ok();
             tracing::info!(
@@ -1865,11 +1885,13 @@ impl Render for MusicPlayer {
                     .justify_center()
                     .child(Button::new("stop").label("⏹").ghost().compact().on_click(
                         move |_, _, _| {
+                            crate::ui_test::log_event(crate::ui_test::UiEvent::StopPressed);
                             let _ = player_stop.stop();
                         },
                     ))
                     .child(Button::new("prev").label("⏮").ghost().compact().on_click(
                         move |_, _, _| {
+                            crate::ui_test::log_event(crate::ui_test::UiEvent::PrevPressed);
                             let p = player_prev.clone();
                             runtime().spawn_blocking(move || {
                                 let _ = p.prev();
@@ -1879,6 +1901,7 @@ impl Render for MusicPlayer {
                     .child(Button::new("rew").label("⏪").ghost().compact().on_click(
                         move |_, _, _| {
                             let pos = player_rew.position();
+                            crate::ui_test::log_event(crate::ui_test::UiEvent::Seek { position_ms: pos.as_millis() as u64 });
                             let _ = player_rew
                                 .seek(pos.saturating_sub(std::time::Duration::from_secs(5)));
                         },
@@ -1892,6 +1915,7 @@ impl Render for MusicPlayer {
                                 let p = player_play.clone();
                                 move |_, _, _| {
                                     if p.is_playing() || p.is_paused() {
+                                        crate::ui_test::log_event(crate::ui_test::UiEvent::PausePressed);
                                         let _ = p.toggle_pause();
                                     } else if p.playlist().is_empty() {
                                         let p_clone = p.clone();
@@ -1907,12 +1931,14 @@ impl Render for MusicPlayer {
                                                 .pick_file()
                                             {
                                                 let path = file.to_string_lossy().to_string();
+                                                crate::ui_test::log_event(crate::ui_test::UiEvent::TrackOpened { path: path.clone() });
                                                 let _ = p_clone.play_file(&path);
                                             }
                                         });
                                     } else {
                                         let idx = p.playlist().current_index().unwrap_or(0);
                                         let p2 = p.clone();
+                                        crate::ui_test::log_event(crate::ui_test::UiEvent::PlayPressed);
                                         runtime().spawn_blocking(move || {
                                             let _ = p2.play_at_index(idx);
                                         });
@@ -1924,12 +1950,14 @@ impl Render for MusicPlayer {
                         move |_, _, _| {
                             let dur = player_ff.duration();
                             let pos = player_ff.position();
-                            let _ =
-                                player_ff.seek((pos + std::time::Duration::from_secs(5)).min(dur));
+                            let new_pos = (pos + std::time::Duration::from_secs(5)).min(dur);
+                            crate::ui_test::log_event(crate::ui_test::UiEvent::Seek { position_ms: new_pos.as_millis() as u64 });
+                            let _ = player_ff.seek(new_pos);
                         },
                     ))
                     .child(Button::new("next").label("⏭").ghost().compact().on_click(
                         move |_, _, _| {
+                            crate::ui_test::log_event(crate::ui_test::UiEvent::NextPressed);
                             let p = player_next.clone();
                             runtime().spawn_blocking(move || {
                                 let _ = p.next();
