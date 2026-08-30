@@ -669,7 +669,9 @@ impl MusicPlayer {
                     .timer(std::time::Duration::ZERO)
                     .await;
                 if this.update(cx, |_this, cx| cx.notify()).is_err() {
-                    tracing::error!("[Timer] notify failed");
+                    // 窗口已销毁（应用退出中）：终止轮询，属正常关停而非错误
+                    tracing::debug!("[Timer] entity released, repaint loop exiting");
+                    break;
                 }
             }
         })

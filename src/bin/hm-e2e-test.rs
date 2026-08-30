@@ -92,14 +92,22 @@ fn main() {
         if std::path::Path::new(f).exists() {
             let content = std::fs::read_to_string(f).unwrap_or_default();
             let lines = content.lines().count();
-            let errors = content.lines().filter(|l| l.contains("[ERROR]") || l.contains("[PANIC]")).count();
-            let warnings = content.lines().filter(|l| l.contains("[WARN]")).count();
+            // tracing fmt 输出为无括号的 " ERROR "（含空 target 的为良性关停噪音）
+            let errors = content
+                .lines()
+                .filter(|l| l.contains(" ERROR ") && !is_benign_teardown_error(l))
+                .count();
+            let warnings = content.lines().filter(|l| l.contains(" WARN ")).count();
             let ui_events = content.lines().filter(|l| l.contains("[UI_EVENT]")).count();
             println!("  {f}: {lines} 行, {errors} 错误, {warnings} 警告, {ui_events} UI事件");
 
             if errors > 0 {
                 println!("  ⚠️ 错误详情:");
-                for line in content.lines().filter(|l| l.contains("[ERROR]") || l.contains("[PANIC]")).take(10) {
+                for line in content
+                    .lines()
+                    .filter(|l| l.contains(" ERROR ") && !is_benign_teardown_error(l))
+                    .take(10)
+                {
                     println!("    {line}");
                 }
             }
@@ -127,6 +135,14 @@ fn main() {
     let _ = gui.wait();
 }
 
+/// 已知良性的关停噪音（gpui 0.2.2 WindowsWindow::Drop 在窗口销毁后
+/// 重复 RevokeDragDrop/DestroyWindow，空 target 的 log 桥接错误）。
+/// 日志保持完整记录，分析侧将其分类为 benign 而非 failure。
+fn is_benign_teardown_error(line: &str) -> bool {
+    line.contains("ERROR : ")
+        && (line.contains("window not found") || line.contains("code: HRESULT("))
+}
+
 fn generate_report() -> String {
     let mut report = String::new();
     report.push_str("{\n");
@@ -140,11 +156,22 @@ fn generate_report() -> String {
 
     // 检查日志
     let log_content = std::fs::read_to_string("hm_gui.log").unwrap_or_default();
-    let error_count = log_content.lines().filter(|l| l.contains("[ERROR]")).count();
+    let mut error_count = 0usize;
+    let mut benign_count = 0usize;
+    for line in log_content.lines() {
+        if line.contains("[ERROR]") || line.contains(" ERROR ") {
+            if is_benign_teardown_error(line) {
+                benign_count += 1;
+            } else {
+                error_count += 1;
+            }
+        }
+    }
     let panic_count = log_content.lines().filter(|l| l.contains("[PANIC]")).count();
     let ui_event_count = log_content.lines().filter(|l| l.contains("[UI_EVENT]")).count();
 
     report.push_str(&format!("  \"errors\": {error_count},\n"));
+    report.push_str(&format!("  \"benign_teardown_errors\": {benign_count},\n"));
     report.push_str(&format!("  \"panics\": {panic_count},\n"));
     report.push_str(&format!("  \"ui_events\": {ui_event_count},\n"));
 

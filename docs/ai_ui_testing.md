@@ -16,8 +16,30 @@
   （真实鼠标点击 → gpui `on_click` → `log_event` → tracing → 日志文件）
 - `hm-screenshot` 在 175% DPI 缩放显示器上输出 2124x1464 物理分辨率截图，
   界面完整清晰（菜单、传输栏、PLAY QUEUE 面板、状态栏均可辨识）
-- 启动/运行 0 panic；关闭时偶发 4 条「无效窗口句柄」ERROR（窗口销毁后
-  定时器回调的竞态，良性，待后续治理）
+- 截图对比管线：`原播放器界面截图/*.png` 已转换为 `screenshots/reference/*.bmp`
+  （main_view / playlist_view / menu_view / mini_mode），`hm-screenshot -- compare`
+  能完成哈希 → 最佳匹配 → `hm_screenshot_report.json` 全流程。
+  注意：两套 UI 设计差异大，aHash 相似度只会得到 30%~50% 的 "different"，
+  属预期 —— 精细对比应靠 AI 视觉审查两张图，而非依赖 aHash 分数。
+- 启动/运行 0 panic；优雅关闭（CloseMainWindow）正常退出
+
+## 已知良性日志噪音（分析时勿判为失败）
+
+优雅关闭时 `hm_gui.log` 固定出现 3 条空 target 的 ERROR（gpui 0.2.2
+`WindowsWindow::Drop` 在窗口已销毁后重复调用 `RevokeDragDrop`/`DestroyWindow`
+的内部时序问题，无资源泄漏，无法在不 fork 依赖的前提下修复）：
+
+```
+ERROR : window not found
+ERROR : Error { code: HRESULT(0x80040102), message: "无效的窗口句柄" }
+ERROR : Error { code: HRESULT(0x80070578), message: "无效的窗口句柄。" }
+```
+
+`hm-e2e-test` 的 `is_benign_teardown_error()` 会把这些行分类为
+`benign_teardown_errors` 而不计入 `errors`（真正属于本项目代码的错误
+都带 `hm::` 目标，如 `ERROR hm::gui: ...`，不受影响）。
+另注：主 30fps 轮询循环在窗口销毁后已改为 break 退出（不再刷
+`[Timer] notify failed`）。
 
 ## 自动化操作注意事项（Windows）
 
