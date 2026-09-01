@@ -62,6 +62,7 @@ enum Panel {
     LyricDownload,
     Equalizer,
     Settings,
+    OnlineSources,
 }
 
 impl Panel {
@@ -76,6 +77,7 @@ impl Panel {
             6 => Panel::LyricDownload,
             7 => Panel::Equalizer,
             8 => Panel::Settings,
+            9 => Panel::OnlineSources,
             _ => Panel::Playlist,
         }
     }
@@ -90,6 +92,7 @@ impl Panel {
             Panel::LyricDownload => 6,
             Panel::Settings => 8,
             Panel::Equalizer => 7,
+            Panel::OnlineSources => 9,
         }
     }
 }
@@ -135,6 +138,8 @@ pub fn run(cx: &mut App) {
                 cx.new(|c| InputState::new(window, c).placeholder(global_tr.ph_track_num));
             let editor_rating_input =
                 cx.new(|c| InputState::new(window, c).placeholder(global_tr.ph_rating));
+            let online_search_input =
+                cx.new(|c| InputState::new(window, c).placeholder(global_tr.online_search_hint));
             tracing::info!("[GUI] InputStates created — creating MusicPlayer entity");
             let content = cx.new(|cx| {
                 MusicPlayer::new(
@@ -148,6 +153,7 @@ pub fn run(cx: &mut App) {
                     editor_year_input,
                     editor_track_num_input,
                     editor_rating_input,
+                    online_search_input,
                 )
             });
             tracing::info!("[GUI] MusicPlayer entity created — creating Root");
@@ -359,6 +365,16 @@ pub struct MusicPlayer {
     similar_tracks: Vec<crate::vecdb::SearchHit>,
     /// Source path for the similar tracks search
     similar_tracks_source: String,
+    /// Online source search input
+    online_search_input: Entity<InputState>,
+    /// Currently selected online source index
+    online_selected_source: usize,
+    /// Online search results
+    online_results: Vec<crate::source::SourceTrack>,
+    /// Whether online search is in progress
+    online_searching: bool,
+    /// Last online search status message
+    online_status: String,
     /// File browser state
     fb_current_dir: String,
     fb_entries: Vec<FsEntry>,
@@ -500,6 +516,7 @@ impl MusicPlayer {
         editor_year_input: Entity<InputState>,
         editor_track_num_input: Entity<InputState>,
         editor_rating_input: Entity<InputState>,
+        online_search_input: Entity<InputState>,
     ) -> Self {
         tracing::info!("[GUI] MusicPlayer::new() entered");
         let cfg = Config::load();
@@ -807,6 +824,11 @@ impl MusicPlayer {
             editor_rating_input,
             similar_tracks: Vec::new(),
             similar_tracks_source: String::new(),
+            online_search_input,
+            online_selected_source: 0,
+            online_results: Vec::new(),
+            online_searching: false,
+            online_status: String::new(),
             fb_current_dir: std::env::current_dir()
                 .map_or_else(|_| "C:\\".to_string(), |h| h.to_string_lossy().to_string()),
             fb_entries: Vec::new(),
@@ -1600,6 +1622,12 @@ impl Render for MusicPlayer {
                     cx,
                 );
                 main_layout = main_layout.child(settings_el);
+                return main_layout.into_any_element();
+            }
+            Panel::OnlineSources => {
+                let colours = self.colours.clone();
+                main_layout =
+                    main_layout.child(self.render_online_sources_panel(&colours, tr, window, cx));
                 return main_layout.into_any_element();
             }
             _ => {}
@@ -3605,6 +3633,7 @@ impl MusicPlayer {
         let s_online_tags = tr.menu_online_tags;
         let s_to_simplified = tr.menu_to_simplified;
         let s_to_traditional = tr.menu_to_traditional;
+        let s_online_sources = tr.online_sources_title;
         let s_timer_shutdown = tr.menu_timer_shutdown;
         let weak_tools = weak.clone();
         let player_sleep = self.player.clone();
@@ -3614,6 +3643,9 @@ impl MusicPlayer {
             }))
             .item(PopupMenuItem::new(s_find).on_click(|_, _, _| {
                 ACTIVE_PANEL.store(3, Ordering::Relaxed);
+            }))
+            .item(PopupMenuItem::new(s_online_sources).on_click(|_, _, _| {
+                ACTIVE_PANEL.store(9, Ordering::Relaxed);
             }))
             .item(PopupMenuItem::new(s_browse_dir).on_click(|_, _, _| {
                 ACTIVE_PANEL.store(1, Ordering::Relaxed);
@@ -6079,6 +6111,267 @@ impl MusicPlayer {
     }
 
     /// Render the file browser panel for browsing the local filesystem.
+    /// Render the online music sources panel: source selector, search input,
+    /// results list with play buttons.
+    fn render_online_sources_panel(
+        &mut self,
+        c: &UiColors,
+        tr: &Tr,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let player = self.player.clone();
+        let sources = crate::source::enabled_sources(&[]);
+        let source_count = sources.len();
+
+        // Clamp selected index
+        if source_count > 0 && self.online_selected_source >= source_count {
+            self.online_selected_source = source_count - 1;
+        }
+
+        let current_source = if source_count > 0 && self.online_selected_source < source_count {
+            Some(sources[self.online_selected_source].as_ref())
+        } else {
+            None
+        };
+
+        v_flex()
+            .flex_grow()
+            .h_full()
+            .bg(c.bg)
+            // Header
+            .child(
+                h_flex()
+                    .items_center()
+                    .justify_between()
+                    .w_full()
+                    .px_4()
+                    .py_2()
+                    .bg(c.control_bar_bg)
+                    .child(layout::txt(tr.online_sources_title, 14.0, c.text_title))
+                    .child(
+                        h_flex()
+                            .gap_1()
+                            .child(Button::new("ol_help").label("ℹ").compact().ghost().on_click(
+                                cx.listener(|this, _, _w, cx| {
+                                    this.online_status = this.tr.online_source_hint.to_string();
+                                    cx.notify();
+                                }),
+                            )),
+                    ),
+            )
+            // Source selector + search bar
+            .child(
+                h_flex()
+                    .w_full()
+                    .px_4()
+                    .py_2()
+                    .gap_2()
+                    .items_center()
+                    .child(layout::txt(tr.online_select_source, 11.0, c.text_dim))
+                    .child(
+                        Button::new("ol_prev_src")
+                            .label("◀")
+                            .compact()
+                            .ghost()
+                            .on_click(cx.listener(|this, _, _w, cx| {
+                                let n = crate::source::enabled_sources(&[]).len();
+                                if n > 0 {
+                                    this.online_selected_source =
+                                        (this.online_selected_source + n.saturating_sub(1)) % n;
+                                    cx.notify();
+                                }
+                            })),
+                    )
+                    .child({
+                        let label = current_source
+                            .map(|s| s.display_name().to_string())
+                            .unwrap_or_else(|| "--".to_string());
+                        div()
+                            .min_w(px(160.0))
+                            .px_2()
+                            .h(px(22.0))
+                            .items_center()
+                            .justify_center()
+                            .bg(c.panel)
+                            .rounded(px(4.0))
+                            .child(layout::txt(&label, 12.0, c.text_title))
+                    })
+                    .child(
+                        Button::new("ol_next_src")
+                            .label("▶")
+                            .compact()
+                            .ghost()
+                            .on_click(cx.listener(|this, _, _w, cx| {
+                                let n = crate::source::enabled_sources(&[]).len();
+                                if n > 0 {
+                                    this.online_selected_source =
+                                        (this.online_selected_source + 1) % n;
+                                    cx.notify();
+                                }
+                            })),
+                    )
+                    .child(
+                        h_flex()
+                            .flex_grow()
+                            .h(px(24.0))
+                            .bg(c.panel)
+                            .rounded(px(4.0))
+                            .px_2()
+                            .child(Input::new(&self.online_search_input).w_full()),
+                    )
+                    .child(
+                        Button::new("ol_search")
+                            .label(tr.lyd_search)
+                            .compact()
+                            .primary()
+                            .on_click(cx.listener(move |this, _, _w, cx| {
+                                let query = this.online_search_input.read(cx).value().to_string();
+                                if query.trim().is_empty() {
+                                    this.online_status =
+                                        this.tr.lyd_status_enter_keyword.to_string();
+                                    cx.notify();
+                                    return;
+                                }
+                                let idx = this.online_selected_source;
+                                let player = this.player.clone();
+                                let weak = cx.entity().downgrade();
+                                cx.spawn(async move |_, cx| {
+                                    let sources = crate::source::enabled_sources(&[]);
+                                    if idx >= sources.len() {
+                                        return;
+                                    }
+                                    let src = sources[idx].as_ref();
+                                    let result = src.search(&query).await;
+                                    let _ = weak.update(cx, |this, cx| {
+                                        this.online_searching = true;
+                                        cx.notify();
+                                    });
+                                    match result {
+                                        Ok(tracks) => {
+                                            let _ = weak.update(cx, |this, cx| {
+                                                this.online_results = tracks;
+                                                this.online_searching = false;
+                                                this.online_status = this
+                                                    .tr
+                                                    .online_results_count
+                                                    .replace("{}", &this.online_results.len().to_string());
+                                                cx.notify();
+                                            });
+                                        }
+                                        Err(e) => {
+                                            let _ = weak.update(cx, |this, cx| {
+                                                this.online_searching = false;
+                                                this.online_results = Vec::new();
+                                                this.online_status =
+                                                    format!("Search failed: {}", e);
+                                                cx.notify();
+                                            });
+                                        }
+                                    }
+                                    let _ = player;
+                                })
+                                .detach();
+                            })),
+                    ),
+            )
+            // Status line
+            .child(
+                h_flex()
+                    .w_full()
+                    .px_4()
+                    .py_0()
+                    .child(layout::txt(&self.online_status, 10.0, c.text_dim)),
+            )
+            // Results list
+            .child(
+                v_flex()
+                    .flex_1()
+                    .w_full()
+                    .overflow_y_scrollbar()
+                    .children(
+                        self.online_results
+                            .iter()
+                            .enumerate()
+                            .map(|(i, track)| {
+                                let is_even = i % 2 == 0;
+                                let bg = if is_even {
+                                    c.playlist_item
+                                } else {
+                                    c.playlist_item_hover
+                                };
+                                let title = if track.title.is_empty() {
+                                    track.id.clone()
+                                } else {
+                                    track.title.clone()
+                                };
+                                let artist = if track.artist.is_empty() {
+                                    String::new()
+                                } else {
+                                    track.artist.clone()
+                                };
+                                let playable = track.stream_url.is_some();
+                                let p_play = player.clone();
+                                let title_clone = title.clone();
+                                let artist_clone = artist.clone();
+                                let play_label = if playable {
+                                    tr.ctrl_play.to_string()
+                                } else {
+                                    "--".to_string()
+                                };
+                                let stream_url = track.stream_url.clone();
+                                h_flex()
+                                    .w_full()
+                                    .min_h(px(28.0))
+                                    .px_4()
+                                    .gap_2()
+                                    .bg(bg)
+                                    .hover(|s| s.bg(c.playlist_item_selected))
+                                    .items_center()
+                                    .cursor(gpui::CursorStyle::PointingHand)
+                                    .child(layout::txt(&title_clone, 11.0, c.text))
+                                    .child(div().flex_grow())
+                                    .child(layout::txt(&artist_clone, 10.0, c.text_dim))
+                                    .child(
+                                        Button::new(("ol_play", i as u64))
+                                            .label(&play_label)
+                                            .compact()
+                                            .ghost()
+                                            .on_click(move |_, _, _| {
+                                                if playable {
+                                                    if let Some(url) = &stream_url {
+                                                        let _ = p_play.play_file(url);
+                                                    }
+                                                }
+                                            }),
+                                    )
+                            })
+                            .collect::<Vec<_>>(),
+                    )
+                    .child(
+                        if self.online_results.is_empty() && !self.online_searching {
+                            v_flex()
+                                .flex_grow()
+                                .items_center()
+                                .justify_center()
+                                .px_4()
+                                .child(layout::txt(tr.online_no_results, 12.0, c.text_dim))
+                                .into_any_element()
+                        } else if self.online_searching {
+                            v_flex()
+                                .flex_grow()
+                                .items_center()
+                                .justify_center()
+                                .child(layout::txt(tr.online_searching, 12.0, c.text_dim))
+                                .into_any_element()
+                        } else {
+                            div().into_any_element()
+                        },
+                    ),
+            )
+            .into_any_element()
+    }
+
     fn render_file_browser(
         &mut self,
         c: &UiColors,

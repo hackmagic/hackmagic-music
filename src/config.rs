@@ -16,6 +16,7 @@ pub struct Config {
     pub lastfm: LastfmConfig,
     pub midi: MidiConfig,
     pub eq: EqConfig,
+    pub source: SourceConfig,
 }
 
 
@@ -309,6 +310,25 @@ pub struct EqConfig {
     pub preset: String,
 }
 
+/// Online music source settings.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SourceConfig {
+    /// Comma-separated list of enabled source ids (empty = all enabled).
+    pub enabled: Vec<String>,
+    /// Default source id for search.
+    pub default: String,
+}
+
+impl Default for SourceConfig {
+    fn default() -> Self {
+        Self {
+            enabled: Vec::new(),
+            default: "internet_archive".to_string(),
+        }
+    }
+}
+
 
 
 impl Config {
@@ -415,6 +435,8 @@ impl Config {
             "lastfm.auto_scrobble" => Some(cfg.lastfm.auto_scrobble.to_string()),
             "midi.soundfont" => Some(cfg.midi.soundfont.clone()),
             "midi.enabled" => Some(cfg.midi.enabled.to_string()),
+            "source.enabled" => Some(cfg.source.enabled.join(",")),
+            "source.default" => Some(cfg.source.default.clone()),
             _ => None,
         };
         val
@@ -524,6 +546,14 @@ impl Config {
             "general.window_width" => { if let Ok(v) = value.parse() { cfg.general.window_width = v; } }
             "general.window_height" => { if let Ok(v) = value.parse() { cfg.general.window_height = v; } }
             "general.window_maximized" => cfg.general.window_maximized = value == "true",
+            "source.enabled" => {
+                cfg.source.enabled = value
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+            }
+            "source.default" => cfg.source.default = value.to_string(),
             _ => {}
         }
         cfg.save()
@@ -740,6 +770,10 @@ mod tests {
         // Midi
         assert!(cfg.midi.soundfont.is_empty());
         assert!(!cfg.midi.enabled);
+
+        // Source
+        assert!(cfg.source.enabled.is_empty());
+        assert_eq!(cfg.source.default, "internet_archive");
     }
 
     #[test]

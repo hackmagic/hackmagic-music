@@ -1,5 +1,14 @@
-use crate::cli::{MediaArgs, MediaAction, SearchLyricsArgs};
+use crate::cli::{MediaArgs, MediaAction, SearchLyricsArgs, SearchOnlineArgs};
 use crate::error::Result;
+
+/// Simple CLI i18n helper: returns ZH string when config sets a Chinese language.
+fn cli_tr(en: &str, zh: &str) -> String {
+    let cfg = crate::config::Config::load();
+    match cfg.general.language.as_str() {
+        "zh-CN" | "zh" | "zh_CN" | "chinese" => zh.to_string(),
+        _ => en.to_string(),
+    }
+}
 
 /// Search the local vector index by lyric text similarity.
 pub fn cmd_search_lyrics(args: &SearchLyricsArgs) -> Result<()> {
@@ -59,6 +68,131 @@ pub fn cmd_search_lyrics(args: &SearchLyricsArgs) -> Result<()> {
             hit.distance,
             snippet
         );
+    }
+    Ok(())
+}
+
+/// Search online music sources and optionally play the first result.
+pub fn cmd_search_online(args: &SearchOnlineArgs) -> Result<()> {
+    let cfg = crate::config::Config::load();
+    let enabled_ids = cfg.source.enabled.clone();
+    let sources = crate::source::enabled_sources(&enabled_ids);
+
+    let targets: Vec<_> = if let Some(ref src_id) = args.source {
+        sources
+            .into_iter()
+            .filter(|s| s.id().to_str() == src_id.to_lowercase() || s.display_name().to_lowercase() == src_id.to_lowercase())
+            .collect()
+    } else {
+        sources
+    };
+
+    if targets.is_empty() {
+        return Err(crate::error::PlayerError::Other(cli_tr(
+            "No online source available. Check config 'source.enabled'.",
+            "没有可用的在线音源，请检查配置 'source.enabled'。",
+        )));
+    }
+
+    println!(
+        "{} \"{}\" {} {}{}...",
+        cli_tr("Searching", "搜索"),
+        args.keyword,
+        cli_tr("across", "跨"),
+        targets.len(),
+        cli_tr("source(s)", "个音源")
+    );
+    let mut all_tracks: Vec<crate::source::SourceTrack> = Vec::new();
+
+    let rt = crate::runtime();
+    for src in &targets {
+        print!("  [{}] ", src.display_name());
+        let result = rt.block_on(async { src.search(&args.keyword).await });
+        match result {
+            Ok(tracks) => {
+                println!(
+                    "{}{} ",
+                    tracks.len(),
+                    cli_tr(" results", " 个结果")
+                );
+                for t in tracks {
+                    all_tracks.push(t);
+                }
+            }
+            Err(e) => {
+                println!("{}: {}", cli_tr("error", "错误"), e);
+            }
+        }
+    }
+
+    // Deduplicate by stream_url + truncate to limit
+    let mut seen = std::collections::HashSet::new();
+    all_tracks.retain(|t| {
+        let url = t.stream_url.as_deref().unwrap_or("").to_string();
+        seen.insert(url)
+    });
+    all_tracks.truncate(args.limit);
+
+    if all_tracks.is_empty() {
+        println!("{}", cli_tr("No results found.", "未找到结果。"));
+        return Ok(());
+    }
+
+    println!(
+        "{}{} ",
+        all_tracks.len(),
+        cli_tr(" result(s)", " 个结果")
+    );
+    for (i, track) in all_tracks.iter().enumerate() {
+        let dur = if track.duration > 0 {
+            format!("{:02}:{:02}", track.duration / 60, track.duration % 60)
+        } else {
+            "-:--".to_string()
+        };
+        let playable = track.stream_url.is_some();
+        println!(
+            "  {}. [{}] {} - {} ({} {})",
+            i + 1,
+            track.source.to_str(),
+            track.title,
+            track.artist,
+            dur,
+            if playable {
+                cli_tr("playable", "可播放")
+            } else {
+                cli_tr("no stream", "无流")
+            }
+        );
+    }
+
+    if args.play {
+        if let Some(track) = all_tracks.first() {
+            let url = match &track.stream_url {
+                Some(u) => u.clone(),
+                None => {
+                    eprintln!(
+                        "{}",
+                        cli_tr(
+                            "No stream URL for first result, skipping play.",
+                            "第一条结果无流地址，跳过播放。",
+                        )
+                    );
+                    return Ok(());
+                }
+            };
+            println!(
+                "{}: {}",
+                cli_tr("Playing", "正在播放"),
+                track.title
+            );
+            if let Err(e) = crate::commands::get_player().play_file(&url) {
+                eprintln!(
+                    "{}: {}",
+                    cli_tr("Play failed", "播放失败"),
+                    e
+                );
+            }
+        }
     }
     Ok(())
 }

@@ -65,6 +65,7 @@ pub fn dispatch(command: &Commands) -> Result<()> {
         Commands::OpenLocation(args) => system::cmd_open_location(args),
         Commands::Completion(args) => system::cmd_completion(args),
         Commands::SearchLyrics(args) => media::cmd_search_lyrics(args),
+        Commands::SearchOnline(args) => media::cmd_search_online(args),
         Commands::RebuildIndex => cmd_rebuild_index(),
 }
 }

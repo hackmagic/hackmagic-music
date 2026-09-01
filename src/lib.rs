@@ -41,6 +41,7 @@ pub mod util;
 pub mod tag;
 pub mod vecdb;
 pub mod play_stats;
+pub mod source;
 pub mod smtc;
 #[cfg(target_os = "windows")]
 pub mod tray;

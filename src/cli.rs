@@ -183,6 +183,9 @@ pub enum Commands {
     /// Search tracks by lyric text similarity (local vector index)
     SearchLyrics(SearchLyricsArgs),
 
+    /// Search online music sources (Internet Archive, Free Music Archive, etc.)
+    SearchOnline(SearchOnlineArgs),
+
     /// Rebuild vector index for similarity search (DCLAP 512-dim embeddings)
     RebuildIndex,
 }
@@ -196,6 +199,25 @@ pub struct SearchLyricsArgs {
     /// Maximum number of results to return
     #[arg(short, long, default_value = "10")]
     pub limit: usize,
+}
+
+// ===== SearchOnline =====
+#[derive(Args, Debug, Clone)]
+pub struct SearchOnlineArgs {
+    /// Search keyword
+    pub keyword: String,
+
+    /// Source id to use (e.g. "internet_archive", "fma"); omit to search all enabled sources
+    #[arg(short, long)]
+    pub source: Option<String>,
+
+    /// Maximum number of results to return
+    #[arg(short, long, default_value = "10")]
+    pub limit: usize,
+
+    /// Play the first result immediately
+    #[arg(long)]
+    pub play: bool,
 }
 
 // ===== Play =====

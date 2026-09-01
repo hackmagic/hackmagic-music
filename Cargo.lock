@@ -2881,6 +2881,7 @@ version = "1.0.0"
 dependencies = [
  "arc-swap",
  "async-channel 2.5.0",
+ "async-trait",
  "axum",
  "base64",
  "chrono",

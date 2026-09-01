@@ -625,6 +625,17 @@ pub struct Tr {
     pub url_title: &'static str,
     pub url_hint: &'static str,
 
+    // -- Online sources --
+    pub online_sources_title: &'static str,
+    pub online_search_hint: &'static str,
+    pub online_searching: &'static str,
+    pub online_no_results: &'static str,
+    pub online_select_source: &'static str,
+    pub online_play: &'static str,
+    pub online_play_error: &'static str, // "Play failed: {}"
+    pub online_results_count: &'static str, // "{} results"
+    pub online_source_hint: &'static str,
+
     // -- Lyric editor --
     pub lyr_ed_empty: &'static str,
     pub lyr_ed_hint: &'static str,
@@ -1106,6 +1117,16 @@ impl Tr {
 
         url_title: "Open Audio Stream",
         url_hint: "Enter audio stream URL (supports http, https, mms):",
+
+        online_sources_title: "Online Sources",
+        online_search_hint: "Search online music...",
+        online_searching: "Searching...",
+        online_no_results: "No results found",
+        online_select_source: "Source:",
+        online_play: "Play",
+        online_play_error: "Play failed: {}",
+        online_results_count: "{} results",
+        online_source_hint: "Select a source, search for music, then play directly",
 
         lyr_ed_empty: "Lyric Editor Empty",
         lyr_ed_hint: "Open an LRC file or load lyrics from current track",
@@ -1633,6 +1654,16 @@ impl Tr {
 
         url_title: "打开网络音频流",
         url_hint: "输入音频流 URL（支持常见流媒体协议如 http、https、mms）：",
+
+        online_sources_title: "在线音源",
+        online_search_hint: "搜索在线音乐...",
+        online_searching: "搜索中...",
+        online_no_results: "未找到结果",
+        online_select_source: "音源:",
+        online_play: "播放",
+        online_play_error: "播放失败: {}",
+        online_results_count: "{} 个结果",
+        online_source_hint: "选择音源，搜索音乐，直接播放",
 
         lyr_ed_empty: "歌词编辑器为空",
         lyr_ed_hint: "打开 LRC 文件或从当前曲目加载歌词",
