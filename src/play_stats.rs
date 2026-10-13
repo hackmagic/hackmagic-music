@@ -74,6 +74,16 @@ pub fn load_stats() -> StatsData {
     get_stats().lock().unwrap().clone()
 }
 
+/// 测试专用：按当前 `stats_path()` 重新从磁盘加载并覆盖内存态。
+/// `STATS` 是 `OnceLock`，一旦被真实用户数据初始化就无法再隔离；
+/// 测试在改完 `APPDATA` 后调用它，即可读到隔离后的空统计。
+#[cfg(test)]
+pub fn reload_stats_for_test() {
+    let fresh = load_stats_inner();
+    let mut guard = get_stats().lock().unwrap();
+    *guard = fresh;
+}
+
 /// Save statistics to disk (thread-safe)
 pub fn save_stats() {
     let data = get_stats().lock().unwrap();
@@ -307,9 +317,49 @@ pub fn activity_breakdown() -> (u64, u64, u64, u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    /// 这两个测试都会写 `stats.json`。若不隔离，测试会读写用户真实的统计文件
+    /// （`get_config_dir()/stats.json`，Windows 下即 `%APPDATA%\hm\stats.json`），
+    /// 本机实测过的播放记录会把 `top_stats` 的排序顶掉，导致断言随机失败
+    /// （实测：`test_440.wav` 的收听秒数超过 `/music/song2.flac` 的 120s）。
+    /// 因此测试期间把 `APPDATA` 指向临时目录，并用互斥锁串行化（环境变量是进程级的）。
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    /// APPDATA 守卫：设置临时目录，Drop 时恢复原值。
+    struct AppdataGuard {
+        prev: Option<String>,
+        _dir: tempfile::TempDir,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl Drop for AppdataGuard {
+        fn drop(&mut self) {
+            match &self.prev {
+                Some(v) => std::env::set_var("APPDATA", v),
+                None => std::env::remove_var("APPDATA"),
+            }
+        }
+    }
+
+    /// 把 APPDATA 指到一个全新的临时目录，返回守卫（Drop 时恢复）。
+    fn isolate_appdata() -> Option<AppdataGuard> {
+        let lock = ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let prev = std::env::var("APPDATA").ok();
+        let dir = tempfile::tempdir().ok()?;
+        std::env::set_var("APPDATA", dir.path());
+        // OnceLock 可能已被真实数据初始化，强制按新路径重载
+        reload_stats_for_test();
+        Some(AppdataGuard { prev, _dir: dir, _lock: lock })
+    }
 
     #[test]
     fn test_record_and_top() {
+        let Some(_guard) = isolate_appdata() else {
+            return; // 无法建临时目录时跳过，不影响其他断言
+        };
         // Should not crash
         record_playback(Some("/music/song1.flac"), 30);
         record_playback(Some("/music/song1.flac"), 45);
@@ -324,6 +374,9 @@ mod tests {
 
     #[test]
     fn test_track_started() {
+        let Some(_guard) = isolate_appdata() else {
+            return;
+        };
         track_started(Some("/music/song3.flac"));
         track_started(Some("/music/song3.flac"));
         let top = top_stats(10);
