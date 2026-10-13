@@ -1,9 +1,10 @@
 use crate::cli::{MediaArgs, MediaAction, SearchLyricsArgs, SearchOnlineArgs};
 use crate::error::Result;
 
-/// Simple CLI i18n helper: returns ZH string when config sets a Chinese language.
-fn cli_tr(en: &str, zh: &str) -> String {
-    let cfg = crate::config::Config::load();
+/// Simple CLI i18n helper: returns the ZH string when the *given* config sets a Chinese
+/// language. Takes the config as a parameter so behaviour does not depend on a second,
+/// implicit `Config::load()` — tests construct their own config and must get matching output.
+fn cli_tr(cfg: &crate::config::Config, en: &str, zh: &str) -> String {
     match cfg.general.language.as_str() {
         "zh-CN" | "zh" | "zh_CN" | "chinese" => zh.to_string(),
         _ => en.to_string(),
@@ -135,7 +136,7 @@ pub fn select_search_targets(
 
     let enabled = crate::source::enabled_sources(&enabled_ids);
     if enabled.is_empty() {
-        return Err(crate::error::PlayerError::Other(cli_tr(
+        return Err(crate::error::PlayerError::Other(cli_tr(cfg,
             "No online source available. Check config 'source.enabled'.",
             "没有可用的在线音源，请检查配置 'source.enabled'。",
         )));
@@ -151,11 +152,11 @@ pub fn cmd_search_online(args: &SearchOnlineArgs) -> Result<()> {
 
     println!(
         "{} \"{}\" {} {}{}...",
-        cli_tr("Searching", "搜索"),
+        cli_tr(&cfg, "Searching", "搜索"),
         args.keyword,
-        cli_tr("across", "跨"),
+        cli_tr(&cfg, "across", "跨"),
         targets.len(),
-        cli_tr(" source(s)", "个音源")
+        cli_tr(&cfg, " source(s)", "个音源")
     );
     let mut all_tracks: Vec<crate::source::SourceTrack> = Vec::new();
     let mut ok_count = 0usize;
@@ -172,7 +173,7 @@ pub fn cmd_search_online(args: &SearchOnlineArgs) -> Result<()> {
                 println!(
                     "{}{} ",
                     tracks.len(),
-                    cli_tr(" results", " 个结果")
+                    cli_tr(&cfg, " results", " 个结果")
                 );
                 for t in tracks {
                     all_tracks.push(t);
@@ -181,7 +182,7 @@ pub fn cmd_search_online(args: &SearchOnlineArgs) -> Result<()> {
             Err(e) => {
                 err_count += 1;
                 last_error = Some(e.to_string());
-                println!("{}: {}", cli_tr("error", "错误"), e);
+                println!("{}: {}", cli_tr(&cfg, "error", "错误"), e);
             }
         }
     }
@@ -204,14 +205,14 @@ pub fn cmd_search_online(args: &SearchOnlineArgs) -> Result<()> {
                 None => format!("All {err_count} online source(s) failed"),
             }));
         }
-        println!("{}", cli_tr("No results found.", "未找到结果。"));
+        println!("{}", cli_tr(&cfg, "No results found.", "未找到结果。"));
         return Ok(());
     }
 
     println!(
         "{}{} ",
         all_tracks.len(),
-        cli_tr(" result(s)", " 个结果")
+        cli_tr(&cfg, " result(s)", " 个结果")
     );
     for (i, track) in all_tracks.iter().enumerate() {
         let dur = if track.duration > 0 {
@@ -228,9 +229,9 @@ pub fn cmd_search_online(args: &SearchOnlineArgs) -> Result<()> {
             track.artist,
             dur,
             if playable {
-                cli_tr("playable", "可播放")
+                cli_tr(&cfg, "playable", "可播放")
             } else {
-                cli_tr("no stream", "无流")
+                cli_tr(&cfg, "no stream", "无流")
             }
         );
     }
@@ -242,7 +243,7 @@ pub fn cmd_search_online(args: &SearchOnlineArgs) -> Result<()> {
                 None => {
                     eprintln!(
                         "{}",
-                        cli_tr(
+                        cli_tr(&cfg, 
                             "No stream URL for first result, skipping play.",
                             "第一条结果无流地址，跳过播放。",
                         )
@@ -252,13 +253,13 @@ pub fn cmd_search_online(args: &SearchOnlineArgs) -> Result<()> {
             };
             println!(
                 "{}: {}",
-                cli_tr("Playing", "正在播放"),
+                cli_tr(&cfg, "Playing", "正在播放"),
                 track.title
             );
             if let Err(e) = crate::commands::get_player().play_file(&url) {
                 eprintln!(
                     "{}: {}",
-                    cli_tr("Play failed", "播放失败"),
+                    cli_tr(&cfg, "Play failed", "播放失败"),
                     e
                 );
             }
