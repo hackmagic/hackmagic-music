@@ -72,27 +72,82 @@ pub fn cmd_search_lyrics(args: &SearchLyricsArgs) -> Result<()> {
     Ok(())
 }
 
-/// Search online music sources and optionally play the first result.
-pub fn cmd_search_online(args: &SearchOnlineArgs) -> Result<()> {
-    let cfg = crate::config::Config::load();
-    let enabled_ids = cfg.source.enabled.clone();
-    let sources = crate::source::enabled_sources(&enabled_ids);
-
-    let targets: Vec<_> = if let Some(ref src_id) = args.source {
-        sources
+/// Resolve a source name (id / alias / display name) against the registry.
+/// Unknown names return `None`; callers decide the error message.
+fn resolve_source(raw: &str) -> Option<crate::source::SourceId> {
+    crate::source::SourceId::from_str(raw).or_else(|| {
+        crate::source::all_sources()
             .into_iter()
-            .filter(|s| s.id().to_str() == src_id.to_lowercase() || s.display_name().to_lowercase() == src_id.to_lowercase())
-            .collect()
-    } else {
-        sources
-    };
+            .find(|s| s.display_name().eq_ignore_ascii_case(raw))
+            .map(|s| s.id())
+    })
+}
 
-    if targets.is_empty() {
+/// Choose which sources `cmd_search_online` should hit.
+///
+/// - With an explicit `--source`: that single source (error if unknown or disabled).
+/// - Without: the configured `source.default` when it names an enabled source
+///   (the config field previously had no consumer at all); otherwise all enabled
+///   sources.
+pub fn select_search_targets(
+    cfg: &crate::config::Config,
+    explicit: Option<&str>,
+) -> Result<Vec<Box<dyn crate::source::MusicSource>>> {
+    let enabled_ids = cfg.source.enabled.clone();
+
+    // Resolve `--source` against the full registry first: this distinguishes an
+    // unknown id from a known-but-disabled one, and makes the documented aliases
+    // ("ia"/"archive"/"fma") work — they used to be rejected because only the
+    // canonical `to_str()` value was compared.
+    if let Some(raw) = explicit {
+        let enabled = crate::source::enabled_sources(&enabled_ids);
+        let wanted = resolve_source(raw).ok_or_else(|| {
+            crate::error::PlayerError::Other(format!(
+                "Unknown source '{raw}'. Valid ids: internet_archive (aliases: ia, archive), \
+                 free_music_archive (alias: fma)."
+            ))
+        })?;
+        let filtered: Vec<Box<dyn crate::source::MusicSource>> = enabled
+            .into_iter()
+            .filter(|s| s.id() == wanted)
+            .collect();
+        if filtered.is_empty() {
+            return Err(crate::error::PlayerError::Other(format!(
+                "Source '{}' is disabled. Add it to config 'source.enabled', or clear that list to enable all.",
+                wanted.to_str()
+            )));
+        }
+        return Ok(filtered);
+    }
+
+    // No `--source`: honour the configured default when it names an enabled
+    // source, otherwise fall back to searching every enabled source.
+    if let Some(default_id) = resolve_source(&cfg.source.default) {
+        let matched: Vec<Box<dyn crate::source::MusicSource>> =
+            crate::source::enabled_sources(&enabled_ids)
+                .into_iter()
+                .filter(|s| s.id() == default_id)
+                .collect();
+        if !matched.is_empty() {
+            return Ok(matched);
+        }
+    }
+
+    let enabled = crate::source::enabled_sources(&enabled_ids);
+    if enabled.is_empty() {
         return Err(crate::error::PlayerError::Other(cli_tr(
             "No online source available. Check config 'source.enabled'.",
             "没有可用的在线音源，请检查配置 'source.enabled'。",
         )));
     }
+    Ok(enabled)
+}
+
+
+/// Search online music sources and optionally play the first result.
+pub fn cmd_search_online(args: &SearchOnlineArgs) -> Result<()> {
+    let cfg = crate::config::Config::load();
+    let targets = select_search_targets(&cfg, args.source.as_deref())?;
 
     println!(
         "{} \"{}\" {} {}{}...",
@@ -100,9 +155,12 @@ pub fn cmd_search_online(args: &SearchOnlineArgs) -> Result<()> {
         args.keyword,
         cli_tr("across", "跨"),
         targets.len(),
-        cli_tr("source(s)", "个音源")
+        cli_tr(" source(s)", "个音源")
     );
     let mut all_tracks: Vec<crate::source::SourceTrack> = Vec::new();
+    let mut ok_count = 0usize;
+    let mut err_count = 0usize;
+    let mut last_error: Option<String> = None;
 
     let rt = crate::runtime();
     for src in &targets {
@@ -110,6 +168,7 @@ pub fn cmd_search_online(args: &SearchOnlineArgs) -> Result<()> {
         let result = rt.block_on(async { src.search(&args.keyword).await });
         match result {
             Ok(tracks) => {
+                ok_count += 1;
                 println!(
                     "{}{} ",
                     tracks.len(),
@@ -120,6 +179,8 @@ pub fn cmd_search_online(args: &SearchOnlineArgs) -> Result<()> {
                 }
             }
             Err(e) => {
+                err_count += 1;
+                last_error = Some(e.to_string());
                 println!("{}: {}", cli_tr("error", "错误"), e);
             }
         }
@@ -134,6 +195,15 @@ pub fn cmd_search_online(args: &SearchOnlineArgs) -> Result<()> {
     all_tracks.truncate(args.limit);
 
     if all_tracks.is_empty() {
+        // If every source errored, exit non-zero so callers/scripts can tell a
+        // network failure apart from a genuine "no matches" result. This used to
+        // print "No results found." and exit 0 even when nothing was reached.
+        if ok_count == 0 && err_count > 0 {
+            return Err(crate::error::PlayerError::Other(match last_error {
+                Some(e) => format!("All {err_count} online source(s) failed. Last error: {e}"),
+                None => format!("All {err_count} online source(s) failed"),
+            }));
+        }
         println!("{}", cli_tr("No results found.", "未找到结果。"));
         return Ok(());
     }
@@ -467,4 +537,104 @@ pub fn cmd_media(args: &MediaArgs) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+
+    /// `Result` helpers that don't need `T: Debug` (the source list isn't Debug).
+    fn ok_only(r: crate::error::Result<Vec<Box<dyn crate::source::MusicSource>>>) -> Vec<Box<dyn crate::source::MusicSource>> {
+        match r {
+            Ok(v) => v,
+            Err(e) => panic!("expected Ok, got Err: {e}"),
+        }
+    }
+
+    fn err_only(r: crate::error::Result<Vec<Box<dyn crate::source::MusicSource>>>) -> crate::error::PlayerError {
+        match r {
+            Ok(v) => panic!("expected Err, got Ok with {} target(s)", v.len()),
+            Err(e) => e,
+        }
+    }
+
+    fn cfg_with(enabled: Vec<&str>, default: &str) -> Config {
+        let mut cfg = Config::default();
+        cfg.source.enabled = enabled.into_iter().map(String::from).collect();
+        cfg.source.default = default.to_string();
+        cfg
+    }
+
+    fn ids(targets: &[Box<dyn crate::source::MusicSource>]) -> Vec<crate::source::SourceId> {
+        targets.iter().map(|s| s.id()).collect()
+    }
+
+    #[test]
+    fn explicit_source_wins_over_default() {
+        let cfg = cfg_with(vec![], "fma");
+        // No `source.enabled` filter → all sources enabled; the explicit "ia"
+        // request must win even though `source.default` says "fma".
+        let t = ok_only(select_search_targets(&cfg, Some("ia")));
+        assert_eq!(ids(&t), vec![crate::source::SourceId::InternetArchive]);
+    }
+
+    #[test]
+    fn explicit_disabled_source_loses_to_default() {
+        // "ia" is not enabled, and an explicit request never falls back to the
+        // default: it errors instead.
+        let cfg = cfg_with(vec!["fma"], "ia");
+        let e = err_only(select_search_targets(&cfg, Some("ia")));
+        assert!(e.to_string().contains("disabled"), "got: {e}");
+    }
+
+    #[test]
+    fn explicit_unknown_source_errors() {
+        let cfg = cfg_with(vec![], "");
+        let e = err_only(select_search_targets(&cfg, Some("bogus")));
+        assert!(e.to_string().contains("Unknown source 'bogus'"), "got: {e}");
+    }
+
+    #[test]
+    fn explicit_disabled_source_errors() {
+        let cfg = cfg_with(vec!["fma"], "");
+        let e = err_only(select_search_targets(&cfg, Some("ia")));
+        assert!(e.to_string().contains("disabled"), "got: {e}");
+    }
+
+    #[test]
+    fn no_source_uses_configured_default_when_enabled() {
+        let cfg = cfg_with(vec!["fma", "ia"], "fma");
+        let t = ok_only(select_search_targets(&cfg, None));
+        assert_eq!(ids(&t), vec![crate::source::SourceId::FreeMusicArchive]);
+    }
+
+    #[test]
+    fn no_source_falls_back_to_all_enabled_when_default_unresolvable() {
+        let cfg = cfg_with(vec![], "no_such_source");
+        let t = ok_only(select_search_targets(&cfg, None));
+        assert_eq!(t.len(), 2);
+    }
+
+    #[test]
+    fn no_source_falls_back_to_all_enabled_when_default_disabled() {
+        let cfg = cfg_with(vec!["fma"], "ia");
+        // Default "ia" is not in the enabled list → search every enabled source.
+        let t = ok_only(select_search_targets(&cfg, None));
+        assert_eq!(ids(&t), vec![crate::source::SourceId::FreeMusicArchive]);
+    }
+
+    #[test]
+    fn no_enabled_sources_errors() {
+        let cfg = cfg_with(vec!["bogus"], "");
+        let e = err_only(select_search_targets(&cfg, None));
+        assert!(e.to_string().contains("No online source"), "got: {e}");
+    }
+
+    #[test]
+    fn display_name_also_resolves() {
+        let cfg = cfg_with(vec![], "");
+        let t = ok_only(select_search_targets(&cfg, Some("Internet Archive")));
+        assert_eq!(ids(&t), vec![crate::source::SourceId::InternetArchive]);
+    }
 }

@@ -207,7 +207,8 @@ pub struct SearchOnlineArgs {
     /// Search keyword
     pub keyword: String,
 
-    /// Source id to use (e.g. "internet_archive", "fma"); omit to search all enabled sources
+    /// Source id to use (e.g. "internet_archive", "fma"); when omitted, uses the
+    /// configured `source.default` if it names an enabled source, else searches all enabled sources
     #[arg(short, long)]
     pub source: Option<String>,
 

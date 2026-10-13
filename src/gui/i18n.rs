@@ -633,6 +633,7 @@ pub struct Tr {
     pub online_select_source: &'static str,
     pub online_play: &'static str,
     pub online_play_error: &'static str, // "Play failed: {}"
+    pub online_search_error: &'static str, // "Search failed: {}"
     pub online_results_count: &'static str, // "{} results"
     pub online_source_hint: &'static str,
 
@@ -1125,6 +1126,7 @@ impl Tr {
         online_select_source: "Source:",
         online_play: "Play",
         online_play_error: "Play failed: {}",
+        online_search_error: "Search failed: {}",
         online_results_count: "{} results",
         online_source_hint: "Select a source, search for music, then play directly",
 
@@ -1662,6 +1664,7 @@ impl Tr {
         online_select_source: "音源:",
         online_play: "播放",
         online_play_error: "播放失败: {}",
+        online_search_error: "搜索失败: {}",
         online_results_count: "{} 个结果",
         online_source_hint: "选择音源，搜索音乐，直接播放",
 

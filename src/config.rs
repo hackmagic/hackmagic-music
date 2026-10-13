@@ -793,6 +793,33 @@ mod tests {
     }
 
     #[test]
+    fn test_config_source_section_toml_roundtrip() {
+        // `source.enabled` (aliases) and `source.default` must survive a TOML
+        // round-trip so the config actually drives target selection.
+        let mut cfg = Config::default();
+        cfg.source.enabled = vec!["fma".to_string(), "ia".to_string()];
+        cfg.source.default = "fma".to_string();
+
+        let toml_str = toml::to_string_pretty(&cfg).expect("toml serialization failed");
+        let parsed: Config = toml::from_str(&toml_str).expect("toml deserialization failed");
+
+        assert_eq!(parsed.source.enabled, vec!["fma".to_string(), "ia".to_string()]);
+        assert_eq!(parsed.source.default, "fma");
+    }
+
+    #[test]
+    fn test_config_source_default_missing_parses_to_default() {
+        // A config that omits the `[source]` table entirely must still parse
+        // and fall back to the documented default source.
+        let parsed: Config = toml::from_str(r#"
+[general]
+language = "en"
+"#).expect("parse failed");
+        assert_eq!(parsed.source.default, "internet_archive");
+        assert!(parsed.source.enabled.is_empty());
+    }
+
+    #[test]
     fn test_config_custom_toml_parse() {
         let toml_str = r#"
 [general]

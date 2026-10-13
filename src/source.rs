@@ -112,20 +112,42 @@ pub fn all_sources() -> Vec<Box<dyn MusicSource>> {
 }
 
 /// Filter the full source list to only enabled sources, applying optional
-/// overrides from a `source.enabled` config list (comma-separated ids).
+/// overrides from a `source.enabled` config list.
+///
+/// Each entry may be a canonical id (`free_music_archive`) or an alias
+/// (`fma`, `ia`, `archive`) — they are parsed through [`SourceId::from_str`].
+/// An empty list means "all sources enabled". Entries that are not recognised
+/// are ignored; if none of them resolve, the result is empty (the caller then
+/// reports a config problem).
 pub fn enabled_sources(enabled_ids: &[String]) -> Vec<Box<dyn MusicSource>> {
     if enabled_ids.is_empty() {
         return all_sources();
     }
+    // Previously this compared raw lower-cased strings against `to_str()`, so an
+    // alias like "ia" matched nothing and silently disabled every source.
+    let wanted: Vec<SourceId> = enabled_ids
+        .iter()
+        .filter_map(|e| SourceId::from_str(e))
+        .collect();
     all_sources()
         .into_iter()
-        .filter(|s| {
-            let id_str = s.id().to_str().to_lowercase();
-            enabled_ids
-                .iter()
-                .any(|e| e.to_lowercase() == id_str)
-        })
+        .filter(|s| wanted.contains(&s.id()))
         .collect()
+}
+
+/// Index of the source named by `default` (id / alias / display name) within
+/// the list returned by `enabled_sources(enabled_ids)` — i.e. the position the
+/// GUI's source selector should start at. Returns 0 when the default is not a
+/// resolvable or enabled source.
+pub fn default_selected_index(default: &str, enabled_ids: &[String]) -> usize {
+    let wanted = SourceId::from_str(default).or_else(|| {
+        all_sources()
+            .into_iter()
+            .find(|s| s.display_name().eq_ignore_ascii_case(default))
+            .map(|s| s.id())
+    });
+    let Some(id) = wanted else { return 0 };
+    enabled_sources(enabled_ids).into_iter().position(|s| s.id() == id).unwrap_or(0)
 }
 
 /// Get the enabled source matching `id`, or the first enabled source.
@@ -152,7 +174,7 @@ fn build_client() -> reqwest::Result<reqwest::Client> {
 
 #[derive(Debug, Deserialize)]
 struct IaSearchDoc {
-    #[serde(rename = "identifier")]
+    #[serde(default, rename = "identifier")]
     _identifier: String,
     #[serde(default)]
     title: Option<String>,
@@ -206,6 +228,33 @@ impl IaFile {
             || self.format.eq_ignore_ascii_case("OGG VORBIS")
             || self.name.to_lowercase().ends_with(".ogg")
     }
+}
+
+/// Resolve the stream URL for an archive.org identifier using a shared client.
+async fn resolve_ia_stream(client: &reqwest::Client, identifier: &str) -> Result<String> {
+    let url = format!("https://archive.org/metadata/{}", url_path_escape(identifier));
+    let resp: IaMetadataResponse = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(PlayerError::Network)?
+        .json()
+        .await
+        .map_err(|e| PlayerError::Other(e.to_string()))?;
+
+    // Prefer MP3, fall back to OGG.
+    let file = resp
+        .files
+        .iter()
+        .find(|f| f.is_mp3())
+        .or_else(|| resp.files.iter().find(|f| f.is_ogg()))
+        .ok_or_else(|| PlayerError::Other("No playable audio file found".into()))?;
+
+    Ok(format!(
+        "https://archive.org/download/{}/{}?download=1",
+        url_path_escape(identifier),
+        url_path_escape(&file.name)
+    ))
 }
 
 pub struct InternetArchive {
@@ -264,50 +313,42 @@ impl MusicSource for InternetArchive {
             .await
             .map_err(|e| PlayerError::Other(e.to_string()))?;
 
-        let mut tracks = Vec::new();
-        for doc in resp.response.docs {
-            let mut t = SourceTrack {
+        // Resolve every hit's stream URL concurrently. Doing this serially cost
+        // one metadata round-trip per result (~10 sequential requests), which
+        // made a single search feel like it had hung.
+        let resolved = futures_util::future::join_all(
+            resp.response
+                .docs
+                .iter()
+                .map(|doc| resolve_ia_stream(&client, &doc._identifier)),
+        )
+        .await;
+
+        let tracks = resp
+            .response
+            .docs
+            .into_iter()
+            .zip(resolved)
+            .filter(|(doc, _)| !doc._identifier.is_empty())
+            .map(|(doc, stream)| SourceTrack {
                 id: doc._identifier,
                 title: doc.title.unwrap_or_default(),
                 artist: doc.creator.unwrap_or_default(),
                 album: String::new(),
                 cover_url: None,
-                stream_url: None,
+                // Best-effort: an unresolvable hit is still listed, just not playable.
+                stream_url: stream.ok(),
                 duration: 0,
                 source: SourceId::InternetArchive,
-            };
-            // Attempt to resolve the stream URL inline (best-effort).
-            if let Ok(stream) = self.resolve_stream(&t).await {
-                t.stream_url = Some(stream);
-            }
-            tracks.push(t);
-        }
+            })
+            .collect();
+
         Ok(tracks)
     }
 
     async fn resolve_stream(&self, track: &SourceTrack) -> Result<String> {
         let client = build_client().map_err(|e| PlayerError::Other(e.to_string()))?;
-        let url = format!("https://archive.org/metadata/{}", track.id);
-        let resp: IaMetadataResponse = client
-            .get(&url)
-            .send()
-            .await
-            .map_err(PlayerError::Network)?
-            .json()
-            .await
-            .map_err(|e| PlayerError::Other(e.to_string()))?;
-
-        // Prefer MP3, fall back to OGG.
-        let file = resp
-            .files
-            .iter()
-            .find(|f| f.is_mp3())
-            .or_else(|| resp.files.iter().find(|f| f.is_ogg()))
-            .ok_or_else(|| PlayerError::Other("No playable audio file found".into()))?;
-
-        let stream_url =
-            format!("https://archive.org/download/{}/{}?download=1", track.id, file.name);
-        Ok(stream_url)
+        resolve_ia_stream(&client, &track.id).await
     }
 }
 
@@ -445,14 +486,46 @@ impl MusicSource for FreeMusicArchive {
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// Percent-encode a query string for use in a URL.
+///
+/// Operates on raw UTF-8 bytes: non-ASCII input (e.g. Chinese keywords) is
+/// encoded byte-by-byte, so `"中"` becomes `%E4%B8%AD` rather than being
+/// truncated to a single bogus byte.
 fn url_escape(s: &str) -> String {
-    s.chars()
-        .map(|c| match c {
-            'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '_' | '.' | '~' | '*' | '!' | '\'' | '(' | ')' => c.to_string(),
-            ' ' => "+".to_string(),
-            _ => format!("%{:02X}", c as u8),
-        })
-        .collect()
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'*'
+            | b'!' | b'\'' | b'(' | b')' => out.push(b as char),
+            b' ' => out.push('+'),
+            _ => {
+                out.push('%');
+                out.push(HEX[(b >> 4) as usize] as char);
+                out.push(HEX[(b & 0x0F) as usize] as char);
+            }
+        }
+    }
+    out
+}
+
+/// Percent-encode a single URL path segment (space becomes `%20`, not `+`).
+fn url_path_escape(s: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            _ => {
+                out.push('%');
+                out.push(HEX[(b >> 4) as usize] as char);
+                out.push(HEX[(b & 0x0F) as usize] as char);
+            }
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -501,6 +574,20 @@ mod tests {
     }
 
     #[test]
+    fn test_enabled_sources_accepts_aliases() {
+        // "ia"/"archive" are documented aliases for internet_archive, "fma" for
+        // free_music_archive. Raw-string matching used to drop them entirely.
+        for alias in ["ia", "archive", "internet_archive"] {
+            let sources = enabled_sources(&[alias.to_string()]);
+            assert_eq!(sources.len(), 1, "alias {alias} should select one source");
+            assert_eq!(sources[0].id(), SourceId::InternetArchive);
+        }
+        let sources = enabled_sources(&["fma".to_string()]);
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].id(), SourceId::FreeMusicArchive);
+    }
+
+    #[test]
     fn test_get_source() {
         let s = get_source("internet_archive");
         assert!(s.is_some());
@@ -508,10 +595,43 @@ mod tests {
     }
 
     #[test]
+    fn test_default_selected_index() {
+        let none: Vec<String> = Vec::new();
+        // Canonical id among all enabled sources (all_sources order: IA, FMA).
+        assert_eq!(default_selected_index("internet_archive", &none), 0);
+        assert_eq!(default_selected_index("fma", &none), 1);
+        assert_eq!(default_selected_index("Internet Archive", &none), 0);
+        // Unresolvable / disabled → 0.
+        assert_eq!(default_selected_index("bogus", &none), 0);
+        let only_fma = vec!["fma".to_string()];
+        assert_eq!(default_selected_index("internet_archive", &only_fma), 0);
+        assert_eq!(default_selected_index("free_music_archive", &only_fma), 0);
+    }
+
+    #[test]
     fn test_url_escape() {
         assert_eq!(url_escape("hello world"), "hello+world");
         assert_eq!(url_escape("rock & roll"), "rock+%26+roll");
         assert_eq!(url_escape("abc123"), "abc123");
+    }
+
+    #[test]
+    fn test_url_escape_non_ascii_is_utf8_encoded() {
+        // Regression: `c as u8` truncated multi-byte chars, so a CJK keyword
+        // produced a garbage URL. Each UTF-8 byte must be encoded.
+        assert_eq!(url_escape("中"), "%E4%B8%AD");
+        assert_eq!(url_escape("周杰伦"), "%E5%91%A8%E6%9D%B0%E4%BC%A6");
+        assert_eq!(url_escape("hello 世界"), "hello+%E4%B8%96%E7%95%8C");
+        // "曲" is 3 UTF-8 bytes → 3 percent-escapes.
+        assert_eq!(url_escape("曲").matches('%').count(), 3);
+    }
+
+    #[test]
+    fn test_url_path_escape() {
+        assert_eq!(url_path_escape("My Song.mp3"), "My%20Song.mp3");
+        assert_eq!(url_path_escape("a/b"), "a%2Fb");
+        assert_eq!(url_path_escape("normal-name_1.flac"), "normal-name_1.flac");
+        assert_eq!(url_path_escape("中.mp3"), "%E4%B8%AD.mp3");
     }
 
     #[test]
