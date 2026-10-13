@@ -260,65 +260,101 @@ fn main() {
         }
     }
 
-    // Create player
-    // Parse engine type from config, with validation
-    let engine_type = EngineType::try_from_str(&cfg.play.engine)
-        .unwrap_or_else(|| {
-            tracing::warn!(
-                "Unknown engine '{}' in config, defaulting to BASS",
-                cfg.play.engine
-            );
-            EngineType::Bass
-        });
-    let player = Arc::new(Player::new(engine_type));
-
-    player.set_volume(cfg.play.default_volume).ok();
-    player.set_volume_map(cfg.play.volume_map);
-    player.set_spectrum_config(cfg.appearance.spectrum_columns as usize, cfg.appearance.fft_size as usize);
-
-    hm::commands::init_player(player.clone());
-
-    // Initialize engine — fallback chain: configured → FFmpeg → Rodio
-    if let Err(e) = player.init() {
-        let attempted = EngineType::try_from_str(&cfg.play.engine).unwrap_or(EngineType::Bass);
-        if attempted == EngineType::Bass {
-            tracing::warn!("BASS init failed ({}), trying FFmpeg engine", e);
-            let fallback_player = create_and_init_player(EngineType::Ffmpeg, &cfg);
-            match fallback_player.init() {
-                Ok(()) => {
-                    tracing::info!("Fell back to FFmpeg engine successfully");
-                    let _ = fallback_player;
-                }
-                Err(_) => {
-                    tracing::warn!("FFmpeg also failed, trying Rodio engine");
-                    let fallback_player2 = create_and_init_player(EngineType::Rodio, &cfg);
-                    match fallback_player2.init() {
-                        Ok(()) => {
-                            tracing::info!("Fell back to Rodio engine successfully");
-                            let _ = fallback_player2;
-                        }
-                        Err(e2) => {
-                            eprintln!("Error: No working audio engine available: {e2}");
-                            std::process::exit(1);
-                        }
-                    }
-                }
-            }
-        } else {
-            eprintln!("Error: Failed to initialize player with {}: {e}", cfg.play.engine);
-            std::process::exit(1);
+    /// Does this command need a working audio engine?
+    ///
+    /// `Config` / `Completion` and the read-only `Info` actions are pure
+    /// metadata operations. They must keep working when no engine can start —
+    /// `hm config set play.engine bass` is the documented way to recover from a
+    /// bad engine value, so it cannot itself depend on that engine working.
+    fn command_needs_audio(command: &Commands) -> bool {
+        match command {
+            Commands::Config(_) | Commands::Completion(_) => false,
+            Commands::Info(args) => !matches!(
+                args.action,
+                InfoAction::Version | InfoAction::Formats | InfoAction::CheckUpdate { .. }
+            ),
+            _ => true,
         }
     }
 
-    // Helper: create a player, wire it into commands, without init()
-    fn create_and_init_player(engine: EngineType, cfg: &Config) -> Arc<Player> {
-        let p = Arc::new(Player::new(engine));
-        p.set_volume(cfg.play.default_volume).ok();
-        p.set_volume_map(cfg.play.volume_map);
-        p.set_spectrum_config(cfg.appearance.spectrum_columns as usize, cfg.appearance.fft_size as usize);
-        hm::commands::init_player(p.clone());
-        p
+    // Resolve the engine order: configured engine first, then every remaining
+    // engine as a fallback.
+    //
+    // Previously the fallback only ran when the *configured* engine was BASS, so
+    // a config pointing at an unavailable engine (e.g. "ffmpeg" on a box without
+    // ffmpeg) hit `exit(1)` before `dispatch` — which also made
+    // `hm config set play.engine bass` unusable, i.e. the CLI could only be
+    // recovered by hand-editing config.toml.
+    let configured_engine = EngineType::try_from_str(&cfg.play.engine).unwrap_or_else(|| {
+        tracing::warn!(
+            "Unknown engine '{}' in config, defaulting to BASS",
+            cfg.play.engine
+        );
+        EngineType::Bass
+    });
+
+    let mut candidates = vec![configured_engine];
+    for fallback in [
+        EngineType::Bass,
+        EngineType::Ffmpeg,
+        EngineType::Rodio,
+        EngineType::Symphonia,
+        EngineType::Mci,
+    ] {
+        if !candidates.contains(&fallback) {
+            candidates.push(fallback);
+        }
     }
+
+    let mut working_player: Option<Arc<Player>> = None;
+    let mut last_error: Option<(EngineType, String)> = None;
+
+    if command_needs_audio(&command) {
+        for engine in candidates {
+            let candidate = Player::new(engine);
+            candidate.set_volume(cfg.play.default_volume).ok();
+            candidate.set_volume_map(cfg.play.volume_map);
+            candidate.set_spectrum_config(
+                cfg.appearance.spectrum_columns as usize,
+                cfg.appearance.fft_size as usize,
+            );
+            match candidate.init() {
+                Ok(()) => {
+                    tracing::info!("[Engine] initialized: {:?}", engine);
+                    working_player = Some(Arc::new(candidate));
+                    break;
+                }
+                Err(e) => {
+                    tracing::warn!("[Engine] {:?} unavailable: {}", engine, e);
+                    last_error = Some((engine, e.to_string()));
+                }
+            }
+        }
+    }
+
+    let player = match working_player {
+        Some(p) => p,
+        None => {
+            let detail = match last_error {
+                Some((engine, e)) => format!("{engine:?} failed: {e}"),
+                None => format!("configured engine '{}' is not initialized", cfg.play.engine),
+            };
+            if command_needs_audio(&command) {
+                eprintln!("Error: No working audio engine available ({detail})");
+                eprintln!("Hint: fix the engine with `hm config set play.engine bass`.");
+                std::process::exit(1);
+            }
+            // Non-audio command: carry on without an engine. Register an
+            // uninitialized placeholder so a stray `get_player()` call reports a
+            // clear engine error instead of panicking on a missing player.
+            Arc::new(Player::new(configured_engine))
+        }
+    };
+
+    // Register exactly once, and only once a player is known to work:
+    // `commands::init_player` is a `OnceLock`, so the first registration wins and
+    // silently discards later ones.
+    hm::commands::init_player(player.clone());
 
     // Restore last playlist (tracks) without starting playback
     let is_daemon = matches!(command, Commands::Daemon(_));
