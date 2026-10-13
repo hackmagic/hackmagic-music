@@ -336,13 +336,20 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
 mod tests {
     use super::*;
 
+    // 环境变量测试必须串行：cargo test 默认多线程并行，std::env::set_var
+    // 会污染同进程其他线程（曾让 test_embedding_dim_default 偶发读到 768）。
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn test_embedding_dim_default() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        std::env::remove_var("OPENAI_EMBEDDING_DIM");
         assert_eq!(embedding_dim(), 1536);
     }
 
     #[test]
     fn test_embedding_dim_from_env() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         std::env::set_var("OPENAI_EMBEDDING_DIM", "768");
         assert_eq!(embedding_dim(), 768);
         std::env::remove_var("OPENAI_EMBEDDING_DIM");

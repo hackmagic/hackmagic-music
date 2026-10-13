@@ -136,6 +136,11 @@ fn cmd_rebuild_index() -> Result<()> {
             }
         }
         println!("\nDone! Indexed: {}, Failed: {}", indexed, failed);
+        // Fold the journal into the base file so the CLI's work is durable even
+        // if the machine is restarted before the next compaction threshold.
+        if let Err(e) = vecdb::try_global_db().map(|db| db.flush()).transpose() {
+            eprintln!("  Warning: failed to flush index: {e}");
+        }
         Ok(())
     })
 }

@@ -688,6 +688,13 @@ impl MusicPlayer {
                 if this.update(cx, |_this, cx| cx.notify()).is_err() {
                     // 窗口已销毁（应用退出中）：终止轮询，属正常关停而非错误
                     tracing::debug!("[Timer] entity released, repaint loop exiting");
+                    // 关停前把 vecdb 日志折叠进基础文件，避免退出后留下
+                    // 未压缩的日志（数据本身不会丢，启动时会重放）。
+                    if let Some(db) = crate::vecdb::try_global_db() {
+                        if let Err(e) = db.flush() {
+                            tracing::warn!("[GUI] vecdb flush on shutdown failed: {}", e);
+                        }
+                    }
                     break;
                 }
             }
@@ -825,7 +832,13 @@ impl MusicPlayer {
             similar_tracks: Vec::new(),
             similar_tracks_source: String::new(),
             online_search_input,
-            online_selected_source: 0,
+            // Honour `source.default` from config (previously the panel always
+            // started at index 0, so the config had no effect in the GUI). Fall
+            // back to 0 when the configured id is not an enabled source.
+            online_selected_source: crate::source::default_selected_index(
+                &cfg.source.default,
+                &cfg.source.enabled,
+            ),
             online_results: Vec::new(),
             online_searching: false,
             online_status: String::new(),
@@ -6121,7 +6134,10 @@ impl MusicPlayer {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let player = self.player.clone();
-        let sources = crate::source::enabled_sources(&[]);
+        // Honour `[source] enabled` from config instead of always using every
+        // registered source (the config previously had no effect in the GUI).
+        let enabled_ids = self.config_cache.source.enabled.clone();
+        let sources = crate::source::enabled_sources(&enabled_ids);
         let source_count = sources.len();
 
         // Clamp selected index
@@ -6174,11 +6190,11 @@ impl MusicPlayer {
                             .label("◀")
                             .compact()
                             .ghost()
-                            .on_click(cx.listener(|this, _, _w, cx| {
-                                let n = crate::source::enabled_sources(&[]).len();
-                                if n > 0 {
+                            .on_click(cx.listener(move |this, _, _w, cx| {
+                                if source_count > 0 {
                                     this.online_selected_source =
-                                        (this.online_selected_source + n.saturating_sub(1)) % n;
+                                        (this.online_selected_source + source_count - 1)
+                                            % source_count;
                                     cx.notify();
                                 }
                             })),
@@ -6202,11 +6218,10 @@ impl MusicPlayer {
                             .label("▶")
                             .compact()
                             .ghost()
-                            .on_click(cx.listener(|this, _, _w, cx| {
-                                let n = crate::source::enabled_sources(&[]).len();
-                                if n > 0 {
+                            .on_click(cx.listener(move |this, _, _w, cx| {
+                                if source_count > 0 {
                                     this.online_selected_source =
-                                        (this.online_selected_source + 1) % n;
+                                        (this.online_selected_source + 1) % source_count;
                                     cx.notify();
                                 }
                             })),
@@ -6234,19 +6249,25 @@ impl MusicPlayer {
                                     return;
                                 }
                                 let idx = this.online_selected_source;
-                                let player = this.player.clone();
+                                // Flip the loading state *before* awaiting — it used
+                                // to be set after `search()` returned, so the
+                                // "Searching..." placeholder never appeared.
+                                this.online_searching = true;
+                                this.online_results = Vec::new();
+                                cx.notify();
+                                let enabled_ids = this.config_cache.source.enabled.clone();
                                 let weak = cx.entity().downgrade();
                                 cx.spawn(async move |_, cx| {
-                                    let sources = crate::source::enabled_sources(&[]);
+                                    let sources = crate::source::enabled_sources(&enabled_ids);
                                     if idx >= sources.len() {
+                                        let _ = weak.update(cx, |this, cx| {
+                                            this.online_searching = false;
+                                            cx.notify();
+                                        });
                                         return;
                                     }
                                     let src = sources[idx].as_ref();
                                     let result = src.search(&query).await;
-                                    let _ = weak.update(cx, |this, cx| {
-                                        this.online_searching = true;
-                                        cx.notify();
-                                    });
                                     match result {
                                         Ok(tracks) => {
                                             let _ = weak.update(cx, |this, cx| {
@@ -6264,12 +6285,11 @@ impl MusicPlayer {
                                                 this.online_searching = false;
                                                 this.online_results = Vec::new();
                                                 this.online_status =
-                                                    format!("Search failed: {}", e);
+                                                    this.tr.online_search_error.replace("{}", &e.to_string());
                                                 cx.notify();
                                             });
                                         }
                                     }
-                                    let _ = player;
                                 })
                                 .detach();
                             })),
@@ -6315,7 +6335,7 @@ impl MusicPlayer {
                                 let title_clone = title.clone();
                                 let artist_clone = artist.clone();
                                 let play_label = if playable {
-                                    tr.ctrl_play.to_string()
+                                    tr.online_play.to_string()
                                 } else {
                                     "--".to_string()
                                 };
@@ -6340,7 +6360,19 @@ impl MusicPlayer {
                                             .on_click(move |_, _, _| {
                                                 if playable {
                                                     if let Some(url) = &stream_url {
-                                                        let _ = p_play.play_file(url);
+                                                        // Opening a remote stream does
+                                                        // network I/O — never do it on
+                                                        // the UI thread or the window
+                                                        // freezes until it times out.
+                                                        let p = p_play.clone();
+                                                        let url = url.clone();
+                                                        crate::runtime().spawn_blocking(move || {
+                                                            if let Err(e) = p.play_file(&url) {
+                                                                tracing::warn!(
+                                                                    "[OnlineSources] 播放失败: {e}"
+                                                                );
+                                                            }
+                                                        });
                                                     }
                                                 }
                                             }),
