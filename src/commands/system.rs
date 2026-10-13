@@ -811,9 +811,51 @@ pub fn cmd_daemon(args: &DaemonArgs) -> Result<()> {
     Ok(())
 }
 
-/// Check for newer version on GitHub (background, no Result)
+/// Repository that hosts the release artefacts (`owner/name`).
+const UPDATE_REPO: &str = "hackmagic/hackmagic-music";
+
+/// Build the "latest release" API endpoint for the configured update source.
+///
+/// `general.update_source` is surfaced in the settings dialog ("github" / "gitee")
+/// and was previously ignored entirely — both paths hard-coded one wrong repo.
+fn release_api_url(source: &str) -> String {
+    match source {
+        "gitee" => format!("https://gitee.com/api/v5/repos/{UPDATE_REPO}/releases/latest"),
+        _ => format!("https://api.github.com/repos/{UPDATE_REPO}/releases/latest"),
+    }
+}
+
+/// Parse a dotted version string into numeric components.
+///
+/// Returns `None` for anything that is not a version — e.g. the empty string
+/// we get when the API response has no `tag_name` (404 / rate-limited / HTML
+/// error body). Pre-release and build metadata are dropped (1.2.3-beta.1 → 1.2.3).
+fn parse_version(s: &str) -> Option<Vec<u64>> {
+    let s = s.trim().trim_start_matches(['v', 'V']);
+    let core = s.split(['-', '+']).next().unwrap_or("");
+    if core.is_empty() {
+        return None;
+    }
+    core.split('.').map(|p| p.parse::<u64>().ok()).collect()
+}
+
+/// True only when `latest` is a *valid* version strictly greater than `current`.
+///
+/// The previous implementation compared the raw strings
+/// (`tag.trim_start_matches('v') > current_ver`), so a missing tag — which used
+/// to fall back to the literal `"unknown"` — was "greater" than "1.0.0" and made
+/// every launch report a bogus update.
+fn is_newer_version(latest: &str, current: &str) -> bool {
+    match (parse_version(latest), parse_version(current)) {
+        (Some(l), Some(c)) => l > c,
+        _ => false,
+    }
+}
+
+/// Check for newer version in the background (no Result).
 pub fn check_update_background() {
     let current_ver = env!("CARGO_PKG_VERSION");
+    let source = Config::load().general.update_source;
     let rt = match tokio::runtime::Runtime::new() {
         Ok(r) => r,
         Err(_) => return,
@@ -824,16 +866,15 @@ pub fn check_update_background() {
             .timeout(std::time::Duration::from_secs(10))
             .build().ok()?;
         let resp = client
-            .get("https://api.github.com/repos/anomalyco/hm/releases/latest")
+            .get(release_api_url(&source))
             .send().await.ok()?;
         let json: serde_json::Value = resp.json().await.ok()?;
         Some(json)
     });
 
     if let Some(json) = info {
-        let tag = json["tag_name"].as_str().unwrap_or("unknown");
-        let is_newer = tag.trim_start_matches('v') > current_ver;
-        if is_newer {
+        let tag = json["tag_name"].as_str().unwrap_or("");
+        if is_newer_version(tag, current_ver) {
             tracing::info!(
                 "Update available: v{} -> {}. Run 'info check-update' for details.",
                 current_ver, tag
@@ -845,6 +886,7 @@ pub fn check_update_background() {
 /// Check for newer version on GitHub, optionally download and install
 fn check_for_update(download: bool) -> Result<()> {
     let current_ver = env!("CARGO_PKG_VERSION");
+    let source = Config::load().general.update_source;
     println!("  Current version: v{current_ver}");
 
     let rt = tokio::runtime::Runtime::new()
@@ -855,7 +897,7 @@ fn check_for_update(download: bool) -> Result<()> {
             .timeout(std::time::Duration::from_secs(10))
             .build().ok()?;
         let resp = client
-            .get("https://api.github.com/repos/anomalyco/hm/releases/latest")
+            .get(release_api_url(&source))
             .send().await.ok()?;
         let json: serde_json::Value = resp.json().await.ok()?;
         Some(json)
@@ -863,11 +905,14 @@ fn check_for_update(download: bool) -> Result<()> {
 
     match info {
         Some(json) => {
-            let tag = json["tag_name"].as_str().unwrap_or("unknown");
+            let tag = json["tag_name"].as_str().unwrap_or("");
             let body = json["body"].as_str().unwrap_or("");
             let html_url = json["html_url"].as_str().unwrap_or("");
-            let is_newer = tag.trim_start_matches('v') > current_ver;
-            if is_newer {
+            if parse_version(tag).is_none() {
+                println!("  Could not determine the latest version (release metadata has no usable tag).");
+                return Ok(());
+            }
+            if is_newer_version(tag, current_ver) {
                 println!("\n  ╔══════════════════════════════════════╗");
                 println!("  ║    Update available!                  ║");
                 println!("  ╠══════════════════════════════════════╣");
@@ -1485,7 +1530,7 @@ fn unregister_file_assoc() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::format_duration;
+    use super::{format_duration, is_newer_version, parse_version, release_api_url};
 
     #[test]
     fn test_format_duration_seconds_only() {
@@ -1522,5 +1567,52 @@ mod tests {
         let m = (u64::MAX % 3600) / 60;
         let s = u64::MAX % 60;
         assert_eq!(format_duration(u64::MAX), format!("{}h {:02}m {:02}s", h, m, s));
+    }
+
+    #[test]
+    fn test_parse_version_accepts_common_forms() {
+        assert_eq!(parse_version("1.0.0"), Some(vec![1, 0, 0]));
+        assert_eq!(parse_version("v1.2.3"), Some(vec![1, 2, 3]));
+        assert_eq!(parse_version("v2.0.1-beta.3"), Some(vec![2, 0, 1]));
+        assert_eq!(parse_version("1.2.3+build7"), Some(vec![1, 2, 3]));
+        assert_eq!(parse_version("10"), Some(vec![10]));
+    }
+
+    #[test]
+    fn test_parse_version_rejects_non_versions() {
+        assert_eq!(parse_version(""), None);
+        assert_eq!(parse_version("v"), None);
+        assert_eq!(parse_version("unknown"), None);
+        assert_eq!(parse_version("latest"), None);
+    }
+
+    #[test]
+    fn test_is_newer_version_numeric_not_lexicographic() {
+        // Lexicographically "1.9.0" > "1.10.0"; numerically it is older.
+        assert!(!is_newer_version("1.9.0", "1.10.0"));
+        assert!(is_newer_version("1.10.0", "1.9.0"));
+        assert!(is_newer_version("v1.1.0", "1.0.0"));
+        assert!(is_newer_version("2.0.0", "1.99.99"));
+        assert!(!is_newer_version("1.0.0", "1.0.0"));
+    }
+
+    #[test]
+    fn test_is_newer_version_ignores_unparseable_tags() {
+        // Regression: a missing tag used to become "unknown", which string-compared
+        // as greater than "1.0.0" and fired a bogus update notice on every launch.
+        assert!(!is_newer_version("", "1.0.0"));
+        assert!(!is_newer_version("unknown", "1.0.0"));
+        assert!(!is_newer_version("Not Found", "1.0.0"));
+    }
+
+    #[test]
+    fn test_release_api_url_respects_source() {
+        assert!(release_api_url("github").contains("api.github.com"));
+        assert!(release_api_url("gitee").contains("gitee.com"));
+        // Unknown values fall back to GitHub rather than producing a broken URL.
+        assert!(release_api_url("").contains("api.github.com"));
+        // Both point at the real repo, not the old hard-coded one.
+        assert!(release_api_url("github").contains("hackmagic/hackmagic-music"));
+        assert!(!release_api_url("github").contains("anomalyco"));
     }
 }
