@@ -186,7 +186,7 @@ pub enum Commands {
     /// Search online music sources (Internet Archive, Free Music Archive, etc.)
     SearchOnline(SearchOnlineArgs),
 
-    /// Rebuild vector index for similarity search (DCLAP 512-dim embeddings)
+    /// Rebuild vector index for similarity search (embeddings via the configured API)
     RebuildIndex,
 }
 
@@ -301,7 +301,11 @@ pub enum SpeedAction {
 }
 
 #[derive(Args, Debug)]
-pub struct SpeedSetArgs { pub value: f32 }
+pub struct SpeedSetArgs {
+    /// Playback speed multiplier (e.g. 1.5)
+    #[arg(allow_hyphen_values = true)]
+    pub value: f32,
+}
 
 // ===== Pitch =====
 #[derive(Args, Debug)]
@@ -320,7 +324,11 @@ pub enum PitchAction {
 }
 
 #[derive(Args, Debug)]
-pub struct PitchSetArgs { pub value: i32 }
+pub struct PitchSetArgs {
+    /// Pitch shift in semitones; accepts negative values (e.g. -12)
+    #[arg(allow_hyphen_values = true)]
+    pub value: i32,
+}
 
 // ===== Repeat =====
 #[derive(Args, Debug)]
@@ -363,7 +371,12 @@ pub enum EqualizerAction {
 pub struct EqualizerGetArgs { pub band: Option<usize> }
 
 #[derive(Args, Debug)]
-pub struct EqualizerSetArgs { pub band: usize, pub gain: i32 }
+pub struct EqualizerSetArgs {
+    pub band: usize,
+    /// Gain in dB; accepts negative values (e.g. -3)
+    #[arg(allow_hyphen_values = true)]
+    pub gain: i32,
+}
 
 #[derive(Args, Debug)]
 pub struct EqualizerPresetArgs { pub style: String }
@@ -592,7 +605,11 @@ pub struct LyricDownloadArgs { #[arg(long)] pub service: Option<String> }
 #[derive(Args, Debug)]
 pub struct LyricLinkArgs { pub file: String }
 #[derive(Args, Debug)]
-pub struct LyricOffsetArgs { pub offset: i64 }
+pub struct LyricOffsetArgs {
+    /// Offset in milliseconds; accepts negative values (lyrics earlier)
+    #[arg(allow_hyphen_values = true)]
+    pub offset: i64,
+}
 
 // ===== MusicBrainz =====
 #[derive(Args, Debug)]
@@ -2002,5 +2019,44 @@ mod tests {
         // Volume set 0-100, but clap will accept any u32 - that's a business rule test
         let cli = Cli::try_parse_from(["hm", "volume", "set", "999"]).unwrap();
         assert!(matches!(cli.command.unwrap(), Commands::Volume(_)));
+    }
+
+    /// 回归防线：`eq set <band> <gain>` 的 gain 允许负值（dB 衰减）。
+    /// 修复前 clap 把 `-3` 当 flag，报 `unexpected argument '-3' found`，
+    /// 导致 CLI / RPC 都无法设置衰减增益（本机 daemon 实测复现）。
+    #[test]
+    fn test_eq_set_accepts_negative_gain() {
+        let cli = Cli::try_parse_from(["hm", "eq", "set", "1", "-3"]).unwrap();
+        let Some(Commands::Eq(args)) = cli.command else {
+            panic!("expected eq command");
+        };
+        let EqualizerAction::Set(set) = args.action else {
+            panic!("expected eq set");
+        };
+        assert_eq!(set.band, 1);
+        assert_eq!(set.gain, -3);
+    }
+
+    /// 同样为负值放开解析：变速可输入负倍数（业务层会 clamp），
+    /// 变调可为负半音（降调），歌词偏移可为负毫秒（提前）。
+    #[test]
+    fn test_negative_values_parse_for_speed_pitch_offset() {
+        let cli = Cli::try_parse_from(["hm", "speed", "set", "-1.5"]).unwrap();
+        let Some(Commands::Speed(args)) = cli.command else {
+            panic!("expected speed command");
+        };
+        let SpeedAction::Set(set) = args.action else {
+            panic!("expected speed set");
+        };
+        assert_eq!(set.value, -1.5);
+
+        let cli = Cli::try_parse_from(["hm", "pitch", "set", "-12"]).unwrap();
+        let Some(Commands::Pitch(args)) = cli.command else {
+            panic!("expected pitch command");
+        };
+        let PitchAction::Set(set) = args.action else {
+            panic!("expected pitch set");
+        };
+        assert_eq!(set.value, -12);
     }
 }
