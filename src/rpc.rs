@@ -61,25 +61,40 @@ pub struct TrackInfo {
     pub cue_track: u32,
 }
 
+/// Parse a CLI command string and run it on a blocking thread.
+///
+/// `dispatch` is synchronous and may block for a long time (network calls, file I/O,
+/// `block_on` on a fresh runtime). Calling it directly inside an `async fn` handler would
+/// park a Tokio worker thread — and with enough concurrent requests, starve the runtime.
+/// Every handler that shells out to the CLI goes through here instead.
+async fn run_cli(cmd_str: &str) -> crate::error::Result<()> {
+    let cmd_str = cmd_str.to_owned();
+    tokio::task::spawn_blocking(move || {
+        let cli: crate::cli::Cli = clap::Parser::try_parse_from(
+            std::iter::once("hm").chain(cmd_str.split_whitespace()),
+        )
+        .map_err(|e| crate::error::PlayerError::Other(e.to_string()))?;
+        match cli.command {
+            Some(cmd) => crate::commands::dispatch(&cmd),
+            None => Err(crate::error::PlayerError::Other("No command".into())),
+        }
+    })
+    .await
+    .unwrap_or_else(|e| Err(crate::error::PlayerError::Other(format!("CLI task panicked: {e}"))))
+}
 async fn cmd_handler(
     State(_state): State<AppState>,
     Json(payload): Json<CommandRequest>,
 ) -> Json<CommandResponse> {
-    let result = (|| -> crate::error::Result<()> {
-        // Split command string respecting quoted arguments
-        let args = split_quoted(&payload.command);
-        if args.is_empty() {
-            return Err(crate::error::PlayerError::Other("Empty command".into()));
-        }
-        let cli: crate::cli::Cli = clap::Parser::try_parse_from(
-            std::iter::once("hm").chain(args.iter().map(|s| s.as_str())),
-        )
-        .map_err(|e| crate::error::PlayerError::Other(e.to_string()))?;
-        match &cli.command {
-            Some(cmd) => crate::commands::dispatch(cmd),
-            None => Err(crate::error::PlayerError::Other("No command".into())),
-        }
-    })();
+    // Split command string respecting quoted arguments
+    let args = split_quoted(&payload.command);
+    if args.is_empty() {
+        return Json(CommandResponse {
+            success: false,
+            error: Some("Empty command".to_string()),
+        });
+    }
+    let result = run_cli(&args.join(" ")).await;
 
     match result {
         Ok(()) => Json(CommandResponse {
@@ -287,13 +302,7 @@ async fn lyric_search_handler(
         // Use command to search, download and save
         "lyric download --service netease"
     };
-    let cli: crate::cli::Cli = match clap::Parser::try_parse_from(
-        std::iter::once("hm").chain(cmd_str.split_whitespace()),
-    ) {
-        Ok(c) => c,
-        Err(e) => return Json(LyricSearchResponse { success: false, error: Some(e.to_string()) }),
-    };
-    match crate::commands::dispatch(&cli.command.unwrap()) {
+    match run_cli(cmd_str).await {
         Ok(()) => Json(LyricSearchResponse { success: true, error: None }),
         Err(e) => Json(LyricSearchResponse { success: false, error: Some(e.to_string()) }),
     }
@@ -323,13 +332,7 @@ if let Some(ref artist) = payload.artist {
     cmd_str.push_str(" --artist ");
     cmd_str.push_str(artist);
 }
-    let cli: crate::cli::Cli = match clap::Parser::try_parse_from(
-        std::iter::once("hm").chain(cmd_str.split_whitespace()),
-    ) {
-        Ok(c) => c,
-        Err(e) => return Json(MusicBrainzResponse { success: false, error: Some(e.to_string()), message: String::new(), results: None }),
-    };
-    match crate::commands::dispatch(&cli.command.unwrap()) {
+    match run_cli(&cmd_str).await {
         Ok(()) => Json(MusicBrainzResponse { success: true, error: None, message: "MusicBrainz tag applied".to_string(), results: None }),
         Err(e) => Json(MusicBrainzResponse { success: false, error: Some(e.to_string()), message: String::new(), results: None }),
     }
@@ -1122,6 +1125,28 @@ mod tests {
     use super::*;
     use std::fs;
     use std::path::Path;
+
+    /// `run_cli` must work when called from inside a Tokio runtime.
+    ///
+    /// This is the regression guard for the old bug: handlers used to call
+    /// `crate::commands::dispatch` synchronously inside their `async fn` body,
+    /// parking a runtime worker for the whole (possibly network-bound) command.
+    /// A direct `runtime().block_on()` there would additionally panic with
+    /// "Cannot start a runtime from within a runtime".
+    #[tokio::test]
+    async fn test_run_cli_from_async_context() {
+        // `info version` touches no engine and no network.
+        let r = run_cli("info version").await;
+        assert!(r.is_ok(), "run_cli should dispatch a read-only command, got {r:?}");
+    }
+
+    /// A command string that clap cannot parse must surface as an `Err`,
+    /// not a panic — `spawn_blocking` joins the closure result either way.
+    #[tokio::test]
+    async fn test_run_cli_rejects_garbage() {
+        let r = run_cli("definitely-not-a-subcommand").await;
+        assert!(r.is_err(), "unknown subcommand must be an Err");
+    }
 
     /// Test the daemon IPC health endpoint handler.
     /// This is the simplest RPC handler — it requires no state and always returns `ok: true`.

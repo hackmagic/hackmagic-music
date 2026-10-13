@@ -67,7 +67,7 @@ BASELINE_GUI=15575552   # hm-gui.exe
 BASELINE_CLI=8126464    # hm.exe
 SIZE_TOLERANCE=5        # 允许 +5% 回归
 UNWRAP_BASELINE=369     # 生产代码 unwrap/expect 数量棘轮（不得增加），见 docs/验收标准.md §2
-TEST_BASELINE=575       # 单元测试通过数下限（只能增加）
+TEST_BASELINE=577       # 单元测试通过数下限（只能增加）
 
 FULL=0; SIZE=0
 for a in "$@"; do
