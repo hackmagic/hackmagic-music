@@ -17,6 +17,7 @@ pub struct Config {
     pub midi: MidiConfig,
     pub eq: EqConfig,
     pub source: SourceConfig,
+    pub ai: AiConfig,
 }
 
 
@@ -329,6 +330,21 @@ impl Default for SourceConfig {
     }
 }
 
+/// AI / embedding settings.
+///
+/// Embeddings are produced by a third-party OpenAI-compatible API, which means
+/// **the lyrics of whatever you play are sent to that service**. Both switches
+/// default to `false`: nothing leaves the machine until you opt in.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AiConfig {
+    /// Master switch for the third-party embedding API. While `false`, every
+    /// embedding call short-circuits to `None` (same as a missing API key).
+    pub enabled: bool,
+}
+
+// 默认 false：不显式开启就不外传任何歌词。
+
 
 
 impl Config {
@@ -437,6 +453,7 @@ impl Config {
             "midi.enabled" => Some(cfg.midi.enabled.to_string()),
             "source.enabled" => Some(cfg.source.enabled.join(",")),
             "source.default" => Some(cfg.source.default.clone()),
+            "ai.enabled" => Some(cfg.ai.enabled.to_string()),
             _ => None,
         };
         val
@@ -554,6 +571,7 @@ impl Config {
                     .collect();
             }
             "source.default" => cfg.source.default = value.to_string(),
+            "ai.enabled" => cfg.ai.enabled = value == "true",
             _ => {}
         }
         cfg.save()
@@ -604,6 +622,49 @@ pub fn get_config_dir() -> PathBuf {
 
 fn get_config_path() -> PathBuf {
     get_config_dir().join("config.toml")
+}
+
+/// 跨模块共享的 APPDATA 测试隔离（`#[cfg(test)]`）。
+///
+/// 多个模块的测试都需要把 `APPDATA` 指到临时目录（play_stats 的统计文件、
+/// ai 的 `[ai].enabled` 读取）。环境变量是进程级的，若各模块用各自的锁，
+/// 并行测试会互相改写 `APPDATA` 造成偶发失败——因此锁必须全局唯一。
+#[cfg(test)]
+pub mod test_support {
+    use std::sync::Mutex;
+
+    static APPDATA_LOCK: Mutex<()> = Mutex::new(());
+
+    pub struct AppdataGuard {
+        prev: Option<String>,
+        _dir: tempfile::TempDir,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl Drop for AppdataGuard {
+        fn drop(&mut self) {
+            match &self.prev {
+                Some(v) => std::env::set_var("APPDATA", v),
+                None => std::env::remove_var("APPDATA"),
+            }
+        }
+    }
+
+    /// 把 `APPDATA` 指到一个全新的临时目录；返回的守卫 Drop 时恢复原值。
+    /// 无法创建临时目录时返回 `None`（调用方应跳过而非误判）。
+    pub fn isolate_appdata() -> Option<AppdataGuard> {
+        let lock = APPDATA_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let prev = std::env::var("APPDATA").ok();
+        let dir = tempfile::tempdir().ok()?;
+        std::env::set_var("APPDATA", dir.path());
+        Some(AppdataGuard {
+            prev,
+            _dir: dir,
+            _lock: lock,
+        })
+    }
 }
 
 /// Recent folder and playlist history, saved to JSON

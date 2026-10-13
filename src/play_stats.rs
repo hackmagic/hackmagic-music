@@ -317,42 +317,23 @@ pub fn activity_breakdown() -> (u64, u64, u64, u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
 
     /// 这两个测试都会写 `stats.json`。若不隔离，测试会读写用户真实的统计文件
     /// （`get_config_dir()/stats.json`，Windows 下即 `%APPDATA%\hm\stats.json`），
     /// 本机实测过的播放记录会把 `top_stats` 的排序顶掉，导致断言随机失败
     /// （实测：`test_440.wav` 的收听秒数超过 `/music/song2.flac` 的 120s）。
     /// 因此测试期间把 `APPDATA` 指向临时目录，并用互斥锁串行化（环境变量是进程级的）。
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
-
-    /// APPDATA 守卫：设置临时目录，Drop 时恢复原值。
-    struct AppdataGuard {
-        prev: Option<String>,
-        _dir: tempfile::TempDir,
-        _lock: std::sync::MutexGuard<'static, ()>,
-    }
-
-    impl Drop for AppdataGuard {
-        fn drop(&mut self) {
-            match &self.prev {
-                Some(v) => std::env::set_var("APPDATA", v),
-                None => std::env::remove_var("APPDATA"),
-            }
-        }
-    }
+    ///
+    /// 锁与守卫统一来自 `config::test_support`：ai 模块的测试同样需要隔离 APPDATA，
+    /// 两处各自持锁会让并行测试互相改写环境变量（曾偶发失败）。
+    use crate::config::test_support::AppdataGuard;
 
     /// 把 APPDATA 指到一个全新的临时目录，返回守卫（Drop 时恢复）。
     fn isolate_appdata() -> Option<AppdataGuard> {
-        let lock = ENV_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let prev = std::env::var("APPDATA").ok();
-        let dir = tempfile::tempdir().ok()?;
-        std::env::set_var("APPDATA", dir.path());
+        let guard = crate::config::test_support::isolate_appdata()?;
         // OnceLock 可能已被真实数据初始化，强制按新路径重载
         reload_stats_for_test();
-        Some(AppdataGuard { prev, _dir: dir, _lock: lock })
+        Some(guard)
     }
 
     #[test]

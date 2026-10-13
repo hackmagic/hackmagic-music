@@ -9,8 +9,16 @@
 //!   - `OPENAI_EMBEDDING_MODEL` — model name (default: `text-embedding-3-small`)
 //!   - `OPENAI_EMBEDDING_DIM`   — dimension override (default: 1536)
 //!
+//! Privacy:
+//! - The embedding service receives **the full text sent to it** — in practice
+//!   the lyrics of the track being played. Everything you play is uploaded.
+//! - The master switch is `[ai].enabled` in `config.toml` and it defaults to
+//!   `false`: while off, no HTTP request is ever made (see `is_ai_enabled`).
+//! - Setting `OPENAI_API_KEY` alone does **not** enable anything.
+//!
 //! Fallback behaviour:
-//! - If `OPENAI_API_KEY` is unset, every embedding call returns `None`.
+//! - If `[ai].enabled` is false or `OPENAI_API_KEY` is unset, every embedding
+//!   call returns `None`.
 //! - Network failures, HTTP errors, or malformed responses are logged at
 //!   `DEBUG` and return `None`.
 
@@ -21,7 +29,7 @@ use std::sync::OnceLock;
 // ===== Config from environment =====
 
 #[derive(Debug, Clone)]
-struct AiConfig {
+pub(crate) struct AiConfig {
     base_url: String,
     api_key: String,
     embedding_model: String,
@@ -29,6 +37,11 @@ struct AiConfig {
 
 impl AiConfig {
     fn from_env() -> Option<AiConfig> {
+        // 隐私总闸：未显式开启 [ai].enabled 时，即使配了 OPENAI_API_KEY 也不发任何请求。
+        if !crate::config::Config::load().ai.enabled {
+            tracing::debug!("[AI] disabled by config ([ai].enabled = false)");
+            return None;
+        }
         let api_key = env::var("OPENAI_API_KEY").ok()?;
         Some(AiConfig {
             base_url: env::var("OPENAI_BASE_URL")
@@ -42,12 +55,36 @@ impl AiConfig {
     }
 }
 
-static AI_CONFIG: OnceLock<Option<AiConfig>> = OnceLock::new();
+// 用 Mutex 而非 OnceLock：结构体只有 3 个 String，lock + clone 远比读一次
+// config.toml 便宜，且测试可以替换内容来覆盖「已启用」分支。
+static AI_CONFIG: std::sync::Mutex<Option<AiConfig>> = std::sync::Mutex::new(None);
 
-fn ai_config() -> Option<&'static AiConfig> {
-    AI_CONFIG
-        .get_or_init(AiConfig::from_env)
-        .as_ref()
+fn ai_config() -> Option<AiConfig> {
+    let mut guard = AI_CONFIG
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if guard.is_none() {
+        *guard = AiConfig::from_env();
+    }
+    guard.clone()
+}
+
+/// Whether the third-party embedding API is enabled by the user.
+///
+/// Reads `[ai].enabled` from `config.toml` on every call (no caching) so the
+/// GUI can show live state. Use `ai_config()` on hot paths.
+pub fn is_ai_enabled() -> bool {
+    crate::config::Config::load().ai.enabled
+}
+
+/// Test-only: replace the cached AI config so tests can exercise both the
+/// enabled and disabled branches without touching the real `config.toml`.
+#[cfg(test)]
+fn set_ai_config_for_test(cfg: Option<AiConfig>) {
+    let mut guard = AI_CONFIG
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    *guard = cfg;
 }
 
 // ===== Embedding dimension =====
@@ -340,6 +377,19 @@ mod tests {
     // 会污染同进程其他线程（曾让 test_embedding_dim_default 偶发读到 768）。
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+    // APPDATA 隔离：from_env() 会读真实 config.toml，测试必须把它挡掉，
+    // 否则结果取决于本机配置而不是被测逻辑。
+    // 锁用 config::test_support 的全局锁：play_stats 的测试也改 APPDATA，
+    // 各自持锁会让两个模块的测试并行互踩（曾偶发失败）。
+    use crate::config::test_support::AppdataGuard;
+
+    fn isolate_appdata() -> Option<AppdataGuard> {
+        let guard = crate::config::test_support::isolate_appdata()?;
+        // AI_CONFIG 可能已缓存真实配置，先清空让 from_env() 重读隔离后的配置。
+        set_ai_config_for_test(None);
+        Some(guard)
+    }
+
     #[test]
     fn test_embedding_dim_default() {
         let _g = ENV_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -398,5 +448,70 @@ mod tests {
         let a = vec![1.0f32, 0.0f32];
         let b = vec![0.0f32, 1.0f32];
         assert!((cosine_similarity(&a, &b) - 0.0).abs() < 1e-6);
+    }
+
+    // === [ai].enabled 隐私总闸 ===
+
+    #[test]
+    fn test_ai_disabled_by_default_blocks_embedding() {
+        let _g = ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(_appdata) = isolate_appdata() else {
+            return;
+        };
+        // 隔离目录里没有 config.toml → [ai].enabled 取默认值 false → 不得发出任何请求
+        assert!(!crate::config::Config::load().ai.enabled);
+        assert!(ai_config().is_none());
+        // 非空文本也必须返回 None，而不是掉到 API 调用里
+        assert!(embed_lyrics_text("real lyrics").is_none());
+    }
+
+    #[test]
+    fn test_ai_config_gate_roundtrip() {
+        let _g = ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(_appdata) = isolate_appdata() else {
+            return;
+        };
+        set_ai_config_for_test(Some(AiConfig {
+            base_url: "http://127.0.0.1:1".to_string(),
+            api_key: "test-key".to_string(),
+            embedding_model: "test-model".to_string(),
+        }));
+        let cfg = ai_config().expect("explicitly set config must be returned");
+        assert_eq!(cfg.base_url, "http://127.0.0.1:1");
+        assert_eq!(cfg.api_key, "test-key");
+        assert_eq!(cfg.embedding_model, "test-model");
+
+        set_ai_config_for_test(None);
+        assert!(ai_config().is_none());
+    }
+
+    #[test]
+    fn test_is_ai_enabled_reflects_config_toml() {
+        let _g = ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(guard) = isolate_appdata() else {
+            return;
+        };
+        let Some(dir) = std::env::var("APPDATA").ok() else {
+            return;
+        };
+        let hm_dir = std::path::Path::new(&dir).join("hm");
+        std::fs::create_dir_all(&hm_dir).ok();
+
+        std::fs::write(hm_dir.join("config.toml"), "[ai]\nenabled = true\n").ok();
+        assert!(is_ai_enabled(), "enabled=true must be honoured");
+
+        std::fs::write(hm_dir.join("config.toml"), "[ai]\nenabled = false\n").ok();
+        assert!(!is_ai_enabled());
+
+        // 缺 [ai] 表 → 默认 false（不得因为缺表就放开）
+        std::fs::write(hm_dir.join("config.toml"), "[general]\nlanguage = \"zh\"\n").ok();
+        assert!(!is_ai_enabled());
+        drop(guard);
     }
 }
