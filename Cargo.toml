@@ -126,7 +126,17 @@ tempfile = "3"
 embed-resource = "3"
 
 [profile.release]
-opt-level = 2
-lto = true
+# 体积优先的发布档（交付用）。逐项作用：
+#   opt-level = "s"    —— 在代码体积与速度间取平衡（"z" 更小但明显拖慢解码/DSP）
+#   lto = "fat"        —— 跨 crate 内联 + 死代码消除，去掉大量未引用的框架代码
+#   codegen-units = 1  —— 让优化器看到全量代码，避免分割后重复实例化泛型
+#   panic = "abort"    —— 去掉 unwind 表与 landing pad（本项目无 catch_unwind 依赖）
+#   strip = true       —— 剥离符号表
+#   incremental = false—— 关闭增量编译，避免为增量元数据保留额外产物
+# 代价：release 构建明显变慢；日常迭代请用 debug（cargo build / cargo run）。
+opt-level = "s"
+lto = "fat"
 codegen-units = 1
+panic = "abort"
 strip = true
+incremental = false
