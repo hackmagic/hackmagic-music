@@ -215,8 +215,47 @@ pub fn is_bass_midi_loaded() -> bool {
 }
 
 /// BASS_FX（tempo/pitch 变速变调）库是否已加载
+///
+/// 注意：仅「DLL 加载成功」不等于可用。某些 bass_fx.dll 发行包（本机实测过一个
+/// 只有 BPM/Reverse/Tempo 导出、缺 `BASS_FXSetParameters` 的 2.4 版本）会让
+/// `BASS_FX_LIB.set()` 成功，但 EQ / 效果参数调用必然失败。因此这里除库句柄外
+/// 还逐个校验必需符号，缺失即视为未加载，让上层走明确的降级路径而不是在播放途中报错。
 pub fn is_bass_fx_loaded() -> bool {
-    BASS_FX_LIB.get().is_some()
+    missing_bass_fx_symbols().is_empty()
+}
+
+/// 缺失的 BASS_FX 必需符号名（供上层给出可操作提示）；库未加载或全部齐备时为空列表。
+pub fn missing_bass_fx_symbols() -> Vec<&'static str> {
+    const REQUIRED: [(&[u8], &str); 3] = [
+        (b"BASS_FX_TempoCreate", "BASS_FX_TempoCreate"),
+        (b"BASS_FXSetParameters", "BASS_FXSetParameters"),
+        (b"BASS_FXGetParameters", "BASS_FXGetParameters"),
+    ];
+    // 结果缓存：open() 每次切歌都会问一次，不缓存会把同一条警告刷满日志。
+    // 用 OnceLock<Option<Vec<..>>> 表达「探测过一次」：None = 尚未探测。
+    static CACHE: OnceLock<Vec<&'static str>> = OnceLock::new();
+    CACHE
+        .get_or_init(|| {
+            let Some(lib) = BASS_FX_LIB.get() else {
+                // 库都没加载：报告全部必需符号缺失，让调用方给出「请下载 bass_fx」提示
+                return REQUIRED.iter().map(|(_, name)| *name).collect();
+            };
+            let mut missing = Vec::new();
+            for (bytes, name) in REQUIRED {
+                let ok = unsafe { lib.get::<*const c_void>(bytes).is_ok() };
+                if !ok {
+                    missing.push(name);
+                }
+            }
+            if !missing.is_empty() {
+                tracing::warn!(
+                    "BASS_FX loaded but missing required symbol(s): {}; re-download bass_fx (see download-bass.ps1)",
+                    missing.join(", ")
+                );
+            }
+            missing
+        })
+        .clone()
 }
 
 /// Load BASS libraries. Returns true if successful.

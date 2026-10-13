@@ -581,6 +581,15 @@ impl PlayerEngine for BassEngine {
         if *self.is_midi_file.lock().unwrap() {
             return Ok(()); // MIDI streams don't support DSP FX
         }
+        // EQ 依赖 BASS_FX 的 BFX 效果类型与参数符号。若 bass_fx.dll 缺失或导出不全，
+        // 这里提前给出可操作提示，而不是让 BASS_ChannelSetFX 返回 0 且不设错误码、
+        // 最终报出含义空洞的 "BASS error 0: unknown error code"。
+        if !sys::is_bass_fx_loaded() {
+            let missing = sys::missing_bass_fx_symbols().join(", ");
+            return Err(PlayerError::BassError(format!(
+                "Equalizer needs BASS_FX (missing: {missing}); re-run download-bass.ps1 to fetch a matching bass_fx.dll"
+            )));
+        }
         let stream = *self.stream.lock().unwrap();
         if stream == 0 {
             return Ok(()); // Silent ignore if no stream
@@ -592,8 +601,13 @@ impl PlayerEngine for BassEngine {
         let mut handles = self.eq_handles.lock().unwrap();
         if handles[band] == 0 {
             // Create a new peak EQ effect for this band
-            let fx_handle = sys::BASS_ChannelSetFX(stream, sys::BASS_FX_BFX_PEAKEQ, 0)
-                .map_err(|e| PlayerError::BassError(format!("Cannot create EQ FX: {e}")))?;
+            let fx_handle = sys::BASS_ChannelSetFX(stream, sys::BASS_FX_BFX_PEAKEQ, 0).map_err(|e| {
+                // BASS_ChannelSetFX 在 bass.dll 与 bass_fx.dll 版本不匹配时会返回 0 且不设
+                // 错误码，只报 "unknown error code"。这里补上最可能的根因提示。
+                PlayerError::BassError(format!(
+                    "Cannot create EQ FX: {e} (if it says \"unknown error code\", bass.dll and bass_fx.dll versions likely mismatch — re-run download-bass.ps1)"
+                ))
+            })?;
             handles[band] = fx_handle;
         }
 
