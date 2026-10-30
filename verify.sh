@@ -67,7 +67,7 @@ BASELINE_GUI=15575552   # hm-gui.exe
 BASELINE_CLI=8126464    # hm.exe
 SIZE_TOLERANCE=5        # 允许 +5% 回归
 UNWRAP_BASELINE=369     # 生产代码 unwrap/expect 数量棘轮（不得增加），见 docs/验收标准.md §2
-TEST_BASELINE=582       # 单元测试通过数下限（只能增加）
+TEST_BASELINE=593       # 单元测试通过数下限（只能增加）
 
 FULL=0; SIZE=0
 for a in "$@"; do
@@ -157,12 +157,21 @@ if [ "$FULL" = "1" ]; then
     bad "G0-2 找不到 cargo.exe（PATH 与 .cargo/bin 均无）→ 拒绝假阳性 PASS"
   else
   clip=$("$CARGO_BIN" clippy --all-targets --message-format short 2>&1)
-  nw=$(printf '%s\n' "$clip" | grep -cE '^(warning|error)' || true)
+  # 只统计「指向本仓库源码」的诊断（src/ 与 tests/），外加硬编译错误。
+  #
+  # 教训（§14.5 的反面）：旧写法 `grep -cE '^(warning|error)'` 会把
+  #   warning: the following packages contain code that will be rejected by a future
+  #   version of Rust: proc-macro-error2 v2.0.1
+  # 这条**依赖包**的 future-incompat 提示也算成「我们的警告」→ 闸门误判失败。
+  # 该依赖来自 gpui 0.2.2 → stacksafe → proc-macro-error2，gpui 版本被钉死、
+  # proc-macro-error2 2.0.1 已是 registry 上的最新版 → 本仓无法消除。
+  # 闸门要管的是「我们自己的代码 0 警告」，依赖噪音不算（见 docs/验收标准.md §6）。
+  nw=$(printf '%s\n' "$clip" | grep -cE '^(src|tests)[\\/][^ ]*: (warning|error)|^error(\[|:)' || true)
   if [ "$nw" = "0" ]; then
     ok "G0-2 cargo clippy --all-targets 0 警告 0 错误"
   else
     bad "G0-2 clippy 有 $nw 条警告/错误"
-    printf '%s\n' "$clip" | grep -E '^(warning|error)' | head -8 | sed 's/^/        /'
+    printf '%s\n' "$clip" | grep -E '^(src|tests)[\\/][^ ]*: (warning|error)|^error(\[|:)' | head -8 | sed 's/^/        /'
   fi
   fi
 
