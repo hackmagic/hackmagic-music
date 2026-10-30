@@ -13,6 +13,24 @@ Rust music player: CLI + native GPUI GUI, 5 audio engines, AI similarity search.
 只做了静态验证（编译 / clippy / 单测）的功能，状态只能记 **⚠️ 部分**，不得记 ✅。
 闸门未通过就**不要提交**。标准、体积基线、已知例外全部以 `docs/验收标准.md` 为准。
 
+## 仓库管理（git / gh）
+
+- **两个远端，必须同时推、保持锁步**：`origin` → `github.com/hackmagic/hackmagic-music`
+  （主）、`atomgit` → `atomgit.com/qq_27401047/hackmagic-music`（镜像）。
+  只推 `origin` 会让镜像长期分叉 —— 推完两个都要 `git rev-list --left-right --count <remote>/main...HEAD`
+  确认是 `0 0`。
+- **工作流是直接提交到 `main`，不开 PR**：仓库历史上从没有用过 PR（`gh pr list` 为空），
+  提交信息写清「修了什么旧行为 / 为什么旧行为是错的」（见 `监控进度.md` §15.3、§21.3）。
+- **按主题拆提交**，一个提交只说一件事；每个提交单独 checkout 都必须可编译
+  （靠 git 的 tree 快照实现：未暂存的文件在提交树里保持原样）。
+- `gh` CLI 已装并以 `hackmagic` 账号登录（ssh 协议）。仓库管理用 `gh`：
+  `gh issue create --body-file`、`gh release create --notes-file`、`gh repo view --json`。
+- **发布资产命名有硬约束**（程序自己的自动更新读它）：`src/commands/system.rs` 的
+  `find_asset_url` 要求资产名**含目标三元组**且以 `.zip` 结尾；`replace_exe_windows`
+  要求 zip 内是**扁平布局**——根目录 `hm.exe` + `bass*.dll`，GUI 放 `gui/hm-gui.exe`。
+  命名示例：`hm-v1.0.0-x86_64-pc-windows-msvc.zip`。
+- 未跟踪的 `.h3-video-task.json` / `h3-prompt.txt` 属其他工具，**不要入库**。
+
 ## Build / test / run
 
 - Build: `cargo build`. Four binaries from one crate `hm` (edition 2021): `hm` (CLI, `src/main.rs`), `hm-gui` (GUI, `src/bin/gui.rs`), plus two test tools `hm-e2e-test` / `hm-screenshot` (`src/bin/`); shared lib `hm` in `src/lib.rs`. The CLI binary does not link gpui (linker drops it).
