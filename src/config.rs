@@ -348,15 +348,40 @@ pub struct AiConfig {
 
 
 impl Config {
+    /// Read the configuration file. **Pure read — never writes to disk.**
+    ///
+    /// The old implementation wrote a default `config.toml` when the file was
+    /// missing, which made a *reader* able to overwrite a *writer*:
+    /// thread A reads the file (missing) → thread B writes the real config →
+    /// thread A saves its default snapshot → B's config is silently gone.
+    /// That race is not theoretical: `cargo test --lib` runs tests in
+    /// parallel, the config path is derived from the process-global `APPDATA`,
+    /// and `ai::tests::test_is_ai_enabled_reflects_config_toml` failed
+    /// intermittently for exactly this reason (a concurrent `Config::load()`
+    /// in another test clobbered the `[ai] enabled = true` it had just written).
+    ///
+    /// Materialising the file is now an explicit step — see
+    /// [`Config::load_or_create`].
     pub fn load() -> Self {
         let path = get_config_path();
-        if let Ok(content) = std::fs::read_to_string(&path) {
-            toml::from_str(&content).unwrap_or_default()
-        } else {
-            let cfg = Config::default();
-            let _ = cfg.save();
-            cfg
+        match std::fs::read_to_string(&path) {
+            Ok(content) => toml::from_str(&content).unwrap_or_default(),
+            Err(_) => Config::default(),
         }
+    }
+
+    /// Read the configuration, creating `config.toml` with the defaults when it
+    /// does not exist yet.
+    ///
+    /// Used by the program entry points (CLI / GUI) so that a fresh install
+    /// still gets a config file to edit. Library code should prefer [`Config::load`]
+    /// so that reading never mutates the user's disk state.
+    pub fn load_or_create() -> Self {
+        let cfg = Self::load();
+        if !get_config_path().exists() {
+            let _ = cfg.save();
+        }
+        cfg
     }
 
     pub fn save(&self) -> std::io::Result<()> {
@@ -637,6 +662,7 @@ pub mod test_support {
 
     pub struct AppdataGuard {
         prev: Option<String>,
+        prev_xdg: Option<String>,
         _dir: tempfile::TempDir,
         _lock: std::sync::MutexGuard<'static, ()>,
     }
@@ -647,20 +673,30 @@ pub mod test_support {
                 Some(v) => std::env::set_var("APPDATA", v),
                 None => std::env::remove_var("APPDATA"),
             }
+            match &self.prev_xdg {
+                Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
+                None => std::env::remove_var("XDG_CONFIG_HOME"),
+            }
         }
     }
 
-    /// 把 `APPDATA` 指到一个全新的临时目录；返回的守卫 Drop 时恢复原值。
-    /// 无法创建临时目录时返回 `None`（调用方应跳过而非误判）。
+    /// 把 `APPDATA`（Windows）与 `XDG_CONFIG_HOME`（Linux）指到一个全新的临时目录；
+    /// 返回的守卫 Drop 时恢复原值。无法创建临时目录时返回 `None`（调用方应跳过而非误判）。
+    ///
+    /// 两个变量都要设：`get_config_dir()` 在 Windows 上读 `APPDATA`，在 Linux 上读
+    /// `XDG_CONFIG_HOME`，只隔离一个会让另一平台的测试写到真实配置上。
     pub fn isolate_appdata() -> Option<AppdataGuard> {
         let lock = APPDATA_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let prev = std::env::var("APPDATA").ok();
+        let prev_xdg = std::env::var("XDG_CONFIG_HOME").ok();
         let dir = tempfile::tempdir().ok()?;
         std::env::set_var("APPDATA", dir.path());
+        std::env::set_var("XDG_CONFIG_HOME", dir.path());
         Some(AppdataGuard {
             prev,
+            prev_xdg,
             _dir: dir,
             _lock: lock,
         })
@@ -758,11 +794,113 @@ impl PlaybackState {
             let _ = std::fs::write(&path, content);
         }
     }
+
+    /// Record which playlist is the active one, leaving the other fields
+    /// (track index, position, volume, repeat mode) untouched.
+    ///
+    /// Playlist commands change *which* playlist is current, but not the
+    /// playback position inside it — so a full `save_playback_state()` would
+    /// wrongly reset the position. This helper is the surgical alternative.
+    ///
+    /// Without it, `hm playlist load x` would leave `state.json` pointing at the
+    /// previous playlist, and the next CLI invocation would restore that one
+    /// instead of the one the user just selected.
+    pub fn set_last_playlist(name: &str) {
+        let mut state = Self::load();
+        if state.last_playlist == name {
+            return;
+        }
+        state.last_playlist = name.to_string();
+        state.save();
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `set_last_playlist` must change **only** the playlist name: the playback
+    /// position, volume and repeat mode belong to the session, not to the
+    /// playlist switch, and must survive it.
+    #[test]
+    fn test_set_last_playlist_preserves_other_fields() {
+        use super::test_support::isolate_appdata;
+        let Some(_guard) = isolate_appdata() else { return; };
+
+        let state = PlaybackState {
+            last_playlist: "default".to_string(),
+            track_index: 7,
+            position_secs: 123.5,
+            volume: 42,
+            repeat_mode: "one".to_string(),
+        };
+        state.save();
+
+        PlaybackState::set_last_playlist("other");
+
+        let loaded = PlaybackState::load();
+        assert_eq!(loaded.last_playlist, "other");
+        assert_eq!(loaded.track_index, 7);
+        assert_eq!(loaded.position_secs, 123.5);
+        assert_eq!(loaded.volume, 42);
+        assert_eq!(loaded.repeat_mode, "one");
+    }
+
+    /// Regression: `Config::load()` must be a **pure read** — it must never
+    /// create or rewrite `config.toml`.
+    ///
+    /// It used to save a default config whenever the file was missing. Because
+    /// the config path is derived from the process-global `APPDATA`, that write
+    /// side effect let a *reader* clobber a *writer*: a parallel test calling
+    /// `Config::load()` (e.g. `media::scan_directory`) could read "missing" and
+    /// then save its default snapshot over the `[ai] enabled = true` that
+    /// `ai::tests::test_is_ai_enabled_reflects_config_toml` had just written.
+    /// That is exactly how that test failed intermittently.
+    #[test]
+    fn test_config_load_never_writes_to_disk() {
+        use super::test_support::isolate_appdata;
+        let Some(_guard) = isolate_appdata() else { return; };
+
+        // Portable mode (config.toml next to the executable) points the config
+        // path at the real config — skip rather than touch the user's file.
+        let Some(appdata) = std::env::var("APPDATA").ok() else { return; };
+        if get_config_dir() != std::path::Path::new(&appdata).join("hm") {
+            return;
+        }
+
+        let cfg_path = get_config_path();
+        let Some(parent) = cfg_path.parent() else { return; };
+        std::fs::create_dir_all(parent).unwrap();
+
+        // 1. A read must not create the file.
+        assert!(!cfg_path.exists(), "precondition: config.toml must not exist");
+        let cfg = Config::load();
+        assert!(!cfg.ai.enabled);
+        assert!(
+            !cfg_path.exists(),
+            "Config::load() must not create config.toml on a read"
+        );
+
+        // 2. A read must leave an existing file byte-identical.
+        let content = "[ai]\nenabled = true\n";
+        std::fs::write(&cfg_path, content).unwrap();
+        let cfg = Config::load();
+        assert!(cfg.ai.enabled, "existing config must be parsed");
+        assert_eq!(
+            std::fs::read_to_string(&cfg_path).unwrap(),
+            content,
+            "Config::load() must not rewrite config.toml"
+        );
+
+        // 3. `load_or_create` is the explicit way to materialise the file.
+        std::fs::remove_file(&cfg_path).unwrap();
+        let cfg = Config::load_or_create();
+        assert!(!cfg.ai.enabled);
+        assert!(
+            cfg_path.exists(),
+            "Config::load_or_create() must write config.toml"
+        );
+    }
 
     #[test]
     fn test_config_default_values() {
