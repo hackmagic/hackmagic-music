@@ -141,7 +141,7 @@ pub fn record_playlist(path: &str) {
 pub fn top_stats(limit: usize) -> Vec<(String, StatEntry)> {
     let data = get_stats().lock().unwrap();
     let mut items: Vec<(String, StatEntry)> = data.songs.clone().into_iter().collect();
-    items.sort_by(|a, b| b.1.listen_secs.cmp(&a.1.listen_secs));
+    items.sort_by_key(|a| std::cmp::Reverse(a.1.listen_secs));
     items.truncate(limit);
     items
 }
@@ -230,7 +230,7 @@ pub fn recent_played(limit: usize) -> Vec<(String, StatEntry)> {
     let mut items: Vec<(String, StatEntry)> = data.songs.clone().into_iter()
         .filter(|(_, e)| e.last_played > 0)
         .collect();
-    items.sort_by(|a, b| b.1.last_played.cmp(&a.1.last_played));
+    items.sort_by_key(|a| std::cmp::Reverse(a.1.last_played));
     items.truncate(limit);
     items
 }
@@ -280,7 +280,7 @@ pub fn artist_stats(limit: usize) -> Vec<(String, u64, u64)> {
         .into_iter()
         .map(|(k, (s, c))| (k, s, c))
         .collect();
-    items.sort_by(|a, b| b.1.cmp(&a.1));
+    items.sort_by_key(|a| std::cmp::Reverse(a.1));
     items.truncate(limit);
     items
 }

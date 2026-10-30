@@ -96,7 +96,8 @@ fn display_lyrics(track: &crate::core::playlist::Track, lyrics: &crate::lyric::p
             let elapsed = adj_pos.saturating_sub(line.time_ms);
             let next_time = lyrics.lines.get(i + 1).map_or(line.time_ms + 5000, |l| l.time_ms);
             let total = next_time.saturating_sub(line.time_ms);
-            let pct = if total > 0 { (elapsed * 100 / total).min(100) } else { 0 };
+            // `total` may be 0 (single-line lyric) → checked_div yields None → 0%.
+            let pct = (elapsed * 100).checked_div(total).unwrap_or(0).min(100);
             let bar_len: usize = 20;
             let filled_usize = (pct as usize * bar_len / 100).min(bar_len);
             let bar: String = (0..bar_len).map(|j| {

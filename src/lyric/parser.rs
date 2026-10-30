@@ -221,7 +221,7 @@ impl Lyrics {
 
     /// Sort lines by time (ascending).
     pub fn sort_by_time(&mut self) {
-        self.lines.sort_by(|a, b| a.time_ms.cmp(&b.time_ms));
+        self.lines.sort_by_key(|a| a.time_ms);
     }
 
     /// Extract existing translation from brackets in lyric text.

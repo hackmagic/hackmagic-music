@@ -79,7 +79,14 @@ impl Default for SourceTrack {
 }
 
 /// Trait for online music playback sources.
+///
+/// `#[async_trait]` expands every `async fn` into a `-> impl Future` shim and
+/// stamps `#[must_use]` on it. Since `impl Future` is already `#[must_use]`,
+/// the generated attribute is redundant and trips `clippy::double_must_use`
+/// on newer toolchains (1.99+). The lint is about the macro's output, not
+/// about our code, so it is silenced at the trait.
 #[async_trait]
+#[allow(clippy::double_must_use)]
 pub trait MusicSource: Send + Sync {
     fn id(&self) -> SourceId;
     /// User-facing display name (short).

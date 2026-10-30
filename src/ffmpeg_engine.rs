@@ -139,7 +139,7 @@ impl FfmpegEngine {
 
         let sample_count = raw.len() / 4;
         let mut samples = Vec::with_capacity(sample_count);
-        for chunk in raw.chunks_exact(4) {
+        for chunk in raw.as_chunks::<4>().0 {
             samples.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
         }
         Ok(samples)
@@ -195,7 +195,7 @@ impl PlayerEngine for FfmpegEngine {
             e
         })?;
         tracing::info!("[FFMPEG] decoded {} samples", samples.len());
-        let total_frames = if channels > 0 { samples.len() / channels } else { 0 };
+        let total_frames = samples.len().checked_div(channels).unwrap_or(0);
         let total_dur_frames = (duration * f64::from(sample_rate)) as u64;
 
         *self.total_frames.lock().unwrap() = if total_dur_frames > 0 { total_dur_frames } else { total_frames as u64 };

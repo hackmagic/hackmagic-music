@@ -65,7 +65,7 @@ impl SongMultiVersion {
                 .map(|&i| tracks[i].clone())
                 .collect();
             // Remove duplicates from versions list
-            versions.sort_by(|a, b| b.bitrate.cmp(&a.bitrate));
+            versions.sort_by_key(|t| std::cmp::Reverse(t.bitrate));
             versions.dedup_by_key(|t| t.file_path.clone());
             self.duplicate_songs.insert(key.clone(), versions);
             // Mark non-best indices for removal
