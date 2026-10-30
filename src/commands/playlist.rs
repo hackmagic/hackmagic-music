@@ -86,14 +86,23 @@ pub fn cmd_playlist(args: &PlaylistArgs) -> Result<()> {
                 println!("Switched to playlist '{name}' ({count} tracks)");
             } else {
                 let tracks = crate::playlist_format::read_playlist(&v.name)?;
-                let mut pl = player.playlist_mut();
-                pl.clear();
-                for path in tracks {
-                    let mut track = crate::tag::reader::read_tags(&path).unwrap_or_else(|_| Track::new(&path));
-                    crate::play_stats::backfill_track(&mut track);
-                    pl.add_track(track);
+                let count = {
+                    let mut pl = player.playlist_mut();
+                    pl.clear();
+                    for path in tracks {
+                        let mut track = crate::tag::reader::read_tags(&path).unwrap_or_else(|_| Track::new(&path));
+                        crate::play_stats::backfill_track(&mut track);
+                        pl.add_track(track);
+                    }
+                    pl.len()
+                };
+                // Persist: this branch replaces the active playlist's contents,
+                // and without a save the replacement was silently discarded —
+                // the command printed "Loaded N tracks" and changed nothing.
+                if let Err(e) = player.save_current_playlist() {
+                    tracing::warn!("Failed to save playlist after load: {}", e);
                 }
-                println!("Loaded {} tracks from {}", pl.len(), v.name);
+                println!("Loaded {count} tracks from {}", v.name);
             }
             // Record recent playlist
             let mut recent = crate::config::RecentHistory::load();
@@ -139,13 +148,17 @@ pub fn cmd_playlist(args: &PlaylistArgs) -> Result<()> {
             }
         }
         PlaylistAction::Remove(v) => {
-            let mut pl = player.playlist_mut();
-            pl.remove_multiple(v.indices.clone());
-            drop(pl);
+            let removed = player.playlist_mut().remove_multiple(v.indices.clone());
             if let Err(e) = player.save_current_playlist() {
                 tracing::warn!("Failed to save playlist after remove: {}", e);
             }
-            println!("Removed {} tracks", v.indices.len());
+            if removed == v.indices.len() {
+                println!("Removed {removed} tracks");
+            } else {
+                // Report what actually happened: out-of-range indices are
+                // skipped, so "requested" and "removed" can differ.
+                println!("Removed {removed} of {} requested tracks", v.indices.len());
+            }
         }
         PlaylistAction::Dedup => {
             let mut pl = player.playlist_mut();
@@ -230,12 +243,20 @@ pub fn cmd_playlist(args: &PlaylistArgs) -> Result<()> {
         }
         PlaylistAction::Import(v) => {
             let tracks = crate::playlist_format::read_playlist(&v.path)?;
-            let mut pl = player.playlist_mut();
-            for path in tracks {
-                let track = crate::tag::reader::read_tags(&path).unwrap_or_else(|_| Track::new(&path));
-                pl.add_track(track);
+            let count = {
+                let mut pl = player.playlist_mut();
+                for path in tracks {
+                    let track = crate::tag::reader::read_tags(&path).unwrap_or_else(|_| Track::new(&path));
+                    pl.add_track(track);
+                }
+                pl.len()
+            };
+            // Persist: the import used to live only in memory, so the tracks
+            // were gone as soon as the process exited.
+            if let Err(e) = player.save_current_playlist() {
+                tracing::warn!("Failed to save playlist after import: {}", e);
             }
-            println!("Imported from {}", v.path);
+            println!("Imported from {} ({count} tracks total)", v.path);
         }
         PlaylistAction::Mode(v) => {
             let mode = match v.mode.to_lowercase().as_str() {

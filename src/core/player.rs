@@ -887,36 +887,128 @@ impl Player {
             &path.to_string_lossy(), self.playlist.lock().unwrap().tracks(), None)
     }
 
-    /// Create a new empty playlist and switch to it (saves current first)
+    /// Create a new empty playlist and switch to it.
+    ///
+    /// The in-memory playlist is saved first, but **only when it holds tracks**:
+    /// a fresh `Player` starts with an empty playlist named "default", and saving
+    /// that would overwrite the real `default.playlist` with an empty file — which
+    /// is exactly what happened on every plain CLI invocation (`hm playlist new x`).
     pub fn create_playlist(&self, name: &str) -> Result<()> {
         let pl_dir = crate::config::get_config_dir().join("playlists");
         std::fs::create_dir_all(&pl_dir)?;
-        // Save current playlist first
-        self.save_current_playlist()?;
+        // Refuse to clobber an existing playlist. `create_playlist` materialises
+        // the new file on disk, so without this guard `hm playlist new default`
+        // would silently overwrite `default.playlist` with an empty one.
+        let path = pl_dir.join(format!("{name}.playlist"));
+        if path.exists() {
+            return Err(PlayerError::Other(format!(
+                "Playlist '{name}' already exists — use `hm playlist load {name}` to switch to it"
+            )));
+        }
+        // Save current playlist first, unless it is empty (nothing to preserve,
+        // and an empty save would clobber the saved file of the same name).
+        if !self.playlist.lock().unwrap().is_empty() {
+            self.save_current_playlist()?;
+        }
         // Create new empty playlist
-        let mut pl = self.playlist.lock().unwrap();
-        *pl = Playlist::new(name);
+        {
+            let mut pl = self.playlist.lock().unwrap();
+            *pl = Playlist::new(name);
+        }
+        // Materialise it on disk. `hm playlist new x` used to leave a *phantom*
+        // playlist: the name lived only in memory for the lifetime of that one
+        // process, so `hm playlist list` never showed it and `hm playlist load x`
+        // failed with "not found".
+        self.save_current_playlist()?;
+        // Remember it as the active playlist, so the next invocation restores it
+        // instead of the previous one.
+        crate::config::PlaybackState::set_last_playlist(name);
         Ok(())
     }
 
-    /// Switch to an existing playlist by name (saves current first)
+    /// Copy the current playlist (tracks included) to a new playlist file and
+    /// switch to the copy.
+    ///
+    /// This is what "Save as new" needs. It cannot be expressed as
+    /// `create_playlist` + `switch_playlist` + `save_current_playlist`:
+    /// `create_playlist` materialises an **empty** `new_name.playlist`, and the
+    /// following `switch_playlist` would then load that empty file — the copy
+    /// would come out empty while the original stayed intact.
+    pub fn copy_playlist(&self, new_name: &str) -> Result<()> {
+        let pl_dir = crate::config::get_config_dir().join("playlists");
+        std::fs::create_dir_all(&pl_dir)?;
+        let path = pl_dir.join(format!("{new_name}.playlist"));
+        if path.exists() {
+            return Err(PlayerError::Other(format!(
+                "Playlist '{new_name}' already exists"
+            )));
+        }
+        let mut copy = self
+            .playlist
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        copy.set_name(new_name.to_string());
+        crate::playlist_format::write_playlist(&path.to_string_lossy(), copy.tracks(), None)?;
+        *self.playlist.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = copy;
+        crate::config::PlaybackState::set_last_playlist(new_name);
+        Ok(())
+    }
+
+    /// Return a playlist name that is not taken yet.
+    ///
+    /// `base` is used as-is when it is free; otherwise a ` (2)`, ` (3)` … suffix
+    /// is appended. Keeps "Save as new" / "New playlist" from failing silently
+    /// on a name collision (both would otherwise be a no-op).
+    pub fn unique_playlist_name(&self, base: &str) -> String {
+        let pl_dir = crate::config::get_config_dir().join("playlists");
+        let taken = |n: &str| pl_dir.join(format!("{n}.playlist")).exists();
+        if !taken(base) {
+            return base.to_string();
+        }
+        for n in 2..1000 {
+            let candidate = format!("{base} ({n})");
+            if !taken(&candidate) {
+                return candidate;
+            }
+        }
+        base.to_string()
+    }
+
+    /// Switch to an existing playlist by name.
+    ///
+    /// The in-memory playlist is saved first, but **only when it holds tracks**.
+    /// A fresh `Player` starts with an empty playlist named "default", so the old
+    /// unconditional save wrote an empty `default.playlist` over the real one and
+    /// then read the file it had just emptied — silently destroying the playlist on
+    /// every plain CLI invocation (`hm playlist load x`) and in both restore paths
+    /// (`restore_playback_state`, and the daemon/CLI startup restore).
     pub fn switch_playlist(&self, name: &str) -> Result<()> {
         let pl_dir = crate::config::get_config_dir().join("playlists");
         let path = pl_dir.join(format!("{name}.playlist"));
         if !path.exists() {
             return Err(PlayerError::Other(format!("Playlist '{name}' not found")));
         }
-        // Save current
-        self.save_current_playlist()?;
+        // Save current, unless it is empty: an empty playlist has nothing to
+        // preserve, and saving it would clobber the file we are about to load.
+        if !self.playlist.lock().unwrap().is_empty() {
+            self.save_current_playlist()?;
+        }
         // Load new
         let tracks = crate::playlist_format::read_playlist(&path.to_string_lossy())?;
-        let mut pl = self.playlist.lock().unwrap();
-        *pl = Playlist::new(name);
-        for track_path in tracks {
-            let track = crate::tag::reader::read_tags(&track_path)
-                .unwrap_or_else(|_| Track::new(&track_path));
-            pl.add_track(track);
+        {
+            let mut pl = self.playlist.lock().unwrap();
+            *pl = Playlist::new(name);
+            for track_path in tracks {
+                let track = crate::tag::reader::read_tags(&track_path)
+                    .unwrap_or_else(|_| Track::new(&track_path));
+                pl.add_track(track);
+            }
         }
+        // Remember the switch: without this, `state.json` kept pointing at the
+        // previous playlist and the next CLI invocation restored that one
+        // instead of the one the user just selected.
+        crate::config::PlaybackState::set_last_playlist(name);
         Ok(())
     }
 
@@ -974,6 +1066,9 @@ impl Player {
         let mut pl = self.playlist.lock().unwrap();
         if pl.name() == old_name {
             pl.set_name(new_name.to_string());
+            // Keep `state.json` in sync, otherwise the next invocation would
+            // try to restore the old (now missing) name and fall back silently.
+            crate::config::PlaybackState::set_last_playlist(new_name);
         }
         Ok(())
     }
@@ -987,6 +1082,12 @@ impl Player {
         let path = pl_dir.join(format!("{name}.playlist"));
         if path.exists() {
             std::fs::remove_file(&path)?;
+        }
+        // If the deleted playlist was the recorded active one, fall back to
+        // "default" — otherwise `state.json` keeps pointing at a file that no
+        // longer exists and every restore silently falls back anyway.
+        if crate::config::PlaybackState::load().last_playlist == name {
+            crate::config::PlaybackState::set_last_playlist("default");
         }
         Ok(())
     }
@@ -1539,5 +1640,206 @@ mod tests {
         // Disable
         player.eq_enable(false);
         assert!(!player.eq_is_enabled());
+    }
+    fn player_with_empty_playlist() -> Player {
+        Player {
+            engine: Box::new(MockEngine::new()),
+            engine_type: EngineType::Bass,
+            playlist: Mutex::new(Playlist::new("default")),
+            settings: Mutex::new(PlayerSettings::default()),
+            spectrum: Mutex::new(SpectrumState::new()),
+            loading: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            advance_in_flight: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            status: Default::default(),
+        }
+    }
+
+    /// Write a native `.playlist` file holding two real (existing) files and
+    /// return its path. `read_playlist` skips paths that do not exist, so the
+    /// seed files must be created on disk.
+    fn seed_playlist(name: &str, tracks_dir: &std::path::Path) -> std::path::PathBuf {
+        let a = tracks_dir.join("a.wav");
+        let b = tracks_dir.join("b.wav");
+        std::fs::write(&a, b"RIFFfake").unwrap();
+        std::fs::write(&b, b"RIFFfake").unwrap();
+        let pl_dir = crate::config::get_config_dir().join("playlists");
+        std::fs::create_dir_all(&pl_dir).unwrap();
+        let pl_path = pl_dir.join(format!("{name}.playlist"));
+        std::fs::write(
+            &pl_path,
+            format!(
+                "# HackMagic Music Player Playlist\n{}\n{}\n",
+                a.to_string_lossy(),
+                b.to_string_lossy()
+            ),
+        )
+        .unwrap();
+        pl_path
+    }
+
+    /// Regression: switching playlists must not clobber the target file with an
+    /// empty playlist. A fresh `Player` starts with an empty playlist named
+    /// "default"; the old unconditional `save_current_playlist()` wrote that empty
+    /// playlist to `default.playlist` *before* reading it back, so every plain
+    /// CLI invocation that switched playlists (`hm playlist load x`) destroyed the
+    /// saved playlist.
+    #[test]
+    fn test_switch_playlist_does_not_clobber_with_empty() {
+        use crate::config::test_support::isolate_appdata;
+        let Some(_guard) = isolate_appdata() else { return; };
+        let dir = tempfile::tempdir().unwrap();
+        let pl_path = seed_playlist("default", dir.path());
+
+        let player = player_with_empty_playlist();
+        assert!(player.playlist.lock().unwrap().is_empty());
+
+        player.switch_playlist("default").unwrap();
+
+        let on_disk = std::fs::read_to_string(&pl_path).unwrap();
+        assert!(on_disk.contains("a.wav"), "playlist file was clobbered: {on_disk}");
+        assert!(on_disk.contains("b.wav"), "playlist file was clobbered: {on_disk}");
+        assert_eq!(player.playlist.lock().unwrap().len(), 2);
+    }
+
+    /// Regression: `create_playlist` saves the current playlist first. With an
+    /// empty in-memory playlist (every fresh CLI invocation) that save used to
+    /// overwrite `default.playlist` with an empty file.
+    #[test]
+    fn test_create_playlist_does_not_clobber_with_empty() {
+        use crate::config::test_support::isolate_appdata;
+        let Some(_guard) = isolate_appdata() else { return; };
+        let dir = tempfile::tempdir().unwrap();
+        let pl_path = seed_playlist("default", dir.path());
+
+        let player = player_with_empty_playlist();
+        player.create_playlist("fresh").unwrap();
+
+        let on_disk = std::fs::read_to_string(&pl_path).unwrap();
+        assert!(on_disk.contains("a.wav"), "playlist file was clobbered: {on_disk}");
+        assert_eq!(player.active_playlist_name(), "fresh");
+    }
+
+    /// `hm playlist new x` used to create a *phantom* playlist: the name lived
+    /// only in memory for the lifetime of that one process, so `hm playlist list`
+    /// never showed it and `hm playlist load x` failed with "not found".
+    /// `create_playlist` now materialises the file on disk.
+    #[test]
+    fn test_create_playlist_materializes_file_on_disk() {
+        use crate::config::test_support::isolate_appdata;
+        let Some(_guard) = isolate_appdata() else { return; };
+
+        let player = player_with_empty_playlist();
+        player.create_playlist("fresh").unwrap();
+
+        let pl_dir = crate::config::get_config_dir().join("playlists");
+        let path = pl_dir.join("fresh.playlist");
+        assert!(path.exists(), "create_playlist must write the playlist file");
+        assert_eq!(player.active_playlist_name(), "fresh");
+        assert_eq!(player.playlist.lock().unwrap().len(), 0);
+    }
+
+    /// Creating a playlist over an existing one must fail instead of wiping it.
+    /// `create_playlist` writes the new file, so without this guard
+    /// `hm playlist new default` would overwrite `default.playlist` with an
+    /// empty file.
+    #[test]
+    fn test_create_playlist_refuses_to_clobber_existing() {
+        use crate::config::test_support::isolate_appdata;
+        let Some(_guard) = isolate_appdata() else { return; };
+        let dir = tempfile::tempdir().unwrap();
+        let pl_path = seed_playlist("default", dir.path());
+
+        let player = player_with_empty_playlist();
+        let err = player.create_playlist("default").unwrap_err();
+        assert!(
+            err.to_string().contains("already exists"),
+            "expected an 'already exists' error, got: {err}"
+        );
+
+        let on_disk = std::fs::read_to_string(&pl_path).unwrap();
+        assert!(on_disk.contains("a.wav"), "playlist file was clobbered: {on_disk}");
+        assert!(on_disk.contains("b.wav"), "playlist file was clobbered: {on_disk}");
+    }
+
+    /// Switching playlists must record the new name in `state.json`, otherwise
+    /// the next CLI invocation restores the *previous* playlist instead of the
+    /// one the user just selected.
+    #[test]
+    fn test_switch_playlist_records_active_name() {
+        use crate::config::test_support::isolate_appdata;
+        let Some(_guard) = isolate_appdata() else { return; };
+        let dir = tempfile::tempdir().unwrap();
+        seed_playlist("default", dir.path());
+        seed_playlist("other", dir.path());
+
+        let player = player_with_empty_playlist();
+        player.switch_playlist("other").unwrap();
+
+        assert_eq!(player.active_playlist_name(), "other");
+        assert_eq!(
+            crate::config::PlaybackState::load().last_playlist,
+            "other",
+            "state.json must record the playlist that was switched to"
+        );
+    }
+
+    /// "Save as new" must produce a copy **with the tracks**. It used to be
+    /// `create_playlist` + `switch_playlist` + `save_current_playlist`, and
+    /// since `create_playlist` materialises an empty file, the switch loaded
+    /// that empty file — the copy came out empty.
+    #[test]
+    fn test_copy_playlist_keeps_tracks() {
+        use crate::config::test_support::isolate_appdata;
+        let Some(_guard) = isolate_appdata() else { return; };
+        let dir = tempfile::tempdir().unwrap();
+        seed_playlist("default", dir.path());
+
+        let player = player_with_empty_playlist();
+        player.switch_playlist("default").unwrap();
+        assert_eq!(player.playlist.lock().unwrap().len(), 2);
+
+        player.copy_playlist("default (copy)").unwrap();
+
+        let pl_dir = crate::config::get_config_dir().join("playlists");
+        let copy_path = pl_dir.join("default (copy).playlist");
+        assert!(copy_path.exists(), "copy_playlist must write the new file");
+        let copy = std::fs::read_to_string(&copy_path).unwrap();
+        assert!(copy.contains("a.wav"), "copy is missing tracks: {copy}");
+        assert!(copy.contains("b.wav"), "copy is missing tracks: {copy}");
+        assert_eq!(player.active_playlist_name(), "default (copy)");
+        assert_eq!(player.playlist.lock().unwrap().len(), 2);
+    }
+
+    /// Deleting the playlist that `state.json` points at must fall back to
+    /// "default" — otherwise the restore silently fails on every start.
+    #[test]
+    fn test_delete_playlist_resets_recorded_active_name() {
+        use crate::config::test_support::isolate_appdata;
+        let Some(_guard) = isolate_appdata() else { return; };
+        let dir = tempfile::tempdir().unwrap();
+        seed_playlist("other", dir.path());
+
+        crate::config::PlaybackState::set_last_playlist("other");
+        let player = player_with_empty_playlist();
+        player.delete_playlist("other").unwrap();
+
+        assert_eq!(
+            crate::config::PlaybackState::load().last_playlist,
+            "default",
+            "state.json must not keep pointing at a deleted playlist"
+        );
+    }
+
+    /// `unique_playlist_name` must hand out a name that is not taken yet.
+    #[test]
+    fn test_unique_playlist_name_avoids_collisions() {
+        use crate::config::test_support::isolate_appdata;
+        let Some(_guard) = isolate_appdata() else { return; };
+        let dir = tempfile::tempdir().unwrap();
+        seed_playlist("mix", dir.path());
+
+        let player = player_with_empty_playlist();
+        assert_eq!(player.unique_playlist_name("mix"), "mix (2)");
+        assert_eq!(player.unique_playlist_name("fresh"), "fresh");
     }
 }

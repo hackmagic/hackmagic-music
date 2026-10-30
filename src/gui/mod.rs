@@ -520,7 +520,10 @@ impl MusicPlayer {
         online_search_input: Entity<InputState>,
     ) -> Self {
         tracing::info!("[GUI] MusicPlayer::new() entered");
-        let cfg = Config::load();
+        // `load_or_create`: the GUI is the second entry point that materialises
+        // a default config.toml on a fresh install. Everything else uses the
+        // pure-read `Config::load()`.
+        let cfg = Config::load_or_create();
         tracing::info!("[GUI] Config loaded, engine={}", &cfg.play.engine);
         let engine = EngineType::try_from_str(&cfg.play.engine)
             .unwrap_or_else(|| {
@@ -3081,10 +3084,15 @@ impl MusicPlayer {
                 let p = player.clone();
                 move |_, _, _| {
                     let name = p.active_playlist_name();
-                    let new_name = i18n::global_tr().pl_copy_suffix.replace("{}", &name);
-                    let _ = p.create_playlist(&new_name);
-                    let _ = p.switch_playlist(&new_name);
-                    let _ = p.save_current_playlist();
+                    let base = i18n::global_tr().pl_copy_suffix.replace("{}", &name);
+                    // `copy_playlist`, not create+switch+save: the latter would
+                    // materialise an *empty* copy and then load it back, so the
+                    // "copy" came out empty. `unique_playlist_name` keeps a
+                    // second "Save as new" from failing on the name collision.
+                    let new_name = p.unique_playlist_name(&base);
+                    if let Err(e) = p.copy_playlist(&new_name) {
+                        tracing::warn!("Save playlist as new failed: {}", e);
+                    }
                 }
             }))
             .separator()
@@ -5443,9 +5451,14 @@ impl MusicPlayer {
                             .on_click(cx.listener(|this, _, _window, _cx| {
                                 let plists = this.player.list_playlists();
                                 let num = plists.len() + 1;
-                                let name = this.tr.pl_new_list.replace("{}", &num.to_string());
-                                let _ = this.player.create_playlist(&name);
-                                let _ = this.player.switch_playlist(&name);
+                                let base = this.tr.pl_new_list.replace("{}", &num.to_string());
+                                // Unique name: `create_playlist` now refuses to
+                                // overwrite an existing playlist, so a colliding
+                                // name must be resolved here instead of failing.
+                                let name = this.player.unique_playlist_name(&base);
+                                if let Err(e) = this.player.create_playlist(&name) {
+                                    tracing::warn!("Create playlist failed: {}", e);
+                                }
                             })),
                     ),
             )

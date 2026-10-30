@@ -318,12 +318,20 @@ impl Playlist {
         Some(self.tracks.remove(index))
     }
 
-    pub fn remove_multiple(&mut self, mut indices: Vec<usize>) {
+    /// Remove the tracks at `indices` (processed from the end so earlier
+    /// indices stay valid). Returns the number of tracks actually removed —
+    /// out-of-range indices are skipped, so the caller can report the truth
+    /// instead of the number of indices that were requested.
+    pub fn remove_multiple(&mut self, mut indices: Vec<usize>) -> usize {
         indices.sort_by(|a, b| b.cmp(a)); // Remove from end
         indices.dedup();
+        let mut removed = 0;
         for i in indices {
-            self.remove(i);
+            if self.remove(i).is_some() {
+                removed += 1;
+            }
         }
+        removed
     }
 
     pub fn clear(&mut self) {
@@ -507,15 +515,15 @@ impl Playlist {
             SortMode::Title => self.tracks.sort_by(|a, b| a.title.cmp(&b.title)),
             SortMode::Artist => self.tracks.sort_by(|a, b| a.artist.cmp(&b.artist)),
             SortMode::Album => self.tracks.sort_by(|a, b| a.album.cmp(&b.album)),
-            SortMode::Track => self.tracks.sort_by(|a, b| a.track_number.cmp(&b.track_number)),
+            SortMode::Track => self.tracks.sort_by_key(|a| a.track_number),
             SortMode::FileName => self.tracks.sort_by(|a, b| a.file_name.cmp(&b.file_name)),
             SortMode::Path => self.tracks.sort_by(|a, b| a.file_path.cmp(&b.file_path)),
-            SortMode::Time => self.tracks.sort_by(|a, b| a.duration.cmp(&b.duration)),
-            SortMode::Bitrate => self.tracks.sort_by(|a, b| a.bitrate.cmp(&b.bitrate)),
+            SortMode::Time => self.tracks.sort_by_key(|a| a.duration),
+            SortMode::Bitrate => self.tracks.sort_by_key(|a| a.bitrate),
             SortMode::Genre => self.tracks.sort_by(|a, b| a.genre.cmp(&b.genre)),
-            SortMode::Year => self.tracks.sort_by(|a, b| a.year.cmp(&b.year)),
-            SortMode::ListenCount => self.tracks.sort_by(|a, b| a.listen_count.cmp(&b.listen_count)),
-            SortMode::Rating => self.tracks.sort_by(|a, b| a.rating.cmp(&b.rating)),
+            SortMode::Year => self.tracks.sort_by_key(|a| a.year),
+            SortMode::ListenCount => self.tracks.sort_by_key(|a| a.listen_count),
+            SortMode::Rating => self.tracks.sort_by_key(|a| a.rating),
             SortMode::Random => {
                 self.tracks.shuffle(&mut thread_rng());
             }
@@ -1168,9 +1176,23 @@ mod tests {
     #[test]
     fn test_remove_multiple() {
         let mut pl = sample_playlist();
-        pl.remove_multiple(vec![0, 2]);
+        let removed = pl.remove_multiple(vec![0, 2]);
+        assert_eq!(removed, 2);
         assert_eq!(pl.len(), 1);
         assert_eq!(pl.get(0).unwrap().title, "Beta");
+    }
+
+    #[test]
+    fn test_remove_multiple_skips_out_of_range() {
+        let mut pl = sample_playlist();
+        // Only index 1 is in range; 9 must not be counted as removed.
+        let removed = pl.remove_multiple(vec![9, 1]);
+        assert_eq!(removed, 1);
+        assert_eq!(pl.len(), 2);
+        // Duplicate indices are deduplicated, so index 0 counts once.
+        let removed = pl.remove_multiple(vec![0, 0]);
+        assert_eq!(removed, 1);
+        assert_eq!(pl.len(), 1);
     }
 
     #[test]

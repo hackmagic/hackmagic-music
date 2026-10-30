@@ -219,8 +219,12 @@ fn main() {
         std::process::exit(1);
     }
 
-    // Load config
-    let cfg = Config::load();
+    // Load config.
+    // `load_or_create` (not `load`): the CLI entry point is the one place that
+    // materialises a default `config.toml` on a fresh install. Everywhere else
+    // uses the pure-read `Config::load()` — see config.rs for why a read must
+    // never write.
+    let cfg = Config::load_or_create();
 
     // Auto-check for updates (non-blocking, in background thread)
     if cfg.general.check_update_when_start {
@@ -275,6 +279,31 @@ fn main() {
             ),
             _ => true,
         }
+    }
+
+    /// Load the persisted playback state and re-attach it to `player`.
+    ///
+    /// Read-only with respect to the user's files: the playlist named in
+    /// `state.json` is loaded from disk into memory, and volume / repeat mode are
+    /// re-applied. Playback is not started. Any failure (missing state file,
+    /// missing or unreadable playlist file) only warns — no command should fail
+    /// because a restore failed.
+    fn restore_playlist(player: &Arc<Player>) {
+        use hm::config::PlaybackState;
+        let state = PlaybackState::load();
+        let pl_dir = hm::config::get_config_dir().join("playlists");
+        let pl_path = pl_dir.join(format!("{}.playlist", state.last_playlist));
+        if !pl_path.exists() {
+            return;
+        }
+        if let Err(e) = player.switch_playlist(&state.last_playlist) {
+            tracing::warn!("Failed to restore playlist '{}': {}", state.last_playlist, e);
+            return;
+        }
+        tracing::info!("Restored playlist '{}'", state.last_playlist);
+        player.set_volume(state.volume).ok();
+        let mode = hm::core::playlist::RepeatMode::from_str(&state.repeat_mode);
+        player.set_repeat_mode(mode);
     }
 
     // Resolve the engine order: configured engine first, then every remaining
@@ -356,24 +385,15 @@ fn main() {
     // silently discards later ones.
     hm::commands::init_player(player.clone());
 
-    // Restore last playlist (tracks) without starting playback
-    let is_daemon = matches!(command, Commands::Daemon(_));
-    if is_daemon {
-        use hm::config::PlaybackState;
-        let state = PlaybackState::load();
-        let pl_dir = hm::config::get_config_dir().join("playlists");
-        let pl_path = pl_dir.join(format!("{}.playlist", state.last_playlist));
-        if pl_path.exists() {
-            if let Err(e) = player.switch_playlist(&state.last_playlist) {
-                tracing::warn!("Failed to restore playlist '{}': {}", state.last_playlist, e);
-            } else {
-                tracing::info!("Restored playlist '{}'", state.last_playlist);
-            }
-            player.set_volume(state.volume).ok();
-            let mode = hm::core::playlist::RepeatMode::from_str(&state.repeat_mode);
-            player.set_repeat_mode(mode);
-        }
-    }
+    // Restore last playlist (tracks) without starting playback.
+    //
+    // This used to run for `Commands::Daemon(_)` only, so every plain CLI
+    // invocation started from an empty playlist: `hm playlist show` could not see
+    // the playlist that `hm playlist add` had just saved, and any mutating
+    // subcommand (shuffle / remove / dedup / sort / move / clear) overwrote the
+    // saved file with an empty one — silent data loss. Restore for every command;
+    // failures only warn, so commands that never touch the playlist are unaffected.
+    restore_playlist(&player);
 
     // Execute command via dispatcher
     if let Err(e) = hm::commands::dispatch(&command) {
